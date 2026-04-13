@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (All Sports - 80+ Categories)"
+VERSION = "18.0 Elite (Sport-Specific Dropdowns)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -45,6 +45,38 @@ SPORT_MODELS = {
     "NFL": {"distribution": "nbinom", "variance_factor": 1.20},
     "SOCCER": {"distribution": "poisson", "variance_factor": 1.10},
     "TENNIS": {"distribution": "poisson", "variance_factor": 1.05}
+}
+
+# =============================================================================
+# SPORT-SPECIFIC CATEGORIES (ORGANIZED BY SPORT)
+# =============================================================================
+SPORT_CATEGORIES = {
+    "NBA": [
+        "PTS", "REB", "AST", "STL", "BLK", "THREES", "FGM", "FGA", "FTM", "FTA",
+        "OREB", "DREB", "TO", "FOULS", "DUNKS", "THREE_ATT", "TWO_MADE", "TWO_ATT",
+        "PTS_1ST_3", "AST_1ST_3", "REB_1ST_3",
+        "PRA", "PR", "PA", "RA", "BLK_STL", "NBA_FS", "THREES_COMBO", "AST_COMBO",
+        "REB_COMBO", "PTS_COMBO", "DOUBLE_DOUBLE", "TRIPLE_DOUBLE", "3PTM"
+    ],
+    "MLB": [
+        "OUTS", "KS", "HITS_ALLOWED", "ER", "BB_ALLOWED", "PITCHES", "1ST_INN_RA",
+        "HITS", "TB", "HR", "RUNS", "RBI", "BB", "SB", "BATTER_KS", "SINGLES", "DOUBLES",
+        "H+R+RBI", "HITTER_FS", "PITCHER_FS", "KS_COMBO"
+    ],
+    "NHL": [
+        "SOG", "NHL_PTS", "SAVES", "NHL_AST", "GOALS", "GA", "TOI", "FACEOFFS",
+        "PLUS_MINUS", "PP_PTS", "HITS", "BLK_SHOTS"
+    ],
+    "SOCCER": [
+        "SHOTS", "SOC_SAVES", "PASSES", "SOT", "CROSSES", "SOC_AST", "SOC_GOALS",
+        "SOC_GA", "SHOTS_AST", "CLEARANCES", "TACKLES", "DRIBBLES", "SOCCER_FOULS",
+        "SOC_SAVES_COMBO", "PASSES_COMBO", "SOT_COMBO", "GOAL_AST", "SOC_GA_COMBO"
+    ],
+    "TENNIS": [
+        "TOTAL_GAMES", "GAMES_WON", "TOTAL_SETS", "ACES", "BREAK_PTS", "TIEBREAKS",
+        "DOUBLE_FAULTS", "TENNIS_FS"
+    ],
+    "NFL": []
 }
 
 # =============================================================================
@@ -160,16 +192,11 @@ STAT_CONFIG = {
 }
 
 RED_TIER_PROPS = [
-    # NBA
     "PRA", "PR", "PA", "RA", "BLK_STL", "NBA_FS", "THREES_COMBO", "AST_COMBO",
     "REB_COMBO", "PTS_COMBO", "DOUBLE_DOUBLE", "TRIPLE_DOUBLE", "3PTM",
-    # MLB
     "H+R+RBI", "HITTER_FS", "PITCHER_FS", "KS_COMBO",
-    # Soccer
     "SOC_SAVES_COMBO", "PASSES_COMBO", "SOT_COMBO", "GOAL_AST", "SOC_GA_COMBO",
-    # Tennis
     "TENNIS_FS",
-    # Universal
     "UNDER 1.5", "UNDER 2.5", "OVER 1.5", "OVER 2.5"
 ]
 
@@ -519,151 +546,4 @@ class Clarity18Elite:
             return {"signal": "🟢 ELITE LOCK", "units": 1.5}
         elif prob >= 0.70:
             return {"signal": "🟡 APPROVED", "units": 1.0}
-        return {"signal": "🔴 PASS", "units": 0}
-    
-    def analyze_prop(self, player: str, market: str, line: float, pick: str,
-                     data: List[float], sport: str, odds: int, team: str = None,
-                     log_bet: bool = False) -> dict:
-        api_status = self.api.get_injury_status(player, sport)
-        l42_pass, l42_msg = self.l42_check(market, line, np.mean(data))
-        sim = self.simulate_prop(data, line, pick, sport)
-        wsem_ok, wsem = self.wsem_check(data)
-        bolt = self.sovereign_bolt(sim["prob"], sim["dtm"], wsem_ok, l42_pass, api_status["injury"])
-        raw_edge = (sim["prob"] - 0.524) * 2
-        tier = "REJECT" if market.upper() in RED_TIER_PROPS else ("SAFE" if raw_edge >= 0.08 else "BALANCED+" if raw_edge >= 0.05 else "RISKY" if raw_edge >= 0.03 else "PASS")
-        kelly = raw_edge * self.bankroll * 0.25 if raw_edge > 0 else 0
-        lineup_check = self.api_sports.is_player_starting(sport, team, player) if team else None
-        bet_id = self.settlement.log_bet(player, market, line, pick, sport, odds, raw_edge) if log_bet and bolt["units"] > 0 else None
-        return {"player": player, "market": market, "line": line, "pick": pick, "signal": bolt["signal"], "units": bolt["units"],
-                "projection": sim["proj"], "probability": sim["prob"], "raw_edge": round(raw_edge, 4), "tier": tier,
-                "injury": api_status["injury"], "l42_msg": l42_msg, "kelly_stake": round(min(kelly, 50), 2), "lineup": lineup_check, "bet_id": bet_id}
-
-# =============================================================================
-# DASHBOARD
-# =============================================================================
-engine = Clarity18Elite()
-
-def run_dashboard():
-    st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("🔮 CLARITY 18.0 ELITE - ALL SPORTS")
-    st.markdown(f"**80+ Categories | NBA • MLB • NHL • Soccer • Tennis | Version: {VERSION}**")
-    
-    with st.sidebar:
-        st.header("🚀 SYSTEM STATUS")
-        st.success("✅ Perplexity API LIVE")
-        st.success("✅ API-Sports LIVE")
-        st.success("✅ Auto-Settlement READY")
-        st.success("✅ Statcast MLB " + ("LIVE" if STATCAST_AVAILABLE else "UNAVAILABLE"))
-        st.metric("Version", VERSION)
-        st.metric("Bankroll", f"${engine.bankroll:,.0f}")
-    
-    tab1, tab2, tab3, tab4 = st.tabs(["🎯 ANALYZE PROP", "📊 SETTLEMENT", "⚾ STATCAST MLB", "📋 LINEUP CHECK"])
-    
-    with tab1:
-        st.header("Player Prop Analyzer")
-        c1, c2 = st.columns(2)
-        with c1:
-            player = st.text_input("Player", "Aaron Judge", key="tab1_player")
-            market = st.selectbox("Market", sorted(list(STAT_CONFIG.keys())), key="tab1_market")
-            line = st.number_input("Line", 0.5, 100.0, 0.5, key="tab1_line")
-            pick = st.selectbox("Pick", ["OVER", "UNDER"], key="tab1_pick")
-            sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "SOCCER", "TENNIS", "NFL"], key="tab1_sport")
-        with c2:
-            data_str = st.text_area("Recent Games (comma separated)", "0, 1, 0, 2, 0, 1", key="tab1_data")
-            odds = st.number_input("Odds (American)", -500, 500, -110, key="tab1_odds")
-            team = st.text_input("Team (Optional)", "Yankees", key="tab1_team")
-            log_bet = st.checkbox("📝 Log this bet for auto-settlement", value=True, key="tab1_log")
-        
-        if st.button("🚀 RUN ANALYSIS", type="primary", key="tab1_button"):
-            data = [float(x.strip()) for x in data_str.split(",")]
-            result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team, log_bet)
-            st.markdown(f"### {result['signal']}")
-            c1, c2, c3 = st.columns(3)
-            with c1: st.metric("Projection", f"{result['projection']:.1f}")
-            with c2: st.metric("Probability", f"{result['probability']:.1%}")
-            with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
-            st.metric("Tier", result['tier'])
-            st.info(f"Injury: {result['injury']} | L42: {result['l42_msg']}")
-            if result.get('lineup'):
-                lu = result['lineup']
-                if lu['starting']:
-                    st.success(f"✅ Lineup: {lu['status']} ({lu['confidence']} confidence)")
-                else:
-                    st.warning(f"⚠️ Lineup: {lu['status']}")
-            if result['units'] > 0:
-                st.success(f"RECOMMENDED UNITS: {result['units']} (Kelly: ${result['kelly_stake']:.2f})")
-            if result.get('bet_id'):
-                st.info(f"📝 Bet logged! ID: {result['bet_id']}")
-    
-    with tab2:
-        st.header("📊 Auto-Settlement Dashboard")
-        summary = engine.settlement.get_settlement_summary()
-        c1, c2, c3, c4 = st.columns(4)
-        with c1: st.metric("Total Bets", summary['total_bets'])
-        with c2: st.metric("Wins", summary['wins'])
-        with c3: st.metric("Losses", summary['losses'])
-        with c4: st.metric("Win Rate", f"{summary['win_rate']}%")
-        st.metric("Pending Bets", summary['pending'])
-        
-        if st.button("🔄 SETTLE ALL PENDING BETS", type="primary", key="tab2_settle"):
-            with st.spinner("Fetching results via Perplexity..."):
-                results = engine.settlement.settle_all_pending()
-                if results:
-                    st.success(f"Settled {len(results)} bets!")
-                    for r in results:
-                        if r['status'] == 'SETTLED':
-                            if r['result'] == 'WIN':
-                                st.success(f"✅ {r['player']} {r['market']} {r['pick']} {r['line']} → {r['actual']} (WIN)")
-                            else:
-                                st.error(f"❌ {r['player']} {r['market']} {r['pick']} {r['line']} → {r['actual']} (LOSS)")
-                else:
-                    st.info("No pending bets to settle.")
-        
-        if st.button("📋 SHOW PENDING BETS", key="tab2_show"):
-            pending = engine.settlement.get_pending_bets()
-            if pending:
-                for bet in pending:
-                    st.text(f"{bet['player']} - {bet['market']} {bet['pick']} {bet['line']} ({bet['date']})")
-            else:
-                st.info("No pending bets.")
-    
-    with tab3:
-        st.header("⚾ Statcast MLB - Quality of Contact")
-        player_mlb = st.text_input("MLB Player", "Aaron Judge", key="tab3_player")
-        if st.button("🔍 GET STATCAST METRICS", key="tab3_button"):
-            if STATCAST_AVAILABLE:
-                with st.spinner("Fetching Statcast data..."):
-                    metrics = engine.statcast.get_statcast_metrics(player_mlb)
-                    c1, c2, c3 = st.columns(3)
-                    with c1:
-                        st.metric("Barrel %", f"{metrics['barrel_pct']:.1%}")
-                        st.metric("Hard Hit %", f"{metrics['hard_hit_pct']:.1%}")
-                    with c2:
-                        st.metric("Avg Exit Velo", f"{metrics['avg_exit_velocity']:.0f} mph")
-                        st.metric("xBA", f".{int(metrics['xba']*1000)}")
-                    with c3:
-                        st.metric("xSLG", f".{int(metrics['xslg']*1000)}")
-                        st.metric("Sample Size", metrics['sample_size'])
-            else:
-                st.warning("Statcast not available. Run: pip install pybaseball")
-    
-    with tab4:
-        st.header("📋 Lineup Check (API-Sports)")
-        c1, c2 = st.columns(2)
-        with c1:
-            sport_lu = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="tab4_sport")
-            team_lu = st.text_input("Team", "Yankees", key="tab4_team")
-        with c2:
-            player_lu = st.text_input("Player", "Aaron Judge", key="tab4_player")
-        if st.button("🔍 CHECK LINEUP", key="tab4_button"):
-            with st.spinner("Checking lineup..."):
-                result = engine.api_sports.is_player_starting(sport_lu, team_lu, player_lu)
-                if result['starting']:
-                    st.success(f"✅ {player_lu} is STARTING for {team_lu}")
-                elif result['status'] == 'BENCH':
-                    st.warning(f"⚠️ {player_lu} is on the BENCH")
-                else:
-                    st.error(f"❌ {player_lu} is NOT IN LINEUP")
-
-if __name__ == "__main__":
-    run_dashboard()
+        return {"signal": "🔴 PASS",
