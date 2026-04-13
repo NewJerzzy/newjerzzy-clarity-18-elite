@@ -1,11 +1,234 @@
+# =============================================================================
+# CLARITY 18.0 ELITE - WORKING VERSION
+# =============================================================================
 import streamlit as st
+import numpy as np
+import pandas as pd
+from scipy.stats import poisson
+from datetime import datetime
+import sqlite3
+import requests
+import warnings
+warnings.filterwarnings('ignore')
 
-st.set_page_config(page_title="CLARITY TEST", layout="wide")
-st.title("🔮 CLARITY 18.0 ELITE - TEST MODE")
-st.markdown("If you see this, Streamlit is working correctly.")
+# =============================================================================
+# CONFIGURATION
+# =============================================================================
+VERSION = "18.0 Elite (Working)"
 
-st.success("✅ The app loaded successfully!")
+# =============================================================================
+# BET TRACKER
+# =============================================================================
+class BetTracker:
+    def __init__(self, db_path: str = "clarity_bets.db"):
+        self.db_path = db_path
+        self._init_db()
+    
+    def _init_db(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS bets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT,
+                sport TEXT,
+                player TEXT,
+                market TEXT,
+                line REAL,
+                pick TEXT,
+                odds INTEGER,
+                stake REAL,
+                result TEXT,
+                profit REAL,
+                edge REAL,
+                tier TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+    
+    def add_bet(self, player, market, line, pick, odds, stake, sport, edge=0, tier=""):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        date = datetime.now().strftime("%Y-%m-%d")
+        c.execute("""
+            INSERT INTO bets (date, sport, player, market, line, pick, odds, stake, edge, tier, result)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')
+        """, (date, sport, player, market, line, pick, odds, stake, edge, tier))
+        bet_id = c.lastrowid
+        conn.commit()
+        conn.close()
+        return bet_id
+    
+    def settle_bet(self, bet_id, result):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT stake, odds FROM bets WHERE id = ?", (bet_id,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return
+        stake, odds = row
+        decimal_odds = 1 + odds/100 if odds > 0 else 1 + 100/abs(odds)
+        if result == "WIN":
+            profit = stake * (decimal_odds - 1)
+        elif result == "LOSS":
+            profit = -stake
+        else:
+            profit = 0
+        c.execute("UPDATE bets SET result = ?, profit = ? WHERE id = ?", (result, round(profit, 2), bet_id))
+        conn.commit()
+        conn.close()
+    
+    def get_pending_bets(self):
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query("SELECT * FROM bets WHERE result = 'PENDING' ORDER BY id DESC", conn)
+        conn.close()
+        return df
+    
+    def get_all_bets(self):
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query("SELECT * FROM bets ORDER BY date DESC, id DESC", conn)
+        conn.close()
+        return df
+    
+    def get_summary(self):
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query("SELECT * FROM bets WHERE result IN ('WIN', 'LOSS', 'PUSH')", conn)
+        conn.close()
+        if df.empty:
+            return {"total_bets": 0, "wins": 0, "losses": 0, "win_rate": 0, "profit": 0, "roi": 0}
+        wins = len(df[df['result'] == 'WIN'])
+        losses = len(df[df['result'] == 'LOSS'])
+        total = wins + losses
+        return {
+            "total_bets": len(df),
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / total * 100, 1) if total > 0 else 0,
+            "profit": round(df['profit'].sum(), 2),
+            "roi": round(df['profit'].sum() / df['stake'].sum() * 100, 2) if df['stake'].sum() > 0 else 0
+        }
 
-# Simple test button
-if st.button("Click me"):
-    st.write("Button works!")
+# =============================================================================
+# CLARITY ENGINE
+# =============================================================================
+class ClarityEngine:
+    def __init__(self):
+        self.tracker = BetTracker()
+    
+    def analyze_prop(self, player, market, line, pick, data, sport):
+        w = np.ones(len(data))
+        w[-3:] *= 1.5
+        w /= w.sum()
+        lam = np.average(data, weights=w)
+        sims = poisson.rvs(lam, size=10000)
+        proj = np.mean(sims)
+        prob = np.mean(sims >= line) if pick == "OVER" else np.mean(sims <= line)
+        raw_edge = (prob - 0.524) * 2
+        n = len(data)
+        penalty = 0.50 if n < 5 else 0.25 if n < 10 else 0.10 if n < 20 else 0.00
+        adj_edge = raw_edge * (1 - penalty)
+        tier = "SAFE" if adj_edge >= 0.08 else "BALANCED+" if adj_edge >= 0.05 else "RISKY" if adj_edge >= 0.03 else "PASS"
+        return {
+            "player": player, "market": market, "line": line, "pick": pick,
+            "projection": round(proj, 1), "probability": round(prob, 3),
+            "raw_edge": round(raw_edge, 3), "adjusted_edge": round(adj_edge, 3),
+            "tier": tier
+        }
+
+# =============================================================================
+# DASHBOARD
+# =============================================================================
+engine = ClarityEngine()
+
+def run_dashboard():
+    st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
+    st.title("🔮 CLARITY 18.0 ELITE")
+    st.markdown(f"**Working Version | {VERSION}**")
+    
+    tracker = engine.tracker
+    
+    # Sidebar
+    with st.sidebar:
+        st.header("📊 PORTFOLIO")
+        summary = tracker.get_summary()
+        st.metric("Total Bets", summary['total_bets'])
+        st.metric("Win Rate", f"{summary['win_rate']}%")
+        st.metric("ROI", f"{summary['roi']}%")
+        st.metric("Profit", f"${summary['profit']}")
+    
+    # Tabs
+    tab1, tab2 = st.tabs(["🎯 ANALYZE PROP", "📊 BET TRACKER"])
+    
+    with tab1:
+        st.header("Analyze Player Prop")
+        col1, col2 = st.columns(2)
+        with col1:
+            player = st.text_input("Player", "Paul Skenes")
+            market = st.text_input("Market", "Ks")
+            line = st.number_input("Line", 0.5, 50.0, 6.5)
+            pick = st.selectbox("Pick", ["OVER", "UNDER"])
+            sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"])
+        with col2:
+            data_str = st.text_area("Recent Games (comma separated)", "6, 7, 5, 8, 6, 5, 7, 6")
+            odds = st.number_input("Odds", -500, 500, -110)
+        
+        if st.button("🚀 ANALYZE", type="primary"):
+            data = [float(x.strip()) for x in data_str.split(",")]
+            result = engine.analyze_prop(player, market, line, pick, data, sport)
+            
+            st.markdown(f"### Tier: {result['tier']}")
+            col1, col2, col3 = st.columns(3)
+            with col1: st.metric("Projection", result['projection'])
+            with col2: st.metric("Probability", f"{result['probability']:.1%}")
+            with col3: st.metric("Edge", f"{result['adjusted_edge']:+.1%}")
+            
+            if result['tier'] in ['SAFE', 'BALANCED+']:
+                if st.button("📝 Add to Tracker"):
+                    tracker.add_bet(player, market, line, pick, odds, 50.0, sport, result['adjusted_edge'], result['tier'])
+                    st.success("✅ Bet logged!")
+                    st.rerun()
+    
+    with tab2:
+        st.header("Bet Tracker")
+        
+        # Summary
+        summary = tracker.get_summary()
+        col1, col2, col3, col4 = st.columns(4)
+        with col1: st.metric("Total Bets", summary['total_bets'])
+        with col2: st.metric("Wins", summary['wins'])
+        with col3: st.metric("Losses", summary['losses'])
+        with col4: st.metric("Win Rate", f"{summary['win_rate']}%")
+        
+        st.divider()
+        
+        # Pending bets
+        pending = tracker.get_pending_bets()
+        if not pending.empty:
+            st.subheader("⏳ Pending Bets")
+            for _, row in pending.iterrows():
+                c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+                with c1:
+                    st.write(f"**{row['player']} {row['market']} {row['pick']} {row['line']}** (${row['stake']})")
+                with c2:
+                    if st.button("✅ WIN", key=f"win_{row['id']}"):
+                        tracker.settle_bet(row['id'], "WIN")
+                        st.rerun()
+                with c3:
+                    if st.button("❌ LOSS", key=f"loss_{row['id']}"):
+                        tracker.settle_bet(row['id'], "LOSS")
+                        st.rerun()
+                with c4:
+                    if st.button("🔄 PUSH", key=f"push_{row['id']}"):
+                        tracker.settle_bet(row['id'], "PUSH")
+                        st.rerun()
+        
+        # History
+        st.subheader("📋 Bet History")
+        all_bets = tracker.get_all_bets()
+        if not all_bets.empty:
+            st.dataframe(all_bets[['date', 'sport', 'player', 'market', 'pick', 'line', 'result', 'profit']], use_container_width=True, hide_index=True)
+
+if __name__ == "__main__":
+    run_dashboard()
