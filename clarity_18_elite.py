@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (Final Lean)"
+VERSION = "18.0 Elite (Auto-Settlement Added)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -252,9 +252,160 @@ class UnifiedAPIClient:
             "injury": "OUT" if any(x in content.upper() for x in ["OUT", "GTD", "QUESTIONABLE"]) else "HEALTHY",
             "steam": "STEAM" in content.upper()
         }
+    
+    def fetch_player_result(self, player: str, market: str, sport: str, date: str) -> Optional[float]:
+        """Fetch actual player stat result via Perplexity"""
+        prompt = f"How many {market} did {player} have in their {sport} game on {date}? Return ONLY the number."
+        response = self.perplexity_call(prompt)
+        match = re.search(r'(\d+\.?\d*)', response)
+        return float(match.group(1)) if match else None
 
 # =============================================================================
-# CLARITY 18.0 ELITE - FINAL LEAN MASTER ENGINE
+# AUTO-SETTLEMENT ENGINE (NEW)
+# =============================================================================
+class AutoSettlementEngine:
+    """Automatically settle pending bets using Perplexity API"""
+    
+    def __init__(self, api_client, db_path: str = "clarity_history.db"):
+        self.api = api_client
+        self.db_path = db_path
+        self._init_db()
+    
+    def _init_db(self):
+        """Initialize bets table if not exists"""
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS bets (
+                id TEXT PRIMARY KEY,
+                player TEXT,
+                sport TEXT,
+                market TEXT,
+                line REAL,
+                pick TEXT,
+                odds INTEGER,
+                edge REAL,
+                result TEXT,
+                actual REAL,
+                date TEXT,
+                settled_date TEXT,
+                clv REAL
+            )
+        """)
+        conn.commit()
+        conn.close()
+    
+    def log_bet(self, player: str, market: str, line: float, pick: str,
+                sport: str, odds: int, edge: float) -> str:
+        """Log a bet before the game"""
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        
+        bet_id = hashlib.md5(f"{player}{market}{line}{datetime.now()}".encode()).hexdigest()[:12]
+        
+        c.execute("""
+            INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (bet_id, player, sport, market, line, pick, odds, edge, "PENDING", datetime.now().strftime("%Y-%m-%d")))
+        
+        conn.commit()
+        conn.close()
+        return bet_id
+    
+    def get_pending_bets(self) -> List[Dict]:
+        """Get all unsettled bets"""
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT * FROM bets WHERE result = 'PENDING'")
+        rows = c.fetchall()
+        conn.close()
+        
+        bets = []
+        for row in rows:
+            bets.append({
+                "id": row[0], "player": row[1], "sport": row[2], "market": row[3],
+                "line": row[4], "pick": row[5], "odds": row[6], "edge": row[7],
+                "result": row[8], "actual": row[9], "date": row[10]
+            })
+        return bets
+    
+    def settle_bet(self, bet: Dict) -> Dict:
+        """Fetch result and settle a single bet"""
+        actual = self.api.fetch_player_result(bet["player"], bet["market"], bet["sport"], bet["date"])
+        
+        if actual is None:
+            return {"status": "PENDING", "bet": bet}
+        
+        if bet["pick"] == "OVER":
+            won = actual > bet["line"]
+        else:
+            won = actual < bet["line"]
+        
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("""
+            UPDATE bets 
+            SET result = ?, actual = ?, settled_date = ?
+            WHERE id = ?
+        """, ("WIN" if won else "LOSS", actual, datetime.now().strftime("%Y-%m-%d"), bet["id"]))
+        conn.commit()
+        conn.close()
+        
+        return {
+            "status": "SETTLED",
+            "player": bet["player"],
+            "market": bet["market"],
+            "line": bet["line"],
+            "pick": bet["pick"],
+            "actual": actual,
+            "result": "WIN" if won else "LOSS"
+        }
+    
+    def settle_all_pending(self) -> List[Dict]:
+        """Settle all pending bets"""
+        pending = self.get_pending_bets()
+        results = []
+        
+        for bet in pending:
+            result = self.settle_bet(bet)
+            results.append(result)
+            time.sleep(0.5)  # Rate limit protection
+        
+        return results
+    
+    def get_settlement_summary(self) -> Dict:
+        """Get win/loss summary"""
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        
+        c.execute("SELECT COUNT(*) FROM bets WHERE result = 'WIN'")
+        wins = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM bets WHERE result = 'LOSS'")
+        losses = c.fetchone()[0]
+        
+        c.execute("SELECT COUNT(*) FROM bets WHERE result = 'PENDING'")
+        pending = c.fetchone()[0]
+        
+        c.execute("SELECT SUM(edge) FROM bets WHERE result IN ('WIN', 'LOSS')")
+        total_edge = c.fetchone()[0] or 0
+        
+        conn.close()
+        
+        total = wins + losses
+        win_rate = (wins / total * 100) if total > 0 else 0
+        
+        return {
+            "total_bets": total,
+            "wins": wins,
+            "losses": losses,
+            "pending": pending,
+            "win_rate": round(win_rate, 1),
+            "total_edge": round(total_edge, 2)
+        }
+
+# =============================================================================
+# CLARITY 18.0 ELITE - MASTER ENGINE
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
@@ -262,6 +413,7 @@ class Clarity18Elite:
         self.api_sports = APISportsClient(API_SPORTS_KEY)
         self.season_context = SeasonContextEngine(self.api)
         self.statcast = StatcastMLBEnhancer()
+        self.settlement = AutoSettlementEngine(self.api)
         self.sims = 10000
         self.wsem_max = 0.10
         self.dtm_bolt = 0.15
@@ -327,7 +479,8 @@ class Clarity18Elite:
         return {"signal": "🔴 PASS", "units": 0}
     
     def analyze_prop(self, player: str, market: str, line: float, pick: str,
-                     data: List[float], sport: str, odds: int, team: str = None) -> dict:
+                     data: List[float], sport: str, odds: int, team: str = None,
+                     log_bet: bool = False) -> dict:
         
         api_status = self.api.get_injury_status(player, sport)
         l42_pass, l42_msg = self.l42_check(market, line, np.mean(data))
@@ -354,6 +507,10 @@ class Clarity18Elite:
         if team:
             lineup_check = self.api_sports.is_player_starting(sport, team, player)
         
+        bet_id = None
+        if log_bet and bolt["units"] > 0:
+            bet_id = self.settlement.log_bet(player, market, line, pick, sport, odds, raw_edge)
+        
         return {
             "player": player, "market": market, "line": line, "pick": pick,
             "signal": bolt["signal"], "units": bolt["units"],
@@ -361,7 +518,8 @@ class Clarity18Elite:
             "raw_edge": round(raw_edge, 4), "tier": tier,
             "injury": api_status["injury"], "l42_msg": l42_msg,
             "kelly_stake": round(min(kelly, 50), 2),
-            "lineup": lineup_check
+            "lineup": lineup_check,
+            "bet_id": bet_id
         }
 
 # =============================================================================
@@ -371,18 +529,19 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("🔮 CLARITY 18.0 ELITE - FINAL LEAN")
-    st.markdown(f"**Manual Analysis | Version: {VERSION}**")
+    st.title("🔮 CLARITY 18.0 ELITE - AUTO SETTLEMENT")
+    st.markdown(f"**Manual Analysis + Auto-Settlement | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Perplexity API LIVE")
         st.success("✅ API-Sports LIVE")
+        st.success("✅ Auto-Settlement READY")
         st.success("✅ Statcast MLB " + ("LIVE" if STATCAST_AVAILABLE else "UNAVAILABLE"))
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
     
-    tab1, tab2, tab3 = st.tabs(["🎯 ANALYZE PROP", "⚾ STATCAST MLB", "📋 LINEUP CHECK"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🎯 ANALYZE PROP", "📊 SETTLEMENT", "⚾ STATCAST MLB", "📋 LINEUP CHECK"])
     
     with tab1:
         st.header("Player Prop Analyzer")
@@ -399,10 +558,11 @@ def run_dashboard():
             data_str = st.text_area("Recent Games (comma separated)", "9.2, 10.1, 8.5, 11.3, 9.8, 10.5, 8.9")
             odds = st.number_input("Odds (American)", -500, 500, -110)
             team = st.text_input("Team (Optional)", "Hawks")
+            log_bet = st.checkbox("📝 Log this bet for auto-settlement", value=True)
         
         if st.button("🚀 RUN ANALYSIS", type="primary"):
             data = [float(x.strip()) for x in data_str.split(",")]
-            result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team)
+            result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team, log_bet)
             
             st.markdown(f"### {result['signal']}")
             
@@ -426,8 +586,53 @@ def run_dashboard():
             
             if result['units'] > 0:
                 st.success(f"RECOMMENDED UNITS: {result['units']} (Kelly: ${result['kelly_stake']:.2f})")
+            
+            if result.get('bet_id'):
+                st.info(f"📝 Bet logged! ID: {result['bet_id']}")
     
     with tab2:
+        st.header("📊 Auto-Settlement Dashboard")
+        st.markdown("*Settle pending bets using Perplexity API*")
+        
+        summary = engine.settlement.get_settlement_summary()
+        
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("Total Bets", summary['total_bets'])
+        with c2:
+            st.metric("Wins", summary['wins'])
+        with c3:
+            st.metric("Losses", summary['losses'])
+        with c4:
+            st.metric("Win Rate", f"{summary['win_rate']}%")
+        
+        st.metric("Pending Bets", summary['pending'])
+        
+        if st.button("🔄 SETTLE ALL PENDING BETS", type="primary"):
+            with st.spinner("Fetching results via Perplexity..."):
+                results = engine.settlement.settle_all_pending()
+                
+                if results:
+                    st.success(f"Settled {len(results)} bets!")
+                    
+                    for r in results:
+                        if r['status'] == 'SETTLED':
+                            if r['result'] == 'WIN':
+                                st.success(f"✅ {r['player']} {r['market']} {r['pick']} {r['line']} → {r['actual']} (WIN)")
+                            else:
+                                st.error(f"❌ {r['player']} {r['market']} {r['pick']} {r['line']} → {r['actual']} (LOSS)")
+                else:
+                    st.info("No pending bets to settle.")
+        
+        if st.button("📋 SHOW PENDING BETS"):
+            pending = engine.settlement.get_pending_bets()
+            if pending:
+                for bet in pending:
+                    st.text(f"{bet['player']} - {bet['market']} {bet['pick']} {bet['line']} ({bet['date']})")
+            else:
+                st.info("No pending bets.")
+    
+    with tab3:
         st.header("⚾ Statcast MLB - Quality of Contact")
         player_mlb = st.text_input("MLB Player", "Aaron Judge")
         
@@ -449,7 +654,7 @@ def run_dashboard():
             else:
                 st.warning("Statcast not available. Run: pip install pybaseball")
     
-    with tab3:
+    with tab4:
         st.header("📋 Lineup Check (API-Sports)")
         c1, c2 = st.columns(2)
         with c1:
