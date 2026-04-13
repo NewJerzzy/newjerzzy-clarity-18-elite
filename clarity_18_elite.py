@@ -18,13 +18,11 @@ import asyncio
 import warnings
 warnings.filterwarnings('ignore')
 
-# Try to import websockets (optional - only needed for real-time streaming)
 try:
     import websockets
     WEBSOCKETS_AVAILABLE = True
 except ImportError:
     WEBSOCKETS_AVAILABLE = False
-    print("⚠️ websockets not installed. Real-time streaming disabled. Run: pip install websockets")
 
 # =============================================================================
 # CONFIGURATION - ALL API KEYS
@@ -32,13 +30,21 @@ except ImportError:
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 BOLTODDS_API_KEY = "9b8b1485-ea53-4288-84f8-a0d118ea923f"
-VERSION = "18.0 Elite (BoltOdds REST)"
+VERSION = "18.0 Elite (BoltOdds WebSocket)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
+BOLTODDS_WS_URL = "wss://spro.agency/api"
 BOLTODDS_REST_URL = "https://spro.agency/api"
+
+# NBA Player Markets (discovered from /get_markets)
+NBA_PLAYER_MARKETS = [
+    "Player Points", "Player Rebounds", "Player Assists",
+    "Player Threes", "Player Blocks", "Player Steals",
+    "Player Points + Rebounds + Assists", "Player Points + Rebounds", "Player Points + Assists"
+]
 
 SCAN_SCHEDULE = {
     "10:00": "Initial scan - lines posted",
@@ -57,10 +63,10 @@ except ImportError:
 # SPORT-SPECIFIC DISTRIBUTIONS
 # =============================================================================
 SPORT_MODELS = {
-    "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "odds_key": "basketball_nba"},
-    "MLB": {"distribution": "poisson", "variance_factor": 1.08, "odds_key": "baseball_mlb"},
-    "NHL": {"distribution": "poisson", "variance_factor": 1.12, "odds_key": "icehockey_nhl"},
-    "NFL": {"distribution": "nbinom", "variance_factor": 1.20, "odds_key": "americanfootball_nfl"}
+    "NBA": {"distribution": "nbinom", "variance_factor": 1.15},
+    "MLB": {"distribution": "poisson", "variance_factor": 1.08},
+    "NHL": {"distribution": "poisson", "variance_factor": 1.12},
+    "NFL": {"distribution": "nbinom", "variance_factor": 1.20}
 }
 
 # =============================================================================
@@ -86,6 +92,196 @@ STAT_CONFIG = {
 
 RED_TIER_PROPS = ["PRA", "PR", "PA", "3PTM", "1H", "MILESTONE", "COMBO", "TD", 
                   "UNDER 1.5", "UNDER 2.5", "OVER 1.5", "OVER 2.5"]
+
+# =============================================================================
+# BOLTODDS WEBSOCKET CLIENT
+# =============================================================================
+class BoltOddsClient:
+    """BoltOdds WebSocket client for real-time player props"""
+    
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.ws_url = f"{BOLTODDS_WS_URL}?key={api_key}"
+        self.diagnostic_log = []
+        self.props_data = []
+    
+    def log_diagnostic(self, source: str, message: str, data: Any = None):
+        self.diagnostic_log.append({
+            "timestamp": datetime.now().isoformat(),
+            "source": source,
+            "message": message,
+            "data": str(data)[:500] if data else None
+        })
+    
+    def scan_sync(self, sports: List[str] = None, sportsbooks: List[str] = None, timeout: int = 30) -> List[Dict]:
+        """Synchronous wrapper for WebSocket scan"""
+        if not WEBSOCKETS_AVAILABLE:
+            self.log_diagnostic("BoltOdds", "WebSockets not available. Install: pip install websockets")
+            return []
+        
+        if sports is None:
+            sports = ["NBA"]
+        if sportsbooks is None:
+            sportsbooks = ["draftkings"]
+        
+        self.props_data = []
+        self.diagnostic_log = []
+        
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            task = loop.create_task(self._connect_and_scan(sports, sportsbooks))
+            loop.run_until_complete(asyncio.wait_for(task, timeout=timeout))
+            loop.close()
+        except asyncio.TimeoutError:
+            self.log_diagnostic("BoltOdds", f"Scan timeout after {timeout}s")
+        except Exception as e:
+            self.log_diagnostic("BoltOdds", f"Scan error: {str(e)}")
+        
+        return self._parse_props()
+    
+    async def _connect_and_scan(self, sports: List[str], sportsbooks: List[str]):
+        """Connect to WebSocket and collect props"""
+        try:
+            async with websockets.connect(self.ws_url, max_size=None) as websocket:
+                self.log_diagnostic("BoltOdds", "WebSocket connected")
+                
+                # Wait for ack
+                ack = await websocket.recv()
+                self.log_diagnostic("BoltOdds", f"ACK: {ack[:100]}")
+                
+                # Subscribe to NBA player props
+                subscribe_message = {
+                    "action": "subscribe",
+                    "filters": {
+                        "sports": sports,
+                        "sportsbooks": sportsbooks,
+                        "markets": NBA_PLAYER_MARKETS
+                    }
+                }
+                
+                await websocket.send(json.dumps(subscribe_message))
+                self.log_diagnostic("BoltOdds", f"Subscribed to: {sports} - {len(NBA_PLAYER_MARKETS)} markets")
+                
+                # Collect messages for 20 seconds
+                start_time = time.time()
+                message_count = 0
+                
+                while time.time() - start_time < 20:
+                    try:
+                        message = await asyncio.wait_for(websocket.recv(), timeout=5)
+                        data = json.loads(message)
+                        
+                        if isinstance(data, list):
+                            for msg in data:
+                                if msg.get("action") in ["initial_state", "game_update", "line_update"]:
+                                    self.props_data.append(msg)
+                                    message_count += 1
+                        elif isinstance(data, dict):
+                            if data.get("action") in ["initial_state", "game_update", "line_update"]:
+                                self.props_data.append(data)
+                                message_count += 1
+                        
+                    except asyncio.TimeoutError:
+                        continue
+                
+                self.log_diagnostic("BoltOdds", f"Collected {message_count} messages with {len(self.props_data)} prop updates")
+                
+        except Exception as e:
+            self.log_diagnostic("BoltOdds", f"WebSocket error: {str(e)}")
+    
+    def _parse_props(self) -> List[Dict]:
+        """Parse BoltOdds messages into CLARITY prop format"""
+        parsed = []
+        
+        for msg in self.props_data:
+            try:
+                data = msg.get("data", msg)
+                outcomes = data.get("outcomes", {})
+                
+                game = data.get("game", "")
+                sport = data.get("sport", "NBA")
+                sportsbook = data.get("sportsbook", "draftkings")
+                home_team = data.get("home_team", "")
+                away_team = data.get("away_team", "")
+                
+                for outcome_name, outcome_data in outcomes.items():
+                    if any(term in outcome_name.lower() for term in ["points", "rebounds", "assists", "threes", "blocks", "steals"]):
+                        # Extract player name from outcome
+                        player = outcome_name.split(" Over")[0].split(" Under")[0].strip()
+                        
+                        market = "PTS"
+                        if "Rebounds" in outcome_name:
+                            market = "REB"
+                        elif "Assists" in outcome_name:
+                            market = "AST"
+                        elif "Threes" in outcome_name:
+                            market = "THREES"
+                        elif "Blocks" in outcome_name:
+                            market = "BLK"
+                        elif "Steals" in outcome_name:
+                            market = "STL"
+                        elif "Points + Rebounds + Assists" in outcome_name:
+                            market = "PRA"
+                        elif "Points + Rebounds" in outcome_name:
+                            market = "PR"
+                        elif "Points + Assists" in outcome_name:
+                            market = "PA"
+                        
+                        line = outcome_data.get("outcome_line", 0)
+                        odds_str = outcome_data.get("odds", "-110")
+                        
+                        # Convert odds to American format
+                        try:
+                            odds = int(odds_str) if odds_str else -110
+                        except:
+                            odds = -110
+                        
+                        if player and line:
+                            parsed.append({
+                                "source": "BoltOdds",
+                                "sport": sport,
+                                "player": player,
+                                "team": home_team if player in outcome_name else away_team,
+                                "market": market,
+                                "line": float(line) if line else 0,
+                                "odds": odds,
+                                "sportsbook": sportsbook,
+                                "game": game
+                            })
+            except Exception as e:
+                self.log_diagnostic("BoltOdds", f"Parse error: {str(e)}")
+        
+        self.log_diagnostic("BoltOdds", f"Parsed {len(parsed)} props")
+        return parsed
+    
+    def get_diagnostics(self) -> List[Dict]:
+        return self.diagnostic_log
+
+# =============================================================================
+# UNIFIED API CLIENT (Perplexity)
+# =============================================================================
+class UnifiedAPIClient:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.perplexity_client = OpenAI(api_key=api_key, base_url=PERPLEXITY_BASE)
+    
+    def perplexity_call(self, prompt: str) -> str:
+        try:
+            r = self.perplexity_client.chat.completions.create(
+                model="llama-3.1-sonar-large-32k-online",
+                messages=[{"role": "user", "content": prompt}]
+            )
+            return r.choices[0].message.content
+        except:
+            return ""
+    
+    def get_injury_status(self, player: str, sport: str) -> dict:
+        content = self.perplexity_call(f"{player} {sport} injury status today? HEALTHY/OUT/GTD.")
+        return {
+            "injury": "OUT" if any(x in content.upper() for x in ["OUT", "GTD", "QUESTIONABLE"]) else "HEALTHY",
+            "steam": "STEAM" in content.upper()
+        }
 
 # =============================================================================
 # SEASON CONTEXT ENGINE
@@ -154,131 +350,6 @@ class SeasonContextEngine:
             reasons.append("Seed locked - resting starters")
         
         return {"team": team, "fade": fade, "reasons": reasons}
-
-# =============================================================================
-# BOLTODDS CLIENT (REST ONLY - NO WEBSOCKET REQUIRED)
-# =============================================================================
-class BoltOddsClient:
-    """BoltOdds client using REST endpoints - no WebSocket required"""
-    
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.rest_url = BOLTODDS_REST_URL
-        self.diagnostic_log = []
-    
-    def log_diagnostic(self, source: str, message: str, data: Any = None):
-        self.diagnostic_log.append({
-            "timestamp": datetime.now().isoformat(),
-            "source": source,
-            "message": message,
-            "data": str(data)[:500] if data else None
-        })
-    
-    def get_info(self) -> Dict:
-        """GET /api/get_info - Get available sports and sportsbooks"""
-        try:
-            url = f"{self.rest_url}/get_info"
-            response = requests.get(url, params={"key": self.api_key}, timeout=10)
-            self.log_diagnostic("BoltOdds", f"get_info response: {response.status_code}")
-            if response.status_code == 200:
-                return response.json()
-        except Exception as e:
-            self.log_diagnostic("BoltOdds", f"get_info error: {str(e)}")
-        return {"sports": [], "sportsbooks": []}
-    
-    def get_markets(self, sport: str = "NBA", sportsbook: str = "draftkings") -> List[str]:
-        """GET /api/get_markets - Get available markets for a sport/sportsbook"""
-        try:
-            url = f"{self.rest_url}/get_markets"
-            params = {"key": self.api_key, "sports": sport, "sportsbooks": sportsbook}
-            response = requests.get(url, params=params, timeout=10)
-            self.log_diagnostic("BoltOdds", f"get_markets ({sport}/{sportsbook}): {response.status_code}")
-            
-            if response.status_code == 200:
-                data = response.json()
-                markets = data.get(sportsbook, {}).get(sport, [])
-                player_markets = [m for m in markets if any(
-                    term in m.lower() for term in ["player", "points", "rebounds", "assists", "threes", "blocks", "steals"]
-                )]
-                self.log_diagnostic("BoltOdds", f"Found {len(player_markets)} player markets")
-                return player_markets
-        except Exception as e:
-            self.log_diagnostic("BoltOdds", f"get_markets error: {str(e)}")
-        return []
-    
-    def get_games(self) -> Dict:
-        """GET /api/get_games - Get all available games"""
-        try:
-            url = f"{self.rest_url}/get_games"
-            response = requests.get(url, params={"key": self.api_key}, timeout=10)
-            self.log_diagnostic("BoltOdds", f"get_games response: {response.status_code}")
-            if response.status_code == 200:
-                return response.json()
-        except Exception as e:
-            self.log_diagnostic("BoltOdds", f"get_games error: {str(e)}")
-        return {}
-    
-    def scan_sync(self, sports: List[str] = None, sportsbooks: List[str] = None) -> List[Dict]:
-        """Synchronous scan using REST endpoints"""
-        if sports is None:
-            sports = ["NBA"]
-        if sportsbooks is None:
-            sportsbooks = ["draftkings"]
-        
-        self.diagnostic_log = []
-        all_props = []
-        
-        for sport in sports:
-            for book in sportsbooks:
-                self.log_diagnostic("BoltOdds", f"Scanning {sport} on {book}...")
-                
-                markets = self.get_markets(sport, book)
-                games = self.get_games()
-                
-                for game_key, game_info in games.items():
-                    if game_info.get("sport") == sport:
-                        for market in markets[:10]:
-                            all_props.append({
-                                "source": "BoltOdds",
-                                "sport": sport,
-                                "player": "Player from " + game_key.split(",")[0],
-                                "market": market.replace("Player ", "").replace("Points", "PTS").replace("Rebounds", "REB").replace("Assists", "AST"),
-                                "line": 0.0,
-                                "odds": -110,
-                                "sportsbook": book,
-                                "game": game_key
-                            })
-        
-        self.log_diagnostic("BoltOdds", f"Total props parsed: {len(all_props)}")
-        return all_props
-    
-    def get_diagnostics(self) -> List[Dict]:
-        return self.diagnostic_log
-
-# =============================================================================
-# UNIFIED API CLIENT (Perplexity)
-# =============================================================================
-class UnifiedAPIClient:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.perplexity_client = OpenAI(api_key=api_key, base_url=PERPLEXITY_BASE)
-    
-    def perplexity_call(self, prompt: str) -> str:
-        try:
-            r = self.perplexity_client.chat.completions.create(
-                model="llama-3.1-sonar-large-32k-online",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return r.choices[0].message.content
-        except:
-            return ""
-    
-    def get_injury_status(self, player: str, sport: str) -> dict:
-        content = self.perplexity_call(f"{player} {sport} injury status today? HEALTHY/OUT/GTD.")
-        return {
-            "injury": "OUT" if any(x in content.upper() for x in ["OUT", "GTD", "QUESTIONABLE"]) else "HEALTHY",
-            "steam": "STEAM" in content.upper()
-        }
 
 # =============================================================================
 # CLARITY 18.0 ELITE - MASTER ENGINE
@@ -386,16 +457,25 @@ class Clarity18Elite:
         }
     
     def scan_boltodds(self, sports: List[str] = None) -> Dict:
-        """Scan BoltOdds for player props"""
-        props = self.boltodds.scan_sync(sports)
+        """Scan BoltOdds WebSocket for NBA player props"""
+        if sports is None:
+            sports = ["NBA"]
+        
+        props = self.boltodds.scan_sync(sports, ["draftkings"])
         
         approved = []
-        rejected = {"RED_TIER": 0, "LOW_EDGE": 0}
+        rejected = {"RED_TIER": 0, "LOW_EDGE": 0, "FADE_TEAM": 0}
         
         for prop in props[:50]:
             if prop["market"].upper() in RED_TIER_PROPS:
                 rejected["RED_TIER"] += 1
                 continue
+            
+            if prop.get("team"):
+                fade_check = self.season_context.should_fade_team(prop["sport"], prop["team"])
+                if fade_check["fade"]:
+                    rejected["FADE_TEAM"] += 1
+                    continue
             
             mock_data = [prop["line"]] * 10
             pick = "OVER"
@@ -412,10 +492,12 @@ class Clarity18Elite:
             approved.append({
                 "source": prop["source"],
                 "player": prop["player"],
+                "team": prop.get("team", "UNKNOWN"),
                 "market": prop["market"],
                 "line": prop["line"],
                 "odds": prop["odds"],
                 "sport": prop["sport"],
+                "sportsbook": prop.get("sportsbook", "draftkings"),
                 "edge": round(edge * 100, 1),
                 "tier": tier
             })
@@ -434,46 +516,66 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("CLARITY 18.0 ELITE - BOLTODDS REST")
-    st.markdown(f"**BoltOdds REST API | Version: {VERSION}**")
+    st.title("CLARITY 18.0 ELITE - BOLTODDS WEBSOCKET")
+    st.markdown(f"**Real-Time NBA Player Props | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("SYSTEM STATUS")
         st.success("Perplexity API LIVE")
-        st.success("BoltOdds API LIVE")
+        st.success("BoltOdds WebSocket " + ("LIVE" if WEBSOCKETS_AVAILABLE else "UNAVAILABLE"))
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
+        
+        if not WEBSOCKETS_AVAILABLE:
+            st.warning("Install websockets: pip install websockets")
     
     tab1, tab2, tab3 = st.tabs(["🔍 BOLTODDS SCAN", "📊 APPROVED", "🎯 MANUAL"])
     
     with tab1:
-        st.header("BoltOdds Player Props Scanner")
-        sports = st.multiselect("Sports", ["NBA", "MLB", "NHL"], default=["NBA"])
+        st.header("BoltOdds NBA Player Props")
+        st.markdown("*WebSocket real-time data - 20 second scan*")
         
-        if st.button("🚀 SCAN BOLTODDS", type="primary"):
-            with st.spinner("Scanning BoltOdds REST API..."):
-                result = engine.scan_boltodds(sports)
-                st.success(f"Scanned {result['total_scanned']} props")
-                st.metric("Approved", len(result['approved']))
-                st.metric("Rejected", sum(result['rejected'].values()))
-                
-                with st.expander("Diagnostic Logs"):
-                    for log in result['diagnostics']:
-                        st.text(f"[{log['timestamp']}] {log['source']}: {log['message']}")
+        sports = st.multiselect("Sports", ["NBA"], default=["NBA"])
+        
+        if st.button("🚀 START WEBSOCKET SCAN", type="primary"):
+            if not WEBSOCKETS_AVAILABLE:
+                st.error("WebSockets not available. Run: pip install websockets")
+            else:
+                with st.spinner("Connecting to BoltOdds WebSocket (30s timeout)..."):
+                    result = engine.scan_boltodds(sports)
+                    
+                    st.success(f"Scanned {result['total_scanned']} props")
+                    st.metric("Approved", len(result['approved']))
+                    
+                    rejected_total = sum(result['rejected'].values())
+                    st.metric("Rejected", rejected_total)
+                    
+                    with st.expander("Diagnostic Logs"):
+                        for log in result['diagnostics']:
+                            st.text(f"[{log['timestamp']}] {log['source']}: {log['message']}")
     
     with tab2:
-        st.header("CLARITY-Approved Props")
-        if st.button("🔄 REFRESH", type="primary"):
-            with st.spinner("Scanning..."):
-                result = engine.scan_boltodds(["NBA"])
-                if result['approved']:
-                    df = pd.DataFrame(result['approved'])
-                    st.dataframe(df)
-                    for _, row in df.head(10).iterrows():
-                        st.code(f"{row['player']} - {row['market']} OVER {row['line']} | {row['edge']:.1f}% edge")
-                    st.download_button("📥 Download CSV", df.to_csv(index=False), "clarity_approved.csv")
-                else:
-                    st.warning("No approved props")
+        st.header("CLARITY-Approved NBA Props")
+        st.markdown("*Copy into PrizePicks or Underdog*")
+        
+        if st.button("🔄 REFRESH APPROVED", type="primary"):
+            if not WEBSOCKETS_AVAILABLE:
+                st.error("WebSockets not available")
+            else:
+                with st.spinner("Scanning BoltOdds..."):
+                    result = engine.scan_boltodds(["NBA"])
+                    
+                    if result['approved']:
+                        df = pd.DataFrame(result['approved'])
+                        st.dataframe(df)
+                        
+                        st.subheader("Quick Copy")
+                        for _, row in df.head(10).iterrows():
+                            st.code(f"{row['player']} ({row['team']}) - {row['market']} OVER {row['line']} | {row['edge']:.1f}% | {row['tier']}")
+                        
+                        st.download_button("📥 Download CSV", df.to_csv(index=False), "clarity_approved.csv")
+                    else:
+                        st.warning("No approved props found - check diagnostics")
     
     with tab3:
         st.header("Manual Prop Analyzer")
@@ -491,12 +593,14 @@ def run_dashboard():
         if st.button("RUN ANALYSIS", type="primary"):
             data = [float(x.strip()) for x in data_str.split(",")]
             result = engine.analyze_prop(player, market, line, pick, data, sport, odds)
+            
             st.markdown(f"### {result['signal']}")
             c1, c2, c3 = st.columns(3)
             with c1: st.metric("Projection", f"{result['projection']:.1f}")
             with c2: st.metric("Probability", f"{result['probability']:.1%}")
             with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
             st.metric("Tier", result['tier'])
+            
             if result['units'] > 0:
                 st.success(f"UNITS: {result['units']} (${result['kelly_stake']:.2f})")
 
