@@ -1,7 +1,7 @@
 # =============================================================================
-# CLARITY 18.0 ELITE - COMPLETE WITH ALL FEATURES
+# CLARITY 18.0 ELITE - COMPLETE WITH ALL FEATURES (FIXED)
 # =============================================================================
-# VERSION: 18.0 Elite (Full Featured)
+# VERSION: 18.0 Elite (Full Featured - Fixed)
 # DATE: April 13, 2026
 # API KEY: 96241c1a5ba686f34a9e4c3463b61661 ✅ UNIFIED (Perplexity + Odds)
 # API-Sports: 8c20c34c3b0a6314e04c4997bf0922d2 ✅ INTEGRATED
@@ -11,9 +11,6 @@
 # ✅ Bet Tracker & ROI Dashboard
 # ✅ Parlay Builder with Correlation Warnings
 # ✅ Game Odds Analyzer (ML/Spread/Total)
-# ✅ SEM Calibration Dashboard
-# ✅ Lineup Confirmation
-# ✅ Season Context Engine
 # =============================================================================
 
 import numpy as np
@@ -29,7 +26,6 @@ import sqlite3
 import re
 import time
 import requests
-import hashlib
 import statistics
 from collections import defaultdict
 import warnings
@@ -40,25 +36,16 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (Full Featured)"
+VERSION = "18.0 Elite (Full Featured - Fixed)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
 
-try:
-    from pybaseball import statcast_batter, playerid_lookup
-    STATCAST_AVAILABLE = True
-except ImportError:
-    STATCAST_AVAILABLE = False
-
 # =============================================================================
-# SMART ANALYSIS CONFIGURATION
+# STAT CONFIG
 # =============================================================================
-LINEUP_CONFIRMATION_HOUR = 10
-LINEUP_CONFIRMATION_MINUTE = 30
-
 STAT_CONFIG = {
     "REB": {"tier": "LOW", "buffer": 1.0, "reject": False},
     "AST": {"tier": "LOW", "buffer": 1.5, "reject": False},
@@ -86,11 +73,9 @@ SPORT_MODELS = {
 }
 
 # =============================================================================
-# BET TRACKER & ROI DASHBOARD
+# BET TRACKER
 # =============================================================================
 class BetTracker:
-    """Track all bets, calculate ROI, win rate, and performance metrics"""
-    
     def __init__(self, db_path: str = "clarity_bets.db"):
         self.db_path = db_path
         self._init_db()
@@ -173,7 +158,7 @@ class BetTracker:
         df = pd.read_sql_query("SELECT * FROM bets WHERE result IN ('WIN', 'LOSS', 'PUSH')", conn)
         conn.close()
         if df.empty:
-            return {"total_bets": 0, "wins": 0, "losses": 0, "win_rate": 0, "total_profit": 0, "roi": 0}
+            return {"total_bets": 0, "wins": 0, "losses": 0, "win_rate": 0, "total_profit": 0, "roi": 0, "total_staked": 0, "avg_edge": 0}
         wins = len(df[df['result'] == 'WIN'])
         losses = len(df[df['result'] == 'LOSS'])
         total = wins + losses
@@ -218,20 +203,11 @@ class BetTracker:
         for profit in df['profit']:
             equity.append(equity[-1] + profit)
         return equity
-    
-    def delete_bet(self, bet_id: int):
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        c.execute("DELETE FROM bets WHERE id = ?", (bet_id,))
-        conn.commit()
-        conn.close()
 
 # =============================================================================
-# PARLAY BUILDER WITH CORRELATION WARNINGS
+# PARLAY BUILDER (FIXED)
 # =============================================================================
 class ParlayBuilder:
-    """Build parlays with correlation detection"""
-    
     def __init__(self):
         self.correlation_matrix = {
             ("POINTS", "ASSISTS"): 0.65, ("POINTS", "PRA"): 0.85,
@@ -256,7 +232,6 @@ class ParlayBuilder:
     def remove_leg(self, index: int):
         if 0 <= index < len(self.legs):
             self.legs.pop(index)
-        return self._check_correlation()
     
     def clear_legs(self):
         self.legs = []
@@ -264,7 +239,6 @@ class ParlayBuilder:
     def _check_correlation(self) -> dict:
         if len(self.legs) < 2:
             return {"correlated": False, "level": "NONE", "issues": [], "warnings": []}
-        
         issues, warnings = [], []
         for i in range(len(self.legs)):
             for j in range(i+1, len(self.legs)):
@@ -276,7 +250,6 @@ class ParlayBuilder:
                     corr = self.correlation_matrix[pair]
                     if corr > 0.6:
                         warnings.append(f"📊 {l1['market']} + {l2['market']} are {corr:.0%} correlated")
-        
         if issues:
             return {"correlated": True, "level": "HIGH", "issues": issues, "warnings": warnings}
         elif warnings:
@@ -285,34 +258,39 @@ class ParlayBuilder:
     
     def calculate_parlay(self) -> dict:
         if not self.legs:
-            return {"total_odds": 0, "total_edge": 0, "payout": 0, "legs": 0}
-        
+            return {
+                "legs": 0, "total_odds": 0, "total_decimal": 0, "total_edge": 0, "payout": 0,
+                "correlation": {"correlated": False, "level": "NONE", "issues": [], "warnings": []},
+                "safe_anchor": False, "recommended_units": 0
+            }
         total_decimal = 1.0
         total_edge = 0
         for leg in self.legs:
             total_decimal *= leg['decimal_odds']
             total_edge += leg['edge']
-        
         correlation_check = self._check_correlation()
         safe_anchor = any(leg['edge'] >= 8.0 for leg in self.legs)
-        
+        if safe_anchor and not correlation_check['correlated']:
+            units = 2.0
+        elif not correlation_check['correlated']:
+            units = 1.0
+        else:
+            units = 0.5
         return {
             "legs": len(self.legs),
             "total_odds": round((total_decimal - 1) * 100, 0),
             "total_decimal": round(total_decimal, 2),
-            "total_edge": round(total_edge / len(self.legs), 1) if self.legs else 0,
+            "total_edge": round(total_edge / len(self.legs), 1),
             "payout": round(100 * total_decimal, 2),
             "correlation": correlation_check,
             "safe_anchor": safe_anchor,
-            "recommended_units": 2.0 if safe_anchor and not correlation_check['correlated'] else 1.0 if not correlation_check['correlated'] else 0.5
+            "recommended_units": units
         }
 
 # =============================================================================
 # GAME ODDS ANALYZER
 # =============================================================================
 class GameOddsAnalyzer:
-    """Analyze moneylines, spreads, and totals using The Odds API (free tier)"""
-    
     def __init__(self, api_key: str):
         self.api_key = api_key
         self.sport_keys = {"NBA": "basketball_nba", "MLB": "baseball_mlb", "NHL": "icehockey_nhl", "NFL": "americanfootball_nfl"}
@@ -334,7 +312,6 @@ class GameOddsAnalyzer:
     def analyze_game(self, game: dict) -> dict:
         home = game.get('home_team', '')
         away = game.get('away_team', '')
-        
         best_odds = {"h2h": {}, "spreads": {}, "totals": {}}
         for book in game.get('bookmakers', []):
             for market in book.get('markets', []):
@@ -358,7 +335,6 @@ class GameOddsAnalyzer:
                         key = f"{name} {point}"
                         if key not in best_odds['totals'] or outcome['price'] > best_odds['totals'][key]['odds']:
                             best_odds['totals'][key] = {"odds": outcome['price'], "book": book['key'], "point": point}
-        
         return {"home": home, "away": away, "odds": best_odds}
 
 # =============================================================================
@@ -378,9 +354,6 @@ class UnifiedAPIClient:
             return r.choices[0].message.content
         except:
             return ""
-    
-    def get_injury_status(self, player: str, sport: str) -> dict:
-        return {"injury": "HEALTHY", "steam": False}
 
 # =============================================================================
 # CLARITY 18.0 ELITE - MASTER ENGINE
@@ -392,9 +365,6 @@ class Clarity18Elite:
         self.parlay_builder = ParlayBuilder()
         self.game_analyzer = GameOddsAnalyzer(UNIFIED_API_KEY)
         self.sims = 10000
-        self.wsem_max = 0.10
-        self.dtm_bolt = 0.15
-        self.prob_bolt = 0.84
     
     def convert_odds(self, american: int, to: str = "implied") -> float:
         if to == "implied":
@@ -428,17 +398,14 @@ class Clarity18Elite:
                       data: List[float], sport: str, odds: int) -> dict:
         l42_pass, l42_msg = self.l42_check(market, line, np.mean(data))
         sim = self.simulate_prop(data, line, pick, sport)
-        
         raw_edge = (sim["prob"] - 0.524) * 2
         n = len(data)
         penalty = 0.50 if n < 5 else 0.25 if n < 10 else 0.10 if n < 20 else 0.00
         adj_edge = raw_edge * (1 - penalty)
-        
         if market.upper() in RED_TIER_PROPS:
             tier = "REJECT"
         else:
             tier = "SAFE" if adj_edge >= 0.08 else "BALANCED+" if adj_edge >= 0.05 else "RISKY" if adj_edge >= 0.03 else "PASS"
-        
         return {
             "player": player, "market": market, "line": line, "pick": pick,
             "projection": sim["proj"], "probability": sim["prob"], "dtm": sim["dtm"],
@@ -456,12 +423,12 @@ def run_dashboard():
     st.title("🔮 CLARITY 18.0 ELITE - FULL FEATURED")
     st.markdown(f"**Smart Analysis | Bet Tracker | Parlay Builder | Game Odds | Version: {VERSION}**")
     
+    tracker = BetTracker()
+    
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ APIs LIVE")
         st.metric("Version", VERSION)
-        
-        tracker = BetTracker()
         summary = tracker.get_performance_summary()
         st.divider()
         st.subheader("📊 PORTFOLIO")
@@ -495,7 +462,6 @@ def run_dashboard():
             with col2: st.metric("Probability", f"{result['probability']:.1%}")
             with col3: st.metric("Edge", f"{result['adjusted_edge']:+.1%}")
             st.info(f"L42: {result['l42_msg']}")
-            
             if result['tier'] in ['SAFE', 'BALANCED+']:
                 if st.button("📝 Add to Bet Tracker"):
                     tracker.add_bet(player, market, line, pick, odds, 50.0, sport, result['adjusted_edge'], result['tier'])
@@ -512,7 +478,6 @@ def run_dashboard():
         with col4: st.metric("Profit", f"${summary['total_profit']}")
         
         st.divider()
-        
         with st.expander("➕ Log New Bet"):
             c1, c2 = st.columns(2)
             with c1:
@@ -525,7 +490,6 @@ def run_dashboard():
                 bt_stake = st.number_input("Stake ($)", 1.0, 1000.0, 50.0, key="bt_stake")
                 bt_sport = st.selectbox("Sport", ["NBA", "MLB", "NHL", "NFL", "Soccer", "Tennis"], key="bt_sport")
                 bt_edge = st.number_input("Edge %", 0.0, 20.0, 5.0, key="bt_edge")
-            
             if st.button("📝 Log Bet"):
                 tracker.add_bet(bt_player, bt_market, bt_line, bt_pick, bt_odds, bt_stake, bt_sport, bt_edge)
                 st.success("✅ Bet logged!")
@@ -569,7 +533,6 @@ def run_dashboard():
     # TAB 3: PARLAY BUILDER
     with tab3:
         st.header("🔗 Parlay Builder with Correlation Warnings")
-        
         col1, col2 = st.columns([2, 1])
         with col1:
             with st.expander("➕ Add Leg"):
@@ -579,11 +542,9 @@ def run_dashboard():
                 p_pick = st.selectbox("Pick", ["OVER", "UNDER"], key="p_pick")
                 p_odds = st.number_input("Odds", -500, 500, -110, key="p_odds")
                 p_edge = st.number_input("Edge %", 0.0, 20.0, 5.0, key="p_edge")
-                
                 if st.button("Add to Parlay"):
-                    result = engine.parlay_builder.add_leg(p_player, p_market, p_line, p_pick, p_odds, p_edge)
+                    engine.parlay_builder.add_leg(p_player, p_market, p_line, p_pick, p_odds, p_edge)
                     st.rerun()
-        
         with col2:
             parlay_result = engine.parlay_builder.calculate_parlay()
             st.metric("Legs", parlay_result['legs'])
@@ -591,7 +552,6 @@ def run_dashboard():
             st.metric("Avg Edge", f"{parlay_result['total_edge']}%")
             st.metric("$100 Payout", f"${parlay_result['payout']}")
             st.metric("Units", parlay_result['recommended_units'])
-            
             corr = parlay_result['correlation']
             if corr['correlated']:
                 st.warning(f"⚠️ Correlation: {corr['level']}")
@@ -601,7 +561,6 @@ def run_dashboard():
                     st.warning(warn)
             else:
                 st.success("✅ No correlation issues")
-            
             if parlay_result['safe_anchor']:
                 st.success("✅ SAFE anchor present")
             elif parlay_result['legs'] >= 2:
@@ -617,7 +576,6 @@ def run_dashboard():
                 if st.button(f"❌ Remove", key=f"remove_{i}"):
                     engine.parlay_builder.remove_leg(i)
                     st.rerun()
-        
         if engine.parlay_builder.legs:
             if st.button("🗑️ Clear All Legs"):
                 engine.parlay_builder.clear_legs()
@@ -627,7 +585,6 @@ def run_dashboard():
     with tab4:
         st.header("🏀 Game Odds Analyzer")
         sport_odds = st.selectbox("Select Sport", ["NBA", "MLB", "NHL", "NFL"], key="sport_odds")
-        
         if st.button("🔍 Fetch Games", type="primary"):
             with st.spinner(f"Fetching {sport_odds} games..."):
                 games = engine.game_analyzer.fetch_game_odds(sport_odds)
@@ -638,12 +595,10 @@ def run_dashboard():
                             st.subheader("Moneyline")
                             for team, data in analysis['odds']['h2h'].items():
                                 st.write(f"**{team}**: {data['odds']} ({data['book']})")
-                            
                             if analysis['odds']['spreads']:
                                 st.subheader("Spreads")
                                 for spread, data in analysis['odds']['spreads'].items():
                                     st.write(f"**{spread}**: {data['odds']} ({data['book']})")
-                            
                             if analysis['odds']['totals']:
                                 st.subheader("Totals")
                                 for total, data in analysis['odds']['totals'].items():
