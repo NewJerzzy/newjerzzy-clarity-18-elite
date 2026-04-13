@@ -23,7 +23,7 @@ warnings.filterwarnings('ignore')
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 PARLAY_API_KEY = "07e924ee998ffd8a70c27e0b554805a7"
-VERSION = "18.0 Elite (Parlay-API Integrated)"
+VERSION = "18.0 Elite (Parlay-API with Deep Diagnostics)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -148,10 +148,10 @@ class SeasonContextEngine:
         return {"team": team, "fade": fade, "reasons": reasons}
 
 # =============================================================================
-# PARLAY-API CLIENT
+# PARLAY-API CLIENT WITH DEEP DIAGNOSTICS
 # =============================================================================
 class ParlayAPIClient:
-    """Unified client for Parlay-API - The Odds API compatible"""
+    """Unified client for Parlay-API with built-in diagnostics"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -163,69 +163,134 @@ class ParlayAPIClient:
             "timestamp": datetime.now().isoformat(),
             "source": source,
             "message": message,
-            "data": str(data)[:500] if data else None
+            "data": str(data)[:1000] if data else None
         })
     
-    def get_sports(self) -> List[Dict]:
-        """List all available sports"""
+    def deep_diagnostics(self, sport: str = "basketball_nba") -> Dict:
+        """Run comprehensive API diagnostics"""
+        results = {
+            "sport": sport,
+            "api_key_valid": False,
+            "connection": False,
+            "bookmakers": [],
+            "markets": [],
+            "sample_event": None,
+            "player_props_available": False,
+            "errors": []
+        }
+        
+        # Test 1: Basic connection - list sports
         try:
             url = f"{self.base_url}/sports"
             response = requests.get(url, params={"apiKey": self.api_key}, timeout=10)
-            if response.status_code == 200:
-                return response.json()
+            results["connection"] = response.status_code == 200
+            results["api_key_valid"] = response.status_code == 200
+            if response.status_code != 200:
+                results["errors"].append(f"Sports endpoint failed: {response.status_code}")
         except Exception as e:
-            self.log_diagnostic("Parlay-API", f"Sports error: {e}")
-        return []
-    
-    def get_player_props(self, sport: str = "basketball_nba", bookmaker: str = "underdog") -> List[Dict]:
-        """Fetch player props - The Odds API compatible format"""
-        props = []
+            results["errors"].append(f"Connection error: {str(e)}")
+            return results
         
-        sport_key = SPORT_MODELS.get(sport, {}).get("odds_key", sport)
-        
+        # Test 2: Get odds for the sport
         try:
-            url = f"{self.base_url}/sports/{sport_key}/odds"
-            params = {
-                "apiKey": self.api_key,
-                "regions": "us",
-                "bookmakers": bookmaker,
-                "markets": "player_points,player_rebounds,player_assists,player_threes,player_blocks,player_steals",
-                "oddsFormat": "decimal"
-            }
-            
-            response = requests.get(url, params=params, timeout=15)
-            self.log_diagnostic("Parlay-API", f"{sport} props response: {response.status_code}")
+            url = f"{self.base_url}/sports/{sport}/odds"
+            params = {"apiKey": self.api_key, "regions": "us"}
+            response = requests.get(url, params=params, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()
                 
-                for event in data:
-                    for bk in event.get("bookmakers", []):
-                        for market in bk.get("markets", []):
-                            market_name = market.get("key", "").replace("player_", "").upper()
-                            for outcome in market.get("outcomes", []):
-                                props.append({
-                                    "source": f"Parlay-API ({bookmaker})",
-                                    "sport": sport,
-                                    "player": outcome.get("description", ""),
-                                    "market": market_name,
-                                    "line": outcome.get("point", 0),
-                                    "odds": outcome.get("price", 2.0),
-                                    "home_team": event.get("home_team"),
-                                    "away_team": event.get("away_team"),
-                                    "commence_time": event.get("commence_time")
+                # Extract bookmakers from first event
+                if data and len(data) > 0:
+                    results["sample_event"] = {
+                        "home": data[0].get("home_team"),
+                        "away": data[0].get("away_team"),
+                        "commence_time": data[0].get("commence_time")
+                    }
+                    
+                    for bookmaker in data[0].get("bookmakers", []):
+                        results["bookmakers"].append({
+                            "key": bookmaker.get("key"),
+                            "title": bookmaker.get("title")
+                        })
+                        
+                        # Extract markets from first bookmaker
+                        for market in bookmaker.get("markets", []):
+                            market_key = market.get("key")
+                            if market_key not in [m["key"] for m in results["markets"]]:
+                                results["markets"].append({
+                                    "key": market_key,
+                                    "last_update": market.get("last_update")
                                 })
-                
-                self.log_diagnostic("Parlay-API", f"{sport} props found: {len(props)}")
+                                if "player" in market_key:
+                                    results["player_props_available"] = True
             else:
-                self.log_diagnostic("Parlay-API", f"Error response: {response.text[:200]}")
-                
+                results["errors"].append(f"Odds endpoint failed: {response.status_code}")
         except Exception as e:
-            self.log_diagnostic("Parlay-API", f"Exception: {str(e)}")
+            results["errors"].append(f"Odds fetch error: {str(e)}")
+        
+        # Test 3: Try with different bookmaker parameter
+        if results["bookmakers"]:
+            bookmaker_keys = [b["key"] for b in results["bookmakers"]]
+            self.log_diagnostic("Parlay-API", f"Available bookmakers: {bookmaker_keys}")
+        
+        return results
+    
+    def get_player_props(self, sport: str = "basketball_nba", bookmaker: str = None) -> List[Dict]:
+        """Fetch player props with smart bookmaker detection"""
+        props = []
+        sport_key = SPORT_MODELS.get(sport, {}).get("odds_key", sport)
+        
+        # If no bookmaker specified, try common ones
+        bookmakers_to_try = [bookmaker] if bookmaker else ["underdog", "underdog_fantasy", "draftkings", "fanduel", "prizepicks"]
+        
+        for bk in bookmakers_to_try:
+            if bk is None:
+                continue
+                
+            try:
+                url = f"{self.base_url}/sports/{sport_key}/odds"
+                params = {
+                    "apiKey": self.api_key,
+                    "regions": "us",
+                    "bookmakers": bk,
+                    "markets": "player_points,player_rebounds,player_assists,player_threes,player_blocks,player_steals",
+                    "oddsFormat": "decimal"
+                }
+                
+                response = requests.get(url, params=params, timeout=15)
+                self.log_diagnostic("Parlay-API", f"{sport} with '{bk}': {response.status_code}")
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    for event in data:
+                        for bm in event.get("bookmakers", []):
+                            for market in bm.get("markets", []):
+                                market_name = market.get("key", "").replace("player_", "").upper()
+                                for outcome in market.get("outcomes", []):
+                                    props.append({
+                                        "source": f"Parlay-API ({bm.get('key', bk)})",
+                                        "sport": sport,
+                                        "player": outcome.get("description", ""),
+                                        "market": market_name,
+                                        "line": outcome.get("point", 0),
+                                        "odds": outcome.get("price", 2.0),
+                                        "home_team": event.get("home_team"),
+                                        "away_team": event.get("away_team"),
+                                        "commence_time": event.get("commence_time")
+                                    })
+                    
+                    if props:
+                        self.log_diagnostic("Parlay-API", f"Found {len(props)} props with '{bk}'")
+                        break
+                        
+            except Exception as e:
+                self.log_diagnostic("Parlay-API", f"Error with '{bk}': {str(e)}")
         
         return props
     
-    def scan_all_sports(self, sports: List[str] = None, bookmaker: str = "underdog") -> List[Dict]:
+    def scan_all_sports(self, sports: List[str] = None) -> List[Dict]:
         """Scan multiple sports for player props"""
         if sports is None:
             sports = ["NBA", "MLB", "NHL"]
@@ -233,10 +298,17 @@ class ParlayAPIClient:
         self.diagnostic_log = []
         all_props = []
         
+        # First run diagnostics to find available bookmakers
         for sport in sports:
-            self.log_diagnostic("Parlay-API", f"Scanning {sport}...")
-            props = self.get_player_props(sport, bookmaker)
-            all_props.extend(props)
+            diag = self.deep_diagnostics(SPORT_MODELS.get(sport, {}).get("odds_key", sport))
+            if diag["bookmakers"]:
+                # Use the first available bookmaker
+                bookmaker = diag["bookmakers"][0]["key"]
+                self.log_diagnostic("Parlay-API", f"Using bookmaker '{bookmaker}' for {sport}")
+                props = self.get_player_props(sport, bookmaker)
+                all_props.extend(props)
+            else:
+                self.log_diagnostic("Parlay-API", f"No bookmakers found for {sport}")
         
         self.log_diagnostic("Parlay-API", f"Total props: {len(all_props)}")
         return all_props
@@ -463,6 +535,10 @@ class Clarity18Elite:
             "rejected": rejected,
             "diagnostics": self.parlay.get_diagnostics()
         }
+    
+    def run_deep_diagnostics(self, sport: str = "basketball_nba") -> Dict:
+        """Run comprehensive API diagnostics"""
+        return self.parlay.deep_diagnostics(sport)
 
 # =============================================================================
 # DASHBOARD
@@ -471,7 +547,7 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("CLARITY 18.0 ELITE - PARLAY-API INTEGRATED")
+    st.title("CLARITY 18.0 ELITE - PARLAY-API WITH DEEP DIAGNOSTICS")
     st.markdown(f"**Auto-Scan Underdog via Parlay-API | Version: {VERSION}**")
     
     with st.sidebar:
@@ -487,11 +563,11 @@ def run_dashboard():
         for time_str, desc in SCAN_SCHEDULE.items():
             st.caption(f"**{time_str}**: {desc}")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["🔍 AUTO-SCAN", "📊 APPROVED", "🎯 MANUAL", "🩺 DIAGNOSTICS"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔍 AUTO-SCAN", "📊 APPROVED", "🎯 MANUAL", "🩺 DEEP DIAGNOSTICS", "📋 LOGS"])
     
     with tab1:
         st.header("Auto-Scan Parlay-API")
-        st.markdown("*Scans Underdog props via Parlay-API*")
+        st.markdown("*Scans player props via Parlay-API*")
         
         sports = st.multiselect("Sports", ["NBA", "MLB", "NHL"], default=["NBA", "MLB"])
         
@@ -553,19 +629,61 @@ def run_dashboard():
                 st.success(f"UNITS: {result['units']} (${result['kelly_stake']:.2f})")
     
     with tab4:
-        st.header("API Diagnostics")
-        if st.button("🔬 TEST CONNECTION"):
-            with st.spinner("Testing Parlay-API..."):
-                sports_list = engine.parlay.get_sports()
-                if sports_list:
-                    st.success(f"Connected! {len(sports_list)} sports available")
-                    st.json(sports_list[:5])
-                else:
-                    st.error("Connection failed. Check API key.")
+        st.header("🩺 Deep API Diagnostics")
+        st.markdown("*Comprehensive API testing - no terminal needed*")
+        
+        sport_diag = st.selectbox("Sport to Diagnose", ["basketball_nba", "baseball_mlb", "icehockey_nhl", "americanfootball_nfl"])
+        
+        if st.button("🔬 RUN DEEP DIAGNOSTICS", type="primary"):
+            with st.spinner("Running comprehensive API tests..."):
+                diag = engine.run_deep_diagnostics(sport_diag)
                 
-                result = engine.scan_and_approve(["NBA"])
-                for log in result['diagnostics']:
-                    st.text(f"[{log['timestamp']}] {log['source']}: {log['message']}")
+                st.subheader("Connection Status")
+                if diag["api_key_valid"]:
+                    st.success("✅ API Key Valid")
+                else:
+                    st.error("❌ API Key Invalid")
+                
+                if diag["connection"]:
+                    st.success("✅ API Connection Successful")
+                else:
+                    st.error("❌ API Connection Failed")
+                
+                st.subheader("Available Bookmakers")
+                if diag["bookmakers"]:
+                    for b in diag["bookmakers"]:
+                        st.code(f"{b['key']} - {b['title']}")
+                else:
+                    st.warning("No bookmakers found")
+                
+                st.subheader("Available Markets")
+                if diag["markets"]:
+                    for m in diag["markets"][:10]:
+                        st.caption(f"• {m['key']}")
+                else:
+                    st.warning("No markets found")
+                
+                st.subheader("Player Props Available")
+                if diag["player_props_available"]:
+                    st.success("✅ Yes - Player props detected")
+                else:
+                    st.warning("❌ No player props found")
+                
+                if diag["sample_event"]:
+                    st.subheader("Sample Event")
+                    st.json(diag["sample_event"])
+                
+                if diag["errors"]:
+                    st.subheader("Errors")
+                    for err in diag["errors"]:
+                        st.error(err)
+    
+    with tab5:
+        st.header("Diagnostic Logs")
+        if st.button("📋 SHOW LOGS"):
+            result = engine.scan_and_approve(["NBA"])
+            for log in result['diagnostics']:
+                st.text(f"[{log['timestamp']}] {log['source']}: {log['message']}")
 
 if __name__ == "__main__":
     run_dashboard()
