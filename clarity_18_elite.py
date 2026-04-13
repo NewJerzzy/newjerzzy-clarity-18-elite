@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-PARLAY_API_KEY = "YOUR_PARLAY_API_KEY_HERE"  # Replace with your key
+PARLAY_API_KEY = "07e924ee998ffd8a70c27e0b554805a7"
 VERSION = "18.0 Elite (Parlay-API Integrated)"
 BUILD_DATE = "2026-04-13"
 
@@ -148,7 +148,7 @@ class SeasonContextEngine:
         return {"team": team, "fade": fade, "reasons": reasons}
 
 # =============================================================================
-# PARLAY-API CLIENT (NEW - REPLACES ALL SCRAPERS)
+# PARLAY-API CLIENT
 # =============================================================================
 class ParlayAPIClient:
     """Unified client for Parlay-API - The Odds API compatible"""
@@ -224,18 +224,6 @@ class ParlayAPIClient:
             self.log_diagnostic("Parlay-API", f"Exception: {str(e)}")
         
         return props
-    
-    def get_closing_lines(self, sport: str, event_id: str) -> Dict:
-        """Fetch closing lines for backtesting"""
-        try:
-            url = f"{self.base_url}/sports/{sport}/events/{event_id}/closing"
-            params = {"apiKey": self.api_key}
-            response = requests.get(url, params=params, timeout=10)
-            if response.status_code == 200:
-                return response.json()
-        except:
-            pass
-        return {}
     
     def scan_all_sports(self, sports: List[str] = None, bookmaker: str = "underdog") -> List[Dict]:
         """Scan multiple sports for player props"""
@@ -489,7 +477,8 @@ def run_dashboard():
     with st.sidebar:
         st.header("SYSTEM STATUS")
         st.success("Perplexity API LIVE")
-        st.success("Parlay-API ENABLED")
+        st.success("Parlay-API LIVE")
+        st.code(PARLAY_API_KEY[:8] + "..." + PARLAY_API_KEY[-4:])
         st.success("Statcast MLB " + ("LIVE" if STATCAST_AVAILABLE else "UNAVAILABLE"))
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
@@ -570,6 +559,7 @@ def run_dashboard():
                 sports_list = engine.parlay.get_sports()
                 if sports_list:
                     st.success(f"Connected! {len(sports_list)} sports available")
+                    st.json(sports_list[:5])
                 else:
                     st.error("Connection failed. Check API key.")
                 
