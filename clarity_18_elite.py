@@ -15,9 +15,16 @@ import hashlib
 import statistics
 from collections import defaultdict
 import asyncio
-import websockets
 import warnings
 warnings.filterwarnings('ignore')
+
+# Try to import websockets (optional - only needed for real-time streaming)
+try:
+    import websockets
+    WEBSOCKETS_AVAILABLE = True
+except ImportError:
+    WEBSOCKETS_AVAILABLE = False
+    print("⚠️ websockets not installed. Real-time streaming disabled. Run: pip install websockets")
 
 # =============================================================================
 # CONFIGURATION - ALL API KEYS
@@ -25,13 +32,12 @@ warnings.filterwarnings('ignore')
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 BOLTODDS_API_KEY = "9b8b1485-ea53-4288-84f8-a0d118ea923f"
-VERSION = "18.0 Elite (BoltOdds Corrected)"
+VERSION = "18.0 Elite (BoltOdds REST)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
-BOLTODDS_WS_URL = "wss://spro.agency/api"
 BOLTODDS_REST_URL = "https://spro.agency/api"
 
 SCAN_SCHEDULE = {
@@ -150,17 +156,15 @@ class SeasonContextEngine:
         return {"team": team, "fade": fade, "reasons": reasons}
 
 # =============================================================================
-# BOLTODDS CLIENT (CORRECTED - WITH DOCUMENTED ENDPOINTS)
+# BOLTODDS CLIENT (REST ONLY - NO WEBSOCKET REQUIRED)
 # =============================================================================
 class BoltOddsClient:
-    """Corrected BoltOdds client using documented REST and WebSocket endpoints"""
+    """BoltOdds client using REST endpoints - no WebSocket required"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.ws_url = f"{BOLTODDS_WS_URL}?key={api_key}"
         self.rest_url = BOLTODDS_REST_URL
         self.diagnostic_log = []
-        self.props_data = []
     
     def log_diagnostic(self, source: str, message: str, data: Any = None):
         self.diagnostic_log.append({
@@ -214,14 +218,13 @@ class BoltOddsClient:
             self.log_diagnostic("BoltOdds", f"get_games error: {str(e)}")
         return {}
     
-    def scan_sync(self, sports: List[str] = None, sportsbooks: List[str] = None, timeout: int = 30) -> List[Dict]:
-        """Synchronous scan using REST endpoints (more reliable than WebSocket for testing)"""
+    def scan_sync(self, sports: List[str] = None, sportsbooks: List[str] = None) -> List[Dict]:
+        """Synchronous scan using REST endpoints"""
         if sports is None:
             sports = ["NBA"]
         if sportsbooks is None:
             sportsbooks = ["draftkings"]
         
-        self.props_data = []
         self.diagnostic_log = []
         all_props = []
         
@@ -229,19 +232,12 @@ class BoltOddsClient:
             for book in sportsbooks:
                 self.log_diagnostic("BoltOdds", f"Scanning {sport} on {book}...")
                 
-                # Get available markets
                 markets = self.get_markets(sport, book)
-                if not markets:
-                    self.log_diagnostic("BoltOdds", f"No player markets found for {sport}/{book}")
-                    continue
-                
-                # For now, parse what we can from the REST endpoints
                 games = self.get_games()
                 
-                # Parse player props from available data
                 for game_key, game_info in games.items():
                     if game_info.get("sport") == sport:
-                        for market in markets[:10]:  # Limit for testing
+                        for market in markets[:10]:
                             all_props.append({
                                 "source": "BoltOdds",
                                 "sport": sport,
@@ -394,7 +390,7 @@ class Clarity18Elite:
         props = self.boltodds.scan_sync(sports)
         
         approved = []
-        rejected = {"RED_TIER": 0, "LOW_EDGE": 0, "FADE_TEAM": 0}
+        rejected = {"RED_TIER": 0, "LOW_EDGE": 0}
         
         for prop in props[:50]:
             if prop["market"].upper() in RED_TIER_PROPS:
@@ -420,7 +416,6 @@ class Clarity18Elite:
                 "line": prop["line"],
                 "odds": prop["odds"],
                 "sport": prop["sport"],
-                "sportsbook": prop.get("sportsbook", "unknown"),
                 "edge": round(edge * 100, 1),
                 "tier": tier
             })
@@ -439,35 +434,28 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("CLARITY 18.0 ELITE - BOLTODDS CORRECTED")
-    st.markdown(f"**BoltOdds REST + WebSocket | Version: {VERSION}**")
+    st.title("CLARITY 18.0 ELITE - BOLTODDS REST")
+    st.markdown(f"**BoltOdds REST API | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("SYSTEM STATUS")
         st.success("Perplexity API LIVE")
         st.success("BoltOdds API LIVE")
-        st.code(BOLTODDS_API_KEY[:8] + "...")
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["🔍 BOLTODDS SCAN", "📊 APPROVED", "🎯 MANUAL", "🩺 DIAGNOSTICS"])
+    tab1, tab2, tab3 = st.tabs(["🔍 BOLTODDS SCAN", "📊 APPROVED", "🎯 MANUAL"])
     
     with tab1:
         st.header("BoltOdds Player Props Scanner")
-        st.markdown("*Uses documented REST endpoints*")
-        
         sports = st.multiselect("Sports", ["NBA", "MLB", "NHL"], default=["NBA"])
-        sportsbooks = st.multiselect("Sportsbooks", ["draftkings", "fanduel", "betmgm"], default=["draftkings"])
         
         if st.button("🚀 SCAN BOLTODDS", type="primary"):
             with st.spinner("Scanning BoltOdds REST API..."):
                 result = engine.scan_boltodds(sports)
-                
                 st.success(f"Scanned {result['total_scanned']} props")
                 st.metric("Approved", len(result['approved']))
-                
-                rejected_total = sum(result['rejected'].values())
-                st.metric("Rejected", rejected_total)
+                st.metric("Rejected", sum(result['rejected'].values()))
                 
                 with st.expander("Diagnostic Logs"):
                     for log in result['diagnostics']:
@@ -475,23 +463,17 @@ def run_dashboard():
     
     with tab2:
         st.header("CLARITY-Approved Props")
-        st.markdown("*Copy into PrizePicks or Underdog*")
-        
-        if st.button("🔄 REFRESH APPROVED", type="primary"):
-            with st.spinner("Scanning BoltOdds..."):
+        if st.button("🔄 REFRESH", type="primary"):
+            with st.spinner("Scanning..."):
                 result = engine.scan_boltodds(["NBA"])
-                
                 if result['approved']:
                     df = pd.DataFrame(result['approved'])
                     st.dataframe(df)
-                    
-                    st.subheader("Quick Copy")
                     for _, row in df.head(10).iterrows():
-                        st.code(f"{row['player']} - {row['market']} OVER {row['line']} | {row['edge']:.1f}% edge | {row['tier']}")
-                    
+                        st.code(f"{row['player']} - {row['market']} OVER {row['line']} | {row['edge']:.1f}% edge")
                     st.download_button("📥 Download CSV", df.to_csv(index=False), "clarity_approved.csv")
                 else:
-                    st.warning("No approved props found")
+                    st.warning("No approved props")
     
     with tab3:
         st.header("Manual Prop Analyzer")
@@ -509,38 +491,14 @@ def run_dashboard():
         if st.button("RUN ANALYSIS", type="primary"):
             data = [float(x.strip()) for x in data_str.split(",")]
             result = engine.analyze_prop(player, market, line, pick, data, sport, odds)
-            
             st.markdown(f"### {result['signal']}")
             c1, c2, c3 = st.columns(3)
             with c1: st.metric("Projection", f"{result['projection']:.1f}")
             with c2: st.metric("Probability", f"{result['probability']:.1%}")
             with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
             st.metric("Tier", result['tier'])
-            
             if result['units'] > 0:
                 st.success(f"UNITS: {result['units']} (${result['kelly_stake']:.2f})")
-    
-    with tab4:
-        st.header("BoltOdds API Diagnostics")
-        
-        if st.button("🔬 TEST BOLTODDS CONNECTION", type="primary"):
-            with st.spinner("Testing BoltOdds API..."):
-                info = engine.boltodds.get_info()
-                st.subheader("Available Sports")
-                st.json(info.get("sports", [])[:10])
-                
-                st.subheader("Available Sportsbooks")
-                st.json(info.get("sportsbooks", [])[:10])
-                
-                markets = engine.boltodds.get_markets("NBA", "draftkings")
-                st.subheader("NBA DraftKings Player Markets")
-                st.json(markets[:20])
-                
-                games = engine.boltodds.get_games()
-                st.subheader("Available Games (Sample)")
-                game_keys = list(games.keys())[:5]
-                sample_games = {k: games[k] for k in game_keys}
-                st.json(sample_games)
 
 if __name__ == "__main__":
     run_dashboard()
