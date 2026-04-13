@@ -5,3 +5,4 @@ openai
 streamlit
 requests
 pybaseball
+websockets
