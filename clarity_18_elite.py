@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (Sleeper API Integrated)"
+VERSION = "18.0 Elite (Sleeper API Fixed)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -78,10 +78,10 @@ RED_TIER_PROPS = ["PRA", "PR", "PA", "3PTM", "1H", "MILESTONE", "COMBO", "TD",
                   "UNDER 1.5", "UNDER 2.5", "OVER 1.5", "OVER 2.5"]
 
 # =============================================================================
-# SLEEPER API CLIENT (FREE - NO API KEY REQUIRED)
+# SLEEPER API CLIENT (FIXED ENDPOINTS)
 # =============================================================================
 class SleeperAPIClient:
-    """Free Sleeper API client - official, no key required"""
+    """Free Sleeper API client - corrected endpoints"""
     
     def __init__(self):
         self.base_url = SLEEPER_API_BASE
@@ -96,69 +96,87 @@ class SleeperAPIClient:
             "data": str(data)[:500] if data else None
         })
     
-    def get_trending_players(self, sport: str = "nba", limit: int = 100) -> List[Dict]:
-        """Fetch trending players with projections"""
+    def get_all_players(self, sport: str = "nba") -> Dict:
+        """Fetch all players for a sport"""
+        try:
+            url = f"{self.base_url}/players/{sport}"
+            response = requests.get(url, timeout=10)
+            self.log_diagnostic("Sleeper", f"Players endpoint ({sport}): {response.status_code}")
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                self.log_diagnostic("Sleeper", f"Error: {response.text[:200]}")
+                return {}
+        except Exception as e:
+            self.log_diagnostic("Sleeper", f"Exception: {str(e)}")
+            return {}
+    
+    def get_player_projections(self, sport: str = "nba", season: str = "2025") -> List[Dict]:
+        """Fetch player projections/stats"""
         props = []
         
         try:
-            url = f"{self.base_url}/players/{sport}/trending"
-            params = {"limit": limit}
-            response = requests.get(url, params=params, timeout=10)
+            # First get all players
+            players = self.get_all_players(sport)
+            if not players:
+                return props
             
-            self.log_diagnostic("Sleeper", f"{sport} response: {response.status_code}")
+            # Get stats for the season
+            url = f"{self.base_url}/stats/{sport}/{season}"
+            response = requests.get(url, timeout=10)
+            self.log_diagnostic("Sleeper", f"Stats endpoint ({sport}): {response.status_code}")
             
             if response.status_code == 200:
-                players = response.json()
+                stats = response.json()
                 
-                for player in players:
-                    player_id = player.get("player_id")
-                    player_name = f"{player.get('first_name', '')} {player.get('last_name', '')}".strip()
-                    team = player.get("team", "UNKNOWN")
+                # Combine player info with stats
+                for player_id, player_stats in list(stats.items())[:100]:
+                    player_info = players.get(player_id, {})
+                    player_name = f"{player_info.get('first_name', '')} {player_info.get('last_name', '')}".strip()
+                    team = player_info.get('team', 'UNKNOWN')
                     
-                    # Cache player info
-                    self.player_cache[player_id] = {
-                        "name": player_name,
-                        "team": team,
-                        "position": player.get("position", "UNKNOWN")
-                    }
-                    
-                    # Extract projections if available
-                    projections = player.get("projections", {})
-                    if projections:
-                        for stat, value in projections.items():
-                            if stat in ["pts", "reb", "ast", "stl", "blk", "three_pm"]:
-                                market = self._map_stat(stat)
-                                props.append({
-                                    "source": "Sleeper",
-                                    "sport": sport.upper(),
-                                    "player": player_name,
-                                    "team": team,
-                                    "market": market,
-                                    "line": float(value) if value else 0,
-                                    "odds": -110,
-                                    "player_id": player_id
-                                })
+                    if player_name and player_stats:
+                        # Map Sleeper stats to CLARITY markets
+                        if "pts_avg" in player_stats or "pts" in player_stats:
+                            props.append({
+                                "source": "Sleeper",
+                                "sport": sport.upper(),
+                                "player": player_name,
+                                "team": team,
+                                "market": "PTS",
+                                "line": float(player_stats.get("pts_avg", player_stats.get("pts", 0))),
+                                "odds": -110
+                            })
+                        if "reb_avg" in player_stats or "reb" in player_stats:
+                            props.append({
+                                "source": "Sleeper",
+                                "sport": sport.upper(),
+                                "player": player_name,
+                                "team": team,
+                                "market": "REB",
+                                "line": float(player_stats.get("reb_avg", player_stats.get("reb", 0))),
+                                "odds": -110
+                            })
+                        if "ast_avg" in player_stats or "ast" in player_stats:
+                            props.append({
+                                "source": "Sleeper",
+                                "sport": sport.upper(),
+                                "player": player_name,
+                                "team": team,
+                                "market": "AST",
+                                "line": float(player_stats.get("ast_avg", player_stats.get("ast", 0))),
+                                "odds": -110
+                            })
                 
                 self.log_diagnostic("Sleeper", f"Found {len(props)} props for {sport}")
             else:
-                self.log_diagnostic("Sleeper", f"Error: {response.text[:200]}")
+                self.log_diagnostic("Sleeper", f"Stats error: {response.text[:200]}")
                 
         except Exception as e:
             self.log_diagnostic("Sleeper", f"Exception: {str(e)}")
         
         return props
-    
-    def _map_stat(self, stat: str) -> str:
-        """Map Sleeper stat names to CLARITY market names"""
-        mapping = {
-            "pts": "PTS",
-            "reb": "REB",
-            "ast": "AST",
-            "stl": "STL",
-            "blk": "BLK",
-            "three_pm": "THREES"
-        }
-        return mapping.get(stat, stat.upper())
     
     def scan_all_sports(self, sports: List[str] = None) -> List[Dict]:
         """Scan multiple sports for player props"""
@@ -170,7 +188,7 @@ class SleeperAPIClient:
         
         for sport in sports:
             self.log_diagnostic("Sleeper", f"Scanning {sport}...")
-            props = self.get_trending_players(sport)
+            props = self.get_player_projections(sport)
             all_props.extend(props)
         
         self.log_diagnostic("Sleeper", f"Total props: {len(all_props)}")
@@ -358,14 +376,13 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("CLARITY 18.0 ELITE - SLEEPER API INTEGRATED")
-    st.markdown(f"**Free Player Props via Sleeper API | Version: {VERSION}**")
+    st.title("CLARITY 18.0 ELITE - SLEEPER API (FIXED)")
+    st.markdown(f"**Free Player Stats via Sleeper | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("SYSTEM STATUS")
         st.success("Perplexity API LIVE")
         st.success("Sleeper API LIVE (FREE)")
-        st.code("No API key required for Sleeper")
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
     
@@ -373,9 +390,9 @@ def run_dashboard():
     
     with tab1:
         st.header("Auto-Scan Sleeper API")
-        st.markdown("*Free player projections - no API key needed*")
+        st.markdown("*Free player season averages*")
         
-        sports = st.multiselect("Sports", ["nba", "mlb", "nhl"], default=["nba", "mlb"])
+        sports = st.multiselect("Sports", ["nba", "mlb", "nhl"], default=["nba"])
         
         if st.button("🚀 RUN AUTO-SCAN", type="primary"):
             with st.spinner("Scanning Sleeper API..."):
@@ -390,22 +407,16 @@ def run_dashboard():
     
     with tab2:
         st.header("CLARITY-Approved Props")
-        st.markdown("*Copy into PrizePicks or Underdog*")
-        
         if st.button("🔄 REFRESH", type="primary"):
             with st.spinner("Scanning Sleeper..."):
-                result = engine.scan_and_approve(["nba", "mlb"])
+                result = engine.scan_and_approve(["nba"])
                 if result['approved']:
                     df = pd.DataFrame(result['approved'])
                     st.dataframe(df)
-                    
-                    st.subheader("Quick Copy")
                     for _, row in df.head(10).iterrows():
-                        st.code(f"{row['player']} ({row['team']}) - {row['market']} OVER {row['line']} | {row['edge']:.1f}% edge | {row['tier']}")
-                    
-                    st.download_button("📥 Download CSV", df.to_csv(index=False), "clarity_approved.csv")
+                        st.code(f"{row['player']} - {row['market']} OVER {row['line']} | {row['edge']:.1f}% edge")
                 else:
-                    st.warning("No approved props found")
+                    st.warning("No approved props")
     
     with tab3:
         st.header("Manual Prop Analyzer")
