@@ -18,16 +18,17 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # =============================================================================
-# CONFIGURATION - YOUR EXISTING API KEYS
+# CONFIGURATION - ALL API KEYS
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (Odds API Direct)"
+VERSION = "18.0 Elite (Sleeper API Integrated)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
+SLEEPER_API_BASE = "https://api.sleeper.app/v1"
 
 SCAN_SCHEDULE = {
     "10:00": "Initial scan - lines posted",
@@ -46,10 +47,10 @@ except ImportError:
 # SPORT-SPECIFIC DISTRIBUTIONS
 # =============================================================================
 SPORT_MODELS = {
-    "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "odds_key": "basketball_nba", "use_skellam": True},
-    "MLB": {"distribution": "poisson", "variance_factor": 1.08, "odds_key": "baseball_mlb", "use_skellam": True},
-    "NHL": {"distribution": "poisson", "variance_factor": 1.12, "odds_key": "icehockey_nhl", "use_skellam": True},
-    "NFL": {"distribution": "nbinom", "variance_factor": 1.20, "odds_key": "americanfootball_nfl", "use_skellam": True}
+    "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "sleeper_sport": "nba"},
+    "MLB": {"distribution": "poisson", "variance_factor": 1.08, "sleeper_sport": "mlb"},
+    "NHL": {"distribution": "poisson", "variance_factor": 1.12, "sleeper_sport": "nhl"},
+    "NFL": {"distribution": "nbinom", "variance_factor": 1.20, "sleeper_sport": "nfl"}
 }
 
 # =============================================================================
@@ -77,15 +78,15 @@ RED_TIER_PROPS = ["PRA", "PR", "PA", "3PTM", "1H", "MILESTONE", "COMBO", "TD",
                   "UNDER 1.5", "UNDER 2.5", "OVER 1.5", "OVER 2.5"]
 
 # =============================================================================
-# ODDS API CLIENT (USES YOUR EXISTING KEY)
+# SLEEPER API CLIENT (FREE - NO API KEY REQUIRED)
 # =============================================================================
-class OddsAPIClient:
-    """Direct Odds API client - uses your existing unified key"""
+class SleeperAPIClient:
+    """Free Sleeper API client - official, no key required"""
     
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.base_url = ODDS_API_BASE
+    def __init__(self):
+        self.base_url = SLEEPER_API_BASE
         self.diagnostic_log = []
+        self.player_cache = {}
     
     def log_diagnostic(self, source: str, message: str, data: Any = None):
         self.diagnostic_log.append({
@@ -95,65 +96,84 @@ class OddsAPIClient:
             "data": str(data)[:500] if data else None
         })
     
-    def get_player_props(self, sport: str = "basketball_nba") -> List[Dict]:
-        """Fetch player props using your existing Odds API key"""
+    def get_trending_players(self, sport: str = "nba", limit: int = 100) -> List[Dict]:
+        """Fetch trending players with projections"""
         props = []
-        sport_key = SPORT_MODELS.get(sport, {}).get("odds_key", sport)
         
         try:
-            url = f"{self.base_url}/sports/{sport_key}/odds"
-            params = {
-                "apiKey": self.api_key,
-                "regions": "us",
-                "markets": "player_points,player_rebounds,player_assists,player_threes,player_blocks,player_steals",
-                "oddsFormat": "decimal"
-            }
+            url = f"{self.base_url}/players/{sport}/trending"
+            params = {"limit": limit}
+            response = requests.get(url, params=params, timeout=10)
             
-            response = requests.get(url, params=params, timeout=15)
-            self.log_diagnostic("Odds-API", f"{sport} response: {response.status_code}")
+            self.log_diagnostic("Sleeper", f"{sport} response: {response.status_code}")
             
             if response.status_code == 200:
-                data = response.json()
+                players = response.json()
                 
-                for event in data:
-                    for bookmaker in event.get("bookmakers", []):
-                        for market in bookmaker.get("markets", []):
-                            market_name = market.get("key", "").replace("player_", "").upper()
-                            for outcome in market.get("outcomes", []):
+                for player in players:
+                    player_id = player.get("player_id")
+                    player_name = f"{player.get('first_name', '')} {player.get('last_name', '')}".strip()
+                    team = player.get("team", "UNKNOWN")
+                    
+                    # Cache player info
+                    self.player_cache[player_id] = {
+                        "name": player_name,
+                        "team": team,
+                        "position": player.get("position", "UNKNOWN")
+                    }
+                    
+                    # Extract projections if available
+                    projections = player.get("projections", {})
+                    if projections:
+                        for stat, value in projections.items():
+                            if stat in ["pts", "reb", "ast", "stl", "blk", "three_pm"]:
+                                market = self._map_stat(stat)
                                 props.append({
-                                    "source": f"Odds-API ({bookmaker.get('key', 'unknown')})",
-                                    "sport": sport,
-                                    "player": outcome.get("description", ""),
-                                    "market": market_name,
-                                    "line": outcome.get("point", 0),
-                                    "odds": outcome.get("price", 2.0),
-                                    "home_team": event.get("home_team"),
-                                    "away_team": event.get("away_team"),
-                                    "commence_time": event.get("commence_time")
+                                    "source": "Sleeper",
+                                    "sport": sport.upper(),
+                                    "player": player_name,
+                                    "team": team,
+                                    "market": market,
+                                    "line": float(value) if value else 0,
+                                    "odds": -110,
+                                    "player_id": player_id
                                 })
                 
-                self.log_diagnostic("Odds-API", f"Found {len(props)} props")
+                self.log_diagnostic("Sleeper", f"Found {len(props)} props for {sport}")
             else:
-                self.log_diagnostic("Odds-API", f"Error: {response.text[:200]}")
+                self.log_diagnostic("Sleeper", f"Error: {response.text[:200]}")
+                
         except Exception as e:
-            self.log_diagnostic("Odds-API", f"Exception: {str(e)}")
+            self.log_diagnostic("Sleeper", f"Exception: {str(e)}")
         
         return props
+    
+    def _map_stat(self, stat: str) -> str:
+        """Map Sleeper stat names to CLARITY market names"""
+        mapping = {
+            "pts": "PTS",
+            "reb": "REB",
+            "ast": "AST",
+            "stl": "STL",
+            "blk": "BLK",
+            "three_pm": "THREES"
+        }
+        return mapping.get(stat, stat.upper())
     
     def scan_all_sports(self, sports: List[str] = None) -> List[Dict]:
         """Scan multiple sports for player props"""
         if sports is None:
-            sports = ["NBA", "MLB", "NHL"]
+            sports = ["nba", "mlb", "nhl"]
         
         self.diagnostic_log = []
         all_props = []
         
         for sport in sports:
-            self.log_diagnostic("Odds-API", f"Scanning {sport}...")
-            props = self.get_player_props(sport)
+            self.log_diagnostic("Sleeper", f"Scanning {sport}...")
+            props = self.get_trending_players(sport)
             all_props.extend(props)
         
-        self.log_diagnostic("Odds-API", f"Total props: {len(all_props)}")
+        self.log_diagnostic("Sleeper", f"Total props: {len(all_props)}")
         return all_props
     
     def get_diagnostics(self) -> List[Dict]:
@@ -190,7 +210,7 @@ class UnifiedAPIClient:
 class Clarity18Elite:
     def __init__(self):
         self.api = UnifiedAPIClient(UNIFIED_API_KEY)
-        self.odds_api = OddsAPIClient(UNIFIED_API_KEY)
+        self.sleeper = SleeperAPIClient()
         self.sims = 10000
         self.wsem_max = 0.10
         self.dtm_bolt = 0.15
@@ -289,8 +309,8 @@ class Clarity18Elite:
         }
     
     def scan_and_approve(self, sports: List[str] = None) -> Dict:
-        """Scan Odds API and return CLARITY-approved props"""
-        all_props = self.odds_api.scan_all_sports(sports)
+        """Scan Sleeper API and return CLARITY-approved props"""
+        all_props = self.sleeper.scan_all_sports(sports)
         
         approved = []
         rejected = {"RED_TIER": 0, "LOW_EDGE": 0}
@@ -315,6 +335,7 @@ class Clarity18Elite:
             approved.append({
                 "source": prop["source"],
                 "player": prop["player"],
+                "team": prop.get("team", "UNKNOWN"),
                 "market": prop["market"],
                 "line": prop["line"],
                 "odds": prop["odds"],
@@ -327,7 +348,7 @@ class Clarity18Elite:
             "total_scanned": len(all_props),
             "approved": sorted(approved, key=lambda x: x["edge"], reverse=True),
             "rejected": rejected,
-            "diagnostics": self.odds_api.get_diagnostics()
+            "diagnostics": self.sleeper.get_diagnostics()
         }
 
 # =============================================================================
@@ -337,25 +358,27 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("CLARITY 18.0 ELITE - ODDS API DIRECT")
-    st.markdown(f"**Using Your Existing API Key | Version: {VERSION}**")
+    st.title("CLARITY 18.0 ELITE - SLEEPER API INTEGRATED")
+    st.markdown(f"**Free Player Props via Sleeper API | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("SYSTEM STATUS")
         st.success("Perplexity API LIVE")
-        st.success("Odds API LIVE")
-        st.code(UNIFIED_API_KEY[:8] + "..." + UNIFIED_API_KEY[-4:])
+        st.success("Sleeper API LIVE (FREE)")
+        st.code("No API key required for Sleeper")
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
     
     tab1, tab2, tab3 = st.tabs(["🔍 AUTO-SCAN", "📊 APPROVED", "🎯 MANUAL"])
     
     with tab1:
-        st.header("Auto-Scan Odds API")
-        sports = st.multiselect("Sports", ["NBA", "MLB", "NHL"], default=["NBA", "MLB"])
+        st.header("Auto-Scan Sleeper API")
+        st.markdown("*Free player projections - no API key needed*")
+        
+        sports = st.multiselect("Sports", ["nba", "mlb", "nhl"], default=["nba", "mlb"])
         
         if st.button("🚀 RUN AUTO-SCAN", type="primary"):
-            with st.spinner("Scanning Odds API..."):
+            with st.spinner("Scanning Sleeper API..."):
                 result = engine.scan_and_approve(sports)
                 st.success(f"Scanned {result['total_scanned']} props")
                 st.metric("Approved", len(result['approved']))
@@ -367,17 +390,22 @@ def run_dashboard():
     
     with tab2:
         st.header("CLARITY-Approved Props")
+        st.markdown("*Copy into PrizePicks or Underdog*")
+        
         if st.button("🔄 REFRESH", type="primary"):
-            with st.spinner("Scanning..."):
-                result = engine.scan_and_approve(["NBA", "MLB"])
+            with st.spinner("Scanning Sleeper..."):
+                result = engine.scan_and_approve(["nba", "mlb"])
                 if result['approved']:
                     df = pd.DataFrame(result['approved'])
                     st.dataframe(df)
+                    
+                    st.subheader("Quick Copy")
                     for _, row in df.head(10).iterrows():
-                        st.code(f"{row['player']} - {row['market']} OVER {row['line']} ({row['edge']:.1f}% edge)")
+                        st.code(f"{row['player']} ({row['team']}) - {row['market']} OVER {row['line']} | {row['edge']:.1f}% edge | {row['tier']}")
+                    
                     st.download_button("📥 Download CSV", df.to_csv(index=False), "clarity_approved.csv")
                 else:
-                    st.warning("No approved props")
+                    st.warning("No approved props found")
     
     with tab3:
         st.header("Manual Prop Analyzer")
