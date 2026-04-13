@@ -18,18 +18,16 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # =============================================================================
-# CONFIGURATION - ALL API KEYS
+# CONFIGURATION - YOUR EXISTING API KEYS
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-PARLAY_API_KEY = "07e924ee998ffd8a70c27e0b554805a7"
-VERSION = "18.0 Elite (Fixed Markets Parameter)"
+VERSION = "18.0 Elite (Odds API Direct)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
-PARLAY_API_BASE = "https://parlay-api.com/v1"
 
 SCAN_SCHEDULE = {
     "10:00": "Initial scan - lines posted",
@@ -79,83 +77,14 @@ RED_TIER_PROPS = ["PRA", "PR", "PA", "3PTM", "1H", "MILESTONE", "COMBO", "TD",
                   "UNDER 1.5", "UNDER 2.5", "OVER 1.5", "OVER 2.5"]
 
 # =============================================================================
-# SEASON CONTEXT ENGINE
+# ODDS API CLIENT (USES YOUR EXISTING KEY)
 # =============================================================================
-class SeasonContextEngine:
-    def __init__(self, api_client):
-        self.api = api_client
-        self.cache = {}
-        self.cache_ttl = 3600
-        
-        self.season_calendars = {
-            "NBA": {"regular_season_end": "2026-04-13", "playoffs_start": "2026-04-19"},
-            "MLB": {"regular_season_end": "2026-09-28", "playoffs_start": "2026-10-03"},
-            "NHL": {"regular_season_end": "2026-04-17", "playoffs_start": "2026-04-20"},
-            "NFL": {"regular_season_end": "2026-01-04", "playoffs_start": "2026-01-10"}
-        }
-        
-        self.motivation_multipliers = {
-            "MUST_WIN": 1.12, "PLAYOFF_SEEDING": 1.08, "NEUTRAL": 1.00,
-            "LOCKED_SEED": 0.92, "ELIMINATED": 0.85, "TANKING": 0.78, "PLAYOFFS": 1.05
-        }
-    
-    def get_season_phase(self, sport: str) -> dict:
-        date_obj = datetime.now()
-        calendar = self.season_calendars.get(sport, {})
-        
-        if not calendar:
-            return {"phase": "UNKNOWN", "is_playoffs": False}
-        
-        if "playoffs_start" in calendar:
-            playoffs_start = datetime.strptime(calendar["playoffs_start"], "%Y-%m-%d")
-            if date_obj >= playoffs_start:
-                return {"phase": "PLAYOFFS", "is_playoffs": True}
-        
-        season_end = datetime.strptime(calendar.get("regular_season_end", "2026-12-31"), "%Y-%m-%d")
-        days_remaining = (season_end - date_obj).days
-        
-        if days_remaining <= 0:
-            phase = "FINAL_DAY"
-        elif days_remaining <= 7:
-            phase = "FINAL_WEEK"
-        else:
-            phase = "REGULAR_SEASON"
-        
-        return {"phase": phase, "is_playoffs": False, "days_remaining": days_remaining,
-                "is_final_week": days_remaining <= 7, "is_final_day": days_remaining == 0}
-    
-    def should_fade_team(self, sport: str, team: str) -> dict:
-        phase = self.get_season_phase(sport)
-        prompt = f"Is {team} eliminated from {sport} playoffs or locked into their seed? Answer briefly."
-        response = self.api.perplexity_call(prompt)
-        
-        eliminated = "eliminated" in response.lower()
-        locked = "locked" in response.lower()
-        tanking = "tanking" in response.lower()
-        
-        fade = False
-        reasons = []
-        if tanking:
-            fade = True
-            reasons.append("Team tanking")
-        elif eliminated and not phase["is_playoffs"]:
-            fade = True
-            reasons.append("Team eliminated")
-        elif locked and phase["is_final_week"]:
-            fade = True
-            reasons.append("Seed locked - resting starters")
-        
-        return {"team": team, "fade": fade, "reasons": reasons}
-
-# =============================================================================
-# PARLAY-API CLIENT WITH FIXED MARKETS PARAMETER
-# =============================================================================
-class ParlayAPIClient:
-    """Unified client for Parlay-API with explicit markets parameter"""
+class OddsAPIClient:
+    """Direct Odds API client - uses your existing unified key"""
     
     def __init__(self, api_key: str):
         self.api_key = api_key
-        self.base_url = PARLAY_API_BASE
+        self.base_url = ODDS_API_BASE
         self.diagnostic_log = []
     
     def log_diagnostic(self, source: str, message: str, data: Any = None):
@@ -163,79 +92,11 @@ class ParlayAPIClient:
             "timestamp": datetime.now().isoformat(),
             "source": source,
             "message": message,
-            "data": str(data)[:1000] if data else None
+            "data": str(data)[:500] if data else None
         })
     
-    def deep_diagnostics(self, sport: str = "basketball_nba") -> Dict:
-        """Run comprehensive API diagnostics"""
-        results = {
-            "sport": sport,
-            "api_key_valid": False,
-            "connection": False,
-            "bookmakers": [],
-            "markets": [],
-            "sample_event": None,
-            "player_props_available": False,
-            "raw_response": None,
-            "errors": []
-        }
-        
-        # Test connection
-        try:
-            url = f"{self.base_url}/sports"
-            response = requests.get(url, params={"apiKey": self.api_key}, timeout=10)
-            results["connection"] = response.status_code == 200
-            results["api_key_valid"] = response.status_code == 200
-        except Exception as e:
-            results["errors"].append(f"Connection error: {str(e)}")
-            return results
-        
-        # Test with EXPLICIT markets parameter
-        try:
-            url = f"{self.base_url}/sports/{sport}/odds"
-            params = {
-                "apiKey": self.api_key,
-                "regions": "us",
-                "markets": "player_points,player_rebounds,player_assists,player_threes,player_blocks,player_steals",
-                "oddsFormat": "decimal"
-            }
-            response = requests.get(url, params=params, timeout=10)
-            
-            if response.status_code == 200:
-                data = response.json()
-                results["raw_response"] = data[:2] if data else []
-                
-                if data and len(data) > 0:
-                    results["sample_event"] = {
-                        "home": data[0].get("home_team"),
-                        "away": data[0].get("away_team"),
-                        "commence_time": data[0].get("commence_time")
-                    }
-                    
-                    for bookmaker in data[0].get("bookmakers", []):
-                        results["bookmakers"].append({
-                            "key": bookmaker.get("key"),
-                            "title": bookmaker.get("title")
-                        })
-                        
-                        for market in bookmaker.get("markets", []):
-                            market_key = market.get("key")
-                            if market_key not in [m["key"] for m in results["markets"]]:
-                                results["markets"].append({
-                                    "key": market_key,
-                                    "outcomes_count": len(market.get("outcomes", []))
-                                })
-                                if "player" in market_key:
-                                    results["player_props_available"] = True
-            else:
-                results["errors"].append(f"Odds endpoint failed: {response.status_code}")
-        except Exception as e:
-            results["errors"].append(f"Odds fetch error: {str(e)}")
-        
-        return results
-    
     def get_player_props(self, sport: str = "basketball_nba") -> List[Dict]:
-        """Fetch player props with explicit markets parameter"""
+        """Fetch player props using your existing Odds API key"""
         props = []
         sport_key = SPORT_MODELS.get(sport, {}).get("odds_key", sport)
         
@@ -249,7 +110,7 @@ class ParlayAPIClient:
             }
             
             response = requests.get(url, params=params, timeout=15)
-            self.log_diagnostic("Parlay-API", f"{sport} response: {response.status_code}")
+            self.log_diagnostic("Odds-API", f"{sport} response: {response.status_code}")
             
             if response.status_code == 200:
                 data = response.json()
@@ -260,7 +121,7 @@ class ParlayAPIClient:
                             market_name = market.get("key", "").replace("player_", "").upper()
                             for outcome in market.get("outcomes", []):
                                 props.append({
-                                    "source": f"Parlay-API ({bookmaker.get('key', 'unknown')})",
+                                    "source": f"Odds-API ({bookmaker.get('key', 'unknown')})",
                                     "sport": sport,
                                     "player": outcome.get("description", ""),
                                     "market": market_name,
@@ -271,9 +132,11 @@ class ParlayAPIClient:
                                     "commence_time": event.get("commence_time")
                                 })
                 
-                self.log_diagnostic("Parlay-API", f"Found {len(props)} props")
+                self.log_diagnostic("Odds-API", f"Found {len(props)} props")
+            else:
+                self.log_diagnostic("Odds-API", f"Error: {response.text[:200]}")
         except Exception as e:
-            self.log_diagnostic("Parlay-API", f"Error: {str(e)}")
+            self.log_diagnostic("Odds-API", f"Exception: {str(e)}")
         
         return props
     
@@ -286,59 +149,18 @@ class ParlayAPIClient:
         all_props = []
         
         for sport in sports:
-            self.log_diagnostic("Parlay-API", f"Scanning {sport}...")
+            self.log_diagnostic("Odds-API", f"Scanning {sport}...")
             props = self.get_player_props(sport)
             all_props.extend(props)
         
-        self.log_diagnostic("Parlay-API", f"Total props: {len(all_props)}")
+        self.log_diagnostic("Odds-API", f"Total props: {len(all_props)}")
         return all_props
     
     def get_diagnostics(self) -> List[Dict]:
         return self.diagnostic_log
 
 # =============================================================================
-# STATCAST MLB ENHANCEMENT
-# =============================================================================
-class StatcastMLBEnhancer:
-    def __init__(self):
-        self.cache = {}
-        self.available = STATCAST_AVAILABLE
-        self.league_avg = {'barrel_pct': 0.078, 'hard_hit_pct': 0.352, 'avg_exit_velocity': 88.4,
-                           'xba': 0.243, 'xslg': 0.405}
-    
-    def get_statcast_metrics(self, player_name: str, season: int = 2026) -> dict:
-        if not self.available:
-            return self._default_metrics()
-        
-        try:
-            last_name = player_name.split()[-1]
-            player_ids = playerid_lookup(last_name)
-            if player_ids.empty:
-                return self._default_metrics()
-            
-            player_id = player_ids['key_mlbam'].iloc[0]
-            data = statcast_batter(f"{season}-03-01", f"{season}-10-15", player_id)
-            
-            if data.empty:
-                return self._default_metrics()
-            
-            return {
-                'avg_exit_velocity': data['launch_speed'].mean() if 'launch_speed' in data.columns else 88.4,
-                'barrel_pct': (data['barrel'] == 1).mean() if 'barrel' in data.columns else 0.078,
-                'hard_hit_pct': (data['launch_speed'] >= 95).mean() if 'launch_speed' in data.columns else 0.352,
-                'xba': data['estimated_ba_using_speedangle'].mean() if 'estimated_ba_using_speedangle' in data.columns else 0.243,
-                'xslg': data['estimated_slg_using_speedangle'].mean() if 'estimated_slg_using_speedangle' in data.columns else 0.405,
-                'sample_size': len(data)
-            }
-        except:
-            return self._default_metrics()
-    
-    def _default_metrics(self) -> dict:
-        return {'avg_exit_velocity': 88.4, 'barrel_pct': 0.078, 'hard_hit_pct': 0.352,
-                'xba': 0.243, 'xslg': 0.405, 'sample_size': 0}
-
-# =============================================================================
-# UNIFIED API CLIENT
+# UNIFIED API CLIENT (Perplexity)
 # =============================================================================
 class UnifiedAPIClient:
     def __init__(self, api_key: str):
@@ -368,9 +190,7 @@ class UnifiedAPIClient:
 class Clarity18Elite:
     def __init__(self):
         self.api = UnifiedAPIClient(UNIFIED_API_KEY)
-        self.parlay = ParlayAPIClient(PARLAY_API_KEY)
-        self.season_context = SeasonContextEngine(self.api)
-        self.statcast = StatcastMLBEnhancer()
+        self.odds_api = OddsAPIClient(UNIFIED_API_KEY)
         self.sims = 10000
         self.wsem_max = 0.10
         self.dtm_bolt = 0.15
@@ -436,7 +256,7 @@ class Clarity18Elite:
         return {"signal": "PASS", "units": 0}
     
     def analyze_prop(self, player: str, market: str, line: float, pick: str,
-                     data: List[float], sport: str, odds: int, team: str = None) -> dict:
+                     data: List[float], sport: str, odds: int) -> dict:
         
         api_status = self.api.get_injury_status(player, sport)
         l42_pass, l42_msg = self.l42_check(market, line, np.mean(data))
@@ -469,22 +289,16 @@ class Clarity18Elite:
         }
     
     def scan_and_approve(self, sports: List[str] = None) -> Dict:
-        """Scan Parlay-API and return CLARITY-approved props"""
-        all_props = self.parlay.scan_all_sports(sports)
+        """Scan Odds API and return CLARITY-approved props"""
+        all_props = self.odds_api.scan_all_sports(sports)
         
         approved = []
-        rejected = {"RED_TIER": 0, "FADE_TEAM": 0, "LOW_EDGE": 0}
+        rejected = {"RED_TIER": 0, "LOW_EDGE": 0}
         
         for prop in all_props[:100]:
             if prop["market"].upper() in RED_TIER_PROPS:
                 rejected["RED_TIER"] += 1
                 continue
-            
-            if prop.get("home_team"):
-                fade_check = self.season_context.should_fade_team(prop["sport"], prop["home_team"])
-                if fade_check["fade"]:
-                    rejected["FADE_TEAM"] += 1
-                    continue
             
             mock_data = [prop["line"]] * 10
             pick = "OVER"
@@ -513,12 +327,8 @@ class Clarity18Elite:
             "total_scanned": len(all_props),
             "approved": sorted(approved, key=lambda x: x["edge"], reverse=True),
             "rejected": rejected,
-            "diagnostics": self.parlay.get_diagnostics()
+            "diagnostics": self.odds_api.get_diagnostics()
         }
-    
-    def run_deep_diagnostics(self, sport: str = "basketball_nba") -> Dict:
-        """Run comprehensive API diagnostics"""
-        return self.parlay.deep_diagnostics(sport)
 
 # =============================================================================
 # DASHBOARD
@@ -527,29 +337,33 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("CLARITY 18.0 ELITE - FIXED MARKETS PARAMETER")
-    st.markdown(f"**Explicit markets request | Version: {VERSION}**")
+    st.title("CLARITY 18.0 ELITE - ODDS API DIRECT")
+    st.markdown(f"**Using Your Existing API Key | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("SYSTEM STATUS")
         st.success("Perplexity API LIVE")
-        st.success("Parlay-API LIVE")
-        st.code(PARLAY_API_KEY[:8] + "..." + PARLAY_API_KEY[-4:])
+        st.success("Odds API LIVE")
+        st.code(UNIFIED_API_KEY[:8] + "..." + UNIFIED_API_KEY[-4:])
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["🔍 AUTO-SCAN", "📊 APPROVED", "🎯 MANUAL", "🩺 DEEP DIAGNOSTICS"])
+    tab1, tab2, tab3 = st.tabs(["🔍 AUTO-SCAN", "📊 APPROVED", "🎯 MANUAL"])
     
     with tab1:
-        st.header("Auto-Scan Parlay-API")
+        st.header("Auto-Scan Odds API")
         sports = st.multiselect("Sports", ["NBA", "MLB", "NHL"], default=["NBA", "MLB"])
         
         if st.button("🚀 RUN AUTO-SCAN", type="primary"):
-            with st.spinner("Scanning Parlay-API..."):
+            with st.spinner("Scanning Odds API..."):
                 result = engine.scan_and_approve(sports)
                 st.success(f"Scanned {result['total_scanned']} props")
                 st.metric("Approved", len(result['approved']))
                 st.metric("Rejected", sum(result['rejected'].values()))
+                
+                with st.expander("Diagnostic Logs"):
+                    for log in result['diagnostics']:
+                        st.text(f"[{log['timestamp']}] {log['source']}: {log['message']}")
     
     with tab2:
         st.header("CLARITY-Approved Props")
@@ -589,40 +403,6 @@ def run_dashboard():
             st.metric("Tier", result['tier'])
             if result['units'] > 0:
                 st.success(f"UNITS: {result['units']} (${result['kelly_stake']:.2f})")
-    
-    with tab4:
-        st.header("🩺 Deep API Diagnostics")
-        sport_diag = st.selectbox("Sport to Diagnose", ["basketball_nba", "baseball_mlb", "icehockey_nhl"])
-        
-        if st.button("🔬 RUN DEEP DIAGNOSTICS", type="primary"):
-            with st.spinner("Running comprehensive API tests..."):
-                diag = engine.run_deep_diagnostics(sport_diag)
-                
-                if diag["api_key_valid"]:
-                    st.success("✅ API Key Valid")
-                else:
-                    st.error("❌ API Key Invalid")
-                
-                st.subheader("Available Bookmakers")
-                for b in diag["bookmakers"]:
-                    st.code(f"{b['key']} - {b['title']}")
-                
-                st.subheader("Available Markets")
-                if diag["markets"]:
-                    for m in diag["markets"]:
-                        st.caption(f"• {m['key']} ({m['outcomes_count']} outcomes)")
-                else:
-                    st.warning("No markets found - try a different sport")
-                
-                st.subheader("Player Props Available")
-                if diag["player_props_available"]:
-                    st.success("✅ Yes - Player props detected!")
-                else:
-                    st.warning("❌ No player props found")
-                
-                if diag["raw_response"]:
-                    st.subheader("Raw API Response Sample")
-                    st.json(diag["raw_response"])
 
 if __name__ == "__main__":
     run_dashboard()
