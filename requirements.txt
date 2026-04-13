@@ -1,7 +1,0 @@
-numpy
-pandas
-scipy
-openai
-streamlit
-requests
-pybaseball
