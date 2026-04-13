@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (Auto-Settlement Added)"
+VERSION = "18.0 Elite (Auto-Settlement + HR Fixed)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -46,9 +46,10 @@ SPORT_MODELS = {
 }
 
 # =============================================================================
-# STAT CONFIG (L42)
+# STAT CONFIG (L42) - HR ADDED
 # =============================================================================
 STAT_CONFIG = {
+    # NBA
     "REB": {"tier": "LOW", "buffer": 1.0, "reject": False},
     "AST": {"tier": "LOW", "buffer": 1.5, "reject": False},
     "PTS": {"tier": "MED", "buffer": 1.5, "reject": False},
@@ -59,11 +60,16 @@ STAT_CONFIG = {
     "PR": {"tier": "HIGH", "buffer": 2.0, "reject": True},
     "PA": {"tier": "HIGH", "buffer": 2.0, "reject": True},
     "3PTM": {"tier": "HIGH", "buffer": 0.5, "reject": True},
+    # MLB
     "OUTS": {"tier": "LOW", "buffer": 0.0, "reject": False},
     "KS": {"tier": "MED", "buffer": 1.5, "reject": False},
-    "SOG": {"tier": "LOW", "buffer": 0.5, "reject": False},
     "HITS": {"tier": "MED", "buffer": 0.5, "reject": False},
     "TB": {"tier": "MED", "buffer": 1.0, "reject": False},
+    "HR": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "ER": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "HITS_ALLOWED": {"tier": "LOW", "buffer": 0.5, "reject": False},
+    # NHL
+    "SOG": {"tier": "LOW", "buffer": 0.5, "reject": False},
 }
 
 RED_TIER_PROPS = ["PRA", "PR", "PA", "3PTM", "1H", "MILESTONE", "COMBO", "TD", 
@@ -261,7 +267,7 @@ class UnifiedAPIClient:
         return float(match.group(1)) if match else None
 
 # =============================================================================
-# AUTO-SETTLEMENT ENGINE (NEW)
+# AUTO-SETTLEMENT ENGINE
 # =============================================================================
 class AutoSettlementEngine:
     """Automatically settle pending bets using Perplexity API"""
@@ -369,7 +375,7 @@ class AutoSettlementEngine:
         for bet in pending:
             result = self.settle_bet(bet)
             results.append(result)
-            time.sleep(0.5)  # Rate limit protection
+            time.sleep(0.5)
         
         return results
     
@@ -549,15 +555,15 @@ def run_dashboard():
         
         c1, c2 = st.columns(2)
         with c1:
-            player = st.text_input("Player", "Jalen Johnson")
+            player = st.text_input("Player", "Aaron Judge")
             market = st.selectbox("Market", list(STAT_CONFIG.keys()))
-            line = st.number_input("Line", 0.5, 50.0, 8.5)
+            line = st.number_input("Line", 0.5, 50.0, 0.5)
             pick = st.selectbox("Pick", ["OVER", "UNDER"])
-            sport = st.selectbox("Sport", ["NBA", "MLB", "NHL", "NFL"])
+            sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"])
         with c2:
-            data_str = st.text_area("Recent Games (comma separated)", "9.2, 10.1, 8.5, 11.3, 9.8, 10.5, 8.9")
+            data_str = st.text_area("Recent Games (comma separated)", "0, 1, 0, 2, 0, 1")
             odds = st.number_input("Odds (American)", -500, 500, -110)
-            team = st.text_input("Team (Optional)", "Hawks")
+            team = st.text_input("Team (Optional)", "Yankees")
             log_bet = st.checkbox("📝 Log this bet for auto-settlement", value=True)
         
         if st.button("🚀 RUN ANALYSIS", type="primary"):
@@ -659,9 +665,9 @@ def run_dashboard():
         c1, c2 = st.columns(2)
         with c1:
             sport_lu = st.selectbox("Sport", ["NBA", "MLB", "NHL", "NFL"], key="sport_lu")
-            team_lu = st.text_input("Team", "Hawks")
+            team_lu = st.text_input("Team", "Yankees")
         with c2:
-            player_lu = st.text_input("Player", "Trae Young")
+            player_lu = st.text_input("Player", "Aaron Judge")
         
         if st.button("🔍 CHECK LINEUP"):
             with st.spinner("Checking lineup..."):
