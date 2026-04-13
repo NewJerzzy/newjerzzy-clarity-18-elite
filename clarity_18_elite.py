@@ -597,4 +597,4 @@ engine = Clarity18Elite()
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE - GAME ODDS WITH APPROVAL")
-    st.markdown(f"**Smart Analysis | Bet Tracker | Parlay Builder
+    st.markdown(f"**Smart Analysis | Bet Tracker | Parlay Builder | Game Odds | Version: {VERSION}**")
