@@ -22,20 +22,12 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (Sleeper API Fixed)"
+VERSION = "18.0 Elite (Lean - Reliable Only)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
-SLEEPER_API_BASE = "https://api.sleeper.app/v1"
-
-SCAN_SCHEDULE = {
-    "10:00": "Initial scan - lines posted",
-    "12:00": "Lineup confirmation scan",
-    "15:00": "Steam detection scan",
-    "17:30": "Final pre-lock scan"
-}
 
 try:
     from pybaseball import statcast_batter, playerid_lookup
@@ -47,10 +39,10 @@ except ImportError:
 # SPORT-SPECIFIC DISTRIBUTIONS
 # =============================================================================
 SPORT_MODELS = {
-    "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "sleeper_sport": "nba"},
-    "MLB": {"distribution": "poisson", "variance_factor": 1.08, "sleeper_sport": "mlb"},
-    "NHL": {"distribution": "poisson", "variance_factor": 1.12, "sleeper_sport": "nhl"},
-    "NFL": {"distribution": "nbinom", "variance_factor": 1.20, "sleeper_sport": "nfl"}
+    "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "odds_key": "basketball_nba", "use_skellam": True},
+    "MLB": {"distribution": "poisson", "variance_factor": 1.08, "odds_key": "baseball_mlb", "use_skellam": True},
+    "NHL": {"distribution": "poisson", "variance_factor": 1.12, "odds_key": "icehockey_nhl", "use_skellam": True},
+    "NFL": {"distribution": "nbinom", "variance_factor": 1.20, "odds_key": "americanfootball_nfl", "use_skellam": True}
 }
 
 # =============================================================================
@@ -78,127 +70,167 @@ RED_TIER_PROPS = ["PRA", "PR", "PA", "3PTM", "1H", "MILESTONE", "COMBO", "TD",
                   "UNDER 1.5", "UNDER 2.5", "OVER 1.5", "OVER 2.5"]
 
 # =============================================================================
-# SLEEPER API CLIENT (FIXED ENDPOINTS)
+# SEASON CONTEXT ENGINE
 # =============================================================================
-class SleeperAPIClient:
-    """Free Sleeper API client - corrected endpoints"""
-    
-    def __init__(self):
-        self.base_url = SLEEPER_API_BASE
-        self.diagnostic_log = []
-        self.player_cache = {}
-    
-    def log_diagnostic(self, source: str, message: str, data: Any = None):
-        self.diagnostic_log.append({
-            "timestamp": datetime.now().isoformat(),
-            "source": source,
-            "message": message,
-            "data": str(data)[:500] if data else None
-        })
-    
-    def get_all_players(self, sport: str = "nba") -> Dict:
-        """Fetch all players for a sport"""
-        try:
-            url = f"{self.base_url}/players/{sport}"
-            response = requests.get(url, timeout=10)
-            self.log_diagnostic("Sleeper", f"Players endpoint ({sport}): {response.status_code}")
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                self.log_diagnostic("Sleeper", f"Error: {response.text[:200]}")
-                return {}
-        except Exception as e:
-            self.log_diagnostic("Sleeper", f"Exception: {str(e)}")
-            return {}
-    
-    def get_player_projections(self, sport: str = "nba", season: str = "2025") -> List[Dict]:
-        """Fetch player projections/stats"""
-        props = []
+class SeasonContextEngine:
+    def __init__(self, api_client):
+        self.api = api_client
+        self.cache = {}
+        self.cache_ttl = 3600
         
-        try:
-            # First get all players
-            players = self.get_all_players(sport)
-            if not players:
-                return props
-            
-            # Get stats for the season
-            url = f"{self.base_url}/stats/{sport}/{season}"
-            response = requests.get(url, timeout=10)
-            self.log_diagnostic("Sleeper", f"Stats endpoint ({sport}): {response.status_code}")
-            
-            if response.status_code == 200:
-                stats = response.json()
-                
-                # Combine player info with stats
-                for player_id, player_stats in list(stats.items())[:100]:
-                    player_info = players.get(player_id, {})
-                    player_name = f"{player_info.get('first_name', '')} {player_info.get('last_name', '')}".strip()
-                    team = player_info.get('team', 'UNKNOWN')
-                    
-                    if player_name and player_stats:
-                        # Map Sleeper stats to CLARITY markets
-                        if "pts_avg" in player_stats or "pts" in player_stats:
-                            props.append({
-                                "source": "Sleeper",
-                                "sport": sport.upper(),
-                                "player": player_name,
-                                "team": team,
-                                "market": "PTS",
-                                "line": float(player_stats.get("pts_avg", player_stats.get("pts", 0))),
-                                "odds": -110
-                            })
-                        if "reb_avg" in player_stats or "reb" in player_stats:
-                            props.append({
-                                "source": "Sleeper",
-                                "sport": sport.upper(),
-                                "player": player_name,
-                                "team": team,
-                                "market": "REB",
-                                "line": float(player_stats.get("reb_avg", player_stats.get("reb", 0))),
-                                "odds": -110
-                            })
-                        if "ast_avg" in player_stats or "ast" in player_stats:
-                            props.append({
-                                "source": "Sleeper",
-                                "sport": sport.upper(),
-                                "player": player_name,
-                                "team": team,
-                                "market": "AST",
-                                "line": float(player_stats.get("ast_avg", player_stats.get("ast", 0))),
-                                "odds": -110
-                            })
-                
-                self.log_diagnostic("Sleeper", f"Found {len(props)} props for {sport}")
-            else:
-                self.log_diagnostic("Sleeper", f"Stats error: {response.text[:200]}")
-                
-        except Exception as e:
-            self.log_diagnostic("Sleeper", f"Exception: {str(e)}")
+        self.season_calendars = {
+            "NBA": {"regular_season_end": "2026-04-13", "playoffs_start": "2026-04-19"},
+            "MLB": {"regular_season_end": "2026-09-28", "playoffs_start": "2026-10-03"},
+            "NHL": {"regular_season_end": "2026-04-17", "playoffs_start": "2026-04-20"},
+            "NFL": {"regular_season_end": "2026-01-04", "playoffs_start": "2026-01-10"}
+        }
         
-        return props
+        self.motivation_multipliers = {
+            "MUST_WIN": 1.12, "PLAYOFF_SEEDING": 1.08, "NEUTRAL": 1.00,
+            "LOCKED_SEED": 0.92, "ELIMINATED": 0.85, "TANKING": 0.78, "PLAYOFFS": 1.05
+        }
     
-    def scan_all_sports(self, sports: List[str] = None) -> List[Dict]:
-        """Scan multiple sports for player props"""
-        if sports is None:
-            sports = ["nba", "mlb", "nhl"]
+    def get_season_phase(self, sport: str) -> dict:
+        date_obj = datetime.now()
+        calendar = self.season_calendars.get(sport, {})
         
-        self.diagnostic_log = []
-        all_props = []
+        if not calendar:
+            return {"phase": "UNKNOWN", "is_playoffs": False}
         
-        for sport in sports:
-            self.log_diagnostic("Sleeper", f"Scanning {sport}...")
-            props = self.get_player_projections(sport)
-            all_props.extend(props)
+        if "playoffs_start" in calendar:
+            playoffs_start = datetime.strptime(calendar["playoffs_start"], "%Y-%m-%d")
+            if date_obj >= playoffs_start:
+                return {"phase": "PLAYOFFS", "is_playoffs": True}
         
-        self.log_diagnostic("Sleeper", f"Total props: {len(all_props)}")
-        return all_props
+        season_end = datetime.strptime(calendar.get("regular_season_end", "2026-12-31"), "%Y-%m-%d")
+        days_remaining = (season_end - date_obj).days
+        
+        if days_remaining <= 0:
+            phase = "FINAL_DAY"
+        elif days_remaining <= 7:
+            phase = "FINAL_WEEK"
+        else:
+            phase = "REGULAR_SEASON"
+        
+        return {"phase": phase, "is_playoffs": False, "days_remaining": days_remaining,
+                "is_final_week": days_remaining <= 7, "is_final_day": days_remaining == 0}
     
-    def get_diagnostics(self) -> List[Dict]:
-        return self.diagnostic_log
+    def should_fade_team(self, sport: str, team: str) -> dict:
+        phase = self.get_season_phase(sport)
+        prompt = f"Is {team} eliminated from {sport} playoffs or locked into their seed? Answer briefly."
+        response = self.api.perplexity_call(prompt)
+        
+        eliminated = "eliminated" in response.lower()
+        locked = "locked" in response.lower()
+        tanking = "tanking" in response.lower()
+        
+        fade = False
+        reasons = []
+        if tanking:
+            fade = True
+            reasons.append("Team tanking")
+        elif eliminated and not phase["is_playoffs"]:
+            fade = True
+            reasons.append("Team eliminated")
+        elif locked and phase["is_final_week"]:
+            fade = True
+            reasons.append("Seed locked - resting starters")
+        
+        return {"team": team, "fade": fade, "reasons": reasons}
 
 # =============================================================================
-# UNIFIED API CLIENT (Perplexity)
+# API-SPORTS CLIENT (Lineups)
+# =============================================================================
+class APISportsClient:
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.headers = {"x-apisports-key": api_key}
+        self.sport_map = {"NBA": "basketball", "MLB": "baseball", "NHL": "hockey", "NFL": "american-football"}
+        self.league_map = {"NBA": 12, "NFL": 1, "MLB": 1, "NHL": 57}
+    
+    def _call(self, endpoint: str, params: dict = None) -> dict:
+        url = f"{API_SPORTS_BASE}/{endpoint}"
+        try:
+            response = requests.get(url, headers=self.headers, params=params, timeout=10)
+            return response.json() if response.status_code == 200 else {}
+        except:
+            return {}
+    
+    def is_player_starting(self, sport: str, team: str, player: str) -> dict:
+        api_sport = self.sport_map.get(sport, "basketball")
+        league_id = self.league_map.get(sport, 12)
+        
+        data = self._call(f"{api_sport}/teams", {"league": league_id})
+        team_id = None
+        for t in data.get("response", []):
+            if team.lower() in t["name"].lower():
+                team_id = t["id"]
+                break
+        
+        if not team_id:
+            return {"starting": False, "status": "TEAM_NOT_FOUND", "confidence": "LOW"}
+        
+        data = self._call(f"{api_sport}/fixtures", {"league": league_id, "team": team_id, "season": "2025-2026"})
+        if not data.get("response"):
+            return {"starting": False, "status": "NO_FIXTURE", "confidence": "LOW"}
+        
+        fixture_id = data["response"][0]["id"]
+        data = self._call(f"{api_sport}/fixtures/lineups", {"fixture": fixture_id})
+        
+        for team_data in data.get("response", []):
+            if team_data["team"]["id"] == team_id:
+                starters = [p["player"]["name"].lower() for p in team_data.get("startXI", [])]
+                if player.lower() in starters:
+                    return {"starting": True, "status": "STARTER", "confidence": "HIGH"}
+                bench = [p["player"]["name"].lower() for p in team_data.get("substitutes", [])]
+                if player.lower() in bench:
+                    return {"starting": False, "status": "BENCH", "confidence": "HIGH"}
+        
+        return {"starting": False, "status": "NOT_IN_LINEUP", "confidence": "MEDIUM"}
+
+# =============================================================================
+# STATCAST MLB ENHANCEMENT
+# =============================================================================
+class StatcastMLBEnhancer:
+    def __init__(self):
+        self.cache = {}
+        self.available = STATCAST_AVAILABLE
+        self.league_avg = {'barrel_pct': 0.078, 'hard_hit_pct': 0.352, 'avg_exit_velocity': 88.4,
+                           'xba': 0.243, 'xslg': 0.405}
+    
+    def get_statcast_metrics(self, player_name: str, season: int = 2026) -> dict:
+        if not self.available:
+            return self._default_metrics()
+        
+        try:
+            last_name = player_name.split()[-1]
+            player_ids = playerid_lookup(last_name)
+            if player_ids.empty:
+                return self._default_metrics()
+            
+            player_id = player_ids['key_mlbam'].iloc[0]
+            data = statcast_batter(f"{season}-03-01", f"{season}-10-15", player_id)
+            
+            if data.empty:
+                return self._default_metrics()
+            
+            return {
+                'avg_exit_velocity': data['launch_speed'].mean() if 'launch_speed' in data.columns else 88.4,
+                'barrel_pct': (data['barrel'] == 1).mean() if 'barrel' in data.columns else 0.078,
+                'hard_hit_pct': (data['launch_speed'] >= 95).mean() if 'launch_speed' in data.columns else 0.352,
+                'xba': data['estimated_ba_using_speedangle'].mean() if 'estimated_ba_using_speedangle' in data.columns else 0.243,
+                'xslg': data['estimated_slg_using_speedangle'].mean() if 'estimated_slg_using_speedangle' in data.columns else 0.405,
+                'sample_size': len(data)
+            }
+        except:
+            return self._default_metrics()
+    
+    def _default_metrics(self) -> dict:
+        return {'avg_exit_velocity': 88.4, 'barrel_pct': 0.078, 'hard_hit_pct': 0.352,
+                'xba': 0.243, 'xslg': 0.405, 'sample_size': 0}
+
+# =============================================================================
+# UNIFIED API CLIENT (Perplexity + Odds)
 # =============================================================================
 class UnifiedAPIClient:
     def __init__(self, api_key: str):
@@ -221,14 +253,27 @@ class UnifiedAPIClient:
             "injury": "OUT" if any(x in content.upper() for x in ["OUT", "GTD", "QUESTIONABLE"]) else "HEALTHY",
             "steam": "STEAM" in content.upper()
         }
+    
+    def odds_api_call(self, endpoint: str, params: dict = None) -> dict:
+        url = f"{ODDS_API_BASE}/{endpoint}"
+        if params is None:
+            params = {}
+        params["apiKey"] = self.api_key
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            return {"success": True, "data": response.json()} if response.status_code == 200 else {"success": False}
+        except:
+            return {"success": False}
 
 # =============================================================================
-# CLARITY 18.0 ELITE - MASTER ENGINE
+# CLARITY 18.0 ELITE - LEAN MASTER ENGINE
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
         self.api = UnifiedAPIClient(UNIFIED_API_KEY)
-        self.sleeper = SleeperAPIClient()
+        self.api_sports = APISportsClient(API_SPORTS_KEY)
+        self.season_context = SeasonContextEngine(self.api)
+        self.statcast = StatcastMLBEnhancer()
         self.sims = 10000
         self.wsem_max = 0.10
         self.dtm_bolt = 0.15
@@ -294,7 +339,7 @@ class Clarity18Elite:
         return {"signal": "PASS", "units": 0}
     
     def analyze_prop(self, player: str, market: str, line: float, pick: str,
-                     data: List[float], sport: str, odds: int) -> dict:
+                     data: List[float], sport: str, odds: int, team: str = None) -> dict:
         
         api_status = self.api.get_injury_status(player, sport)
         l42_pass, l42_msg = self.l42_check(market, line, np.mean(data))
@@ -317,56 +362,18 @@ class Clarity18Elite:
         
         kelly = raw_edge * self.bankroll * 0.25 if raw_edge > 0 else 0
         
+        lineup_check = None
+        if team:
+            lineup_check = self.api_sports.is_player_starting(sport, team, player)
+        
         return {
             "player": player, "market": market, "line": line, "pick": pick,
             "signal": bolt["signal"], "units": bolt["units"],
             "projection": sim["proj"], "probability": sim["prob"],
             "raw_edge": round(raw_edge, 4), "tier": tier,
             "injury": api_status["injury"], "l42_msg": l42_msg,
-            "kelly_stake": round(min(kelly, 50), 2)
-        }
-    
-    def scan_and_approve(self, sports: List[str] = None) -> Dict:
-        """Scan Sleeper API and return CLARITY-approved props"""
-        all_props = self.sleeper.scan_all_sports(sports)
-        
-        approved = []
-        rejected = {"RED_TIER": 0, "LOW_EDGE": 0}
-        
-        for prop in all_props[:100]:
-            if prop["market"].upper() in RED_TIER_PROPS:
-                rejected["RED_TIER"] += 1
-                continue
-            
-            mock_data = [prop["line"]] * 10
-            pick = "OVER"
-            
-            sim = self.simulate_prop(mock_data, prop["line"], pick, prop["sport"])
-            edge = (sim["prob"] - 0.524) * 2
-            
-            if edge < 0.03:
-                rejected["LOW_EDGE"] += 1
-                continue
-            
-            tier = "SAFE" if edge >= 0.08 else "BALANCED+" if edge >= 0.05 else "RISKY"
-            
-            approved.append({
-                "source": prop["source"],
-                "player": prop["player"],
-                "team": prop.get("team", "UNKNOWN"),
-                "market": prop["market"],
-                "line": prop["line"],
-                "odds": prop["odds"],
-                "sport": prop["sport"],
-                "edge": round(edge * 100, 1),
-                "tier": tier
-            })
-        
-        return {
-            "total_scanned": len(all_props),
-            "approved": sorted(approved, key=lambda x: x["edge"], reverse=True),
-            "rejected": rejected,
-            "diagnostics": self.sleeper.get_diagnostics()
+            "kelly_stake": round(min(kelly, 50), 2),
+            "lineup": lineup_check
         }
 
 # =============================================================================
@@ -376,50 +383,23 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("CLARITY 18.0 ELITE - SLEEPER API (FIXED)")
-    st.markdown(f"**Free Player Stats via Sleeper | Version: {VERSION}**")
+    st.title("CLARITY 18.0 ELITE - LEAN & RELIABLE")
+    st.markdown(f"**Manual Analysis | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("SYSTEM STATUS")
         st.success("Perplexity API LIVE")
-        st.success("Sleeper API LIVE (FREE)")
+        st.success("API-Sports LIVE")
+        st.success("Statcast MLB " + ("LIVE" if STATCAST_AVAILABLE else "UNAVAILABLE"))
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
     
-    tab1, tab2, tab3 = st.tabs(["🔍 AUTO-SCAN", "📊 APPROVED", "🎯 MANUAL"])
+    tab1, tab2, tab3 = st.tabs(["🎯 ANALYZE PROP", "⚾ STATCAST MLB", "📋 LINEUP CHECK"])
     
     with tab1:
-        st.header("Auto-Scan Sleeper API")
-        st.markdown("*Free player season averages*")
+        st.header("Player Prop Analyzer")
+        st.markdown("*Paste your prop details below*")
         
-        sports = st.multiselect("Sports", ["nba", "mlb", "nhl"], default=["nba"])
-        
-        if st.button("🚀 RUN AUTO-SCAN", type="primary"):
-            with st.spinner("Scanning Sleeper API..."):
-                result = engine.scan_and_approve(sports)
-                st.success(f"Scanned {result['total_scanned']} props")
-                st.metric("Approved", len(result['approved']))
-                st.metric("Rejected", sum(result['rejected'].values()))
-                
-                with st.expander("Diagnostic Logs"):
-                    for log in result['diagnostics']:
-                        st.text(f"[{log['timestamp']}] {log['source']}: {log['message']}")
-    
-    with tab2:
-        st.header("CLARITY-Approved Props")
-        if st.button("🔄 REFRESH", type="primary"):
-            with st.spinner("Scanning Sleeper..."):
-                result = engine.scan_and_approve(["nba"])
-                if result['approved']:
-                    df = pd.DataFrame(result['approved'])
-                    st.dataframe(df)
-                    for _, row in df.head(10).iterrows():
-                        st.code(f"{row['player']} - {row['market']} OVER {row['line']} | {row['edge']:.1f}% edge")
-                else:
-                    st.warning("No approved props")
-    
-    with tab3:
-        st.header("Manual Prop Analyzer")
         c1, c2 = st.columns(2)
         with c1:
             player = st.text_input("Player", "Jalen Johnson")
@@ -428,20 +408,77 @@ def run_dashboard():
             pick = st.selectbox("Pick", ["OVER", "UNDER"])
             sport = st.selectbox("Sport", ["NBA", "MLB", "NHL", "NFL"])
         with c2:
-            data_str = st.text_area("Recent Games", "9.2, 10.1, 8.5, 11.3, 9.8, 10.5, 8.9")
-            odds = st.number_input("Odds", -500, 500, -110)
+            data_str = st.text_area("Recent Games (comma separated)", "9.2, 10.1, 8.5, 11.3, 9.8, 10.5, 8.9")
+            odds = st.number_input("Odds (American)", -500, 500, -110)
+            team = st.text_input("Team (Optional)", "Hawks")
         
         if st.button("RUN ANALYSIS", type="primary"):
             data = [float(x.strip()) for x in data_str.split(",")]
-            result = engine.analyze_prop(player, market, line, pick, data, sport, odds)
+            result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team)
+            
             st.markdown(f"### {result['signal']}")
+            
             c1, c2, c3 = st.columns(3)
-            with c1: st.metric("Projection", f"{result['projection']:.1f}")
-            with c2: st.metric("Probability", f"{result['probability']:.1%}")
-            with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
+            with c1:
+                st.metric("Projection", f"{result['projection']:.1f}")
+            with c2:
+                st.metric("Probability", f"{result['probability']:.1%}")
+            with c3:
+                st.metric("Edge", f"{result['raw_edge']:+.1%}")
+            
             st.metric("Tier", result['tier'])
+            st.info(f"Injury: {result['injury']} | L42: {result['l42_msg']}")
+            
+            if result.get('lineup'):
+                lu = result['lineup']
+                if lu['starting']:
+                    st.success(f"✅ Lineup: {lu['status']} ({lu['confidence']} confidence)")
+                else:
+                    st.warning(f"⚠️ Lineup: {lu['status']}")
+            
             if result['units'] > 0:
-                st.success(f"UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+                st.success(f"RECOMMENDED UNITS: {result['units']} (Kelly: ${result['kelly_stake']:.2f})")
+    
+    with tab2:
+        st.header("Statcast MLB - Quality of Contact")
+        player_mlb = st.text_input("MLB Player", "Aaron Judge")
+        
+        if st.button("GET STATCAST METRICS"):
+            if STATCAST_AVAILABLE:
+                with st.spinner("Fetching Statcast data..."):
+                    metrics = engine.statcast.get_statcast_metrics(player_mlb)
+                    
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        st.metric("Barrel %", f"{metrics['barrel_pct']:.1%}")
+                        st.metric("Hard Hit %", f"{metrics['hard_hit_pct']:.1%}")
+                    with c2:
+                        st.metric("Avg Exit Velo", f"{metrics['avg_exit_velocity']:.0f} mph")
+                        st.metric("xBA", f".{int(metrics['xba']*1000)}")
+                    with c3:
+                        st.metric("xSLG", f".{int(metrics['xslg']*1000)}")
+                        st.metric("Sample Size", metrics['sample_size'])
+            else:
+                st.warning("Statcast not available. Run: pip install pybaseball")
+    
+    with tab3:
+        st.header("Lineup Check (API-Sports)")
+        c1, c2 = st.columns(2)
+        with c1:
+            sport_lu = st.selectbox("Sport", ["NBA", "MLB", "NHL", "NFL"], key="sport_lu")
+            team_lu = st.text_input("Team", "Hawks")
+        with c2:
+            player_lu = st.text_input("Player", "Trae Young")
+        
+        if st.button("CHECK LINEUP"):
+            with st.spinner("Checking lineup..."):
+                result = engine.api_sports.is_player_starting(sport_lu, team_lu, player_lu)
+                if result['starting']:
+                    st.success(f"✅ {player_lu} is STARTING for {team_lu}")
+                elif result['status'] == 'BENCH':
+                    st.warning(f"⚠️ {player_lu} is on the BENCH")
+                else:
+                    st.error(f"❌ {player_lu} is NOT IN LINEUP")
 
 if __name__ == "__main__":
     run_dashboard()
