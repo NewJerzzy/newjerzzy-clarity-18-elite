@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (Fixed Keys)"
+VERSION = "18.0 Elite (All Sports - 80+ Categories)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -42,35 +42,136 @@ SPORT_MODELS = {
     "NBA": {"distribution": "nbinom", "variance_factor": 1.15},
     "MLB": {"distribution": "poisson", "variance_factor": 1.08},
     "NHL": {"distribution": "poisson", "variance_factor": 1.12},
-    "NFL": {"distribution": "nbinom", "variance_factor": 1.20}
+    "NFL": {"distribution": "nbinom", "variance_factor": 1.20},
+    "SOCCER": {"distribution": "poisson", "variance_factor": 1.10},
+    "TENNIS": {"distribution": "poisson", "variance_factor": 1.05}
 }
 
 # =============================================================================
-# STAT CONFIG (L42)
+# STAT CONFIG - 80+ CATEGORIES ACROSS ALL SPORTS
 # =============================================================================
 STAT_CONFIG = {
+    # ===== NBA =====
+    "PTS": {"tier": "MED", "buffer": 1.5, "reject": False},
     "REB": {"tier": "LOW", "buffer": 1.0, "reject": False},
     "AST": {"tier": "LOW", "buffer": 1.5, "reject": False},
-    "PTS": {"tier": "MED", "buffer": 1.5, "reject": False},
     "STL": {"tier": "LOW", "buffer": 0.5, "reject": False},
     "BLK": {"tier": "LOW", "buffer": 0.5, "reject": False},
     "THREES": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "FGM": {"tier": "MED", "buffer": 1.0, "reject": False},
+    "FGA": {"tier": "HIGH", "buffer": 2.0, "reject": False},
+    "FTM": {"tier": "MED", "buffer": 1.0, "reject": False},
+    "FTA": {"tier": "MED", "buffer": 1.0, "reject": False},
+    "OREB": {"tier": "LOW", "buffer": 0.5, "reject": False},
+    "DREB": {"tier": "LOW", "buffer": 0.5, "reject": False},
+    "TO": {"tier": "MED", "buffer": 1.0, "reject": False},
+    "FOULS": {"tier": "HIGH", "buffer": 1.0, "reject": False},
+    "DUNKS": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "THREE_ATT": {"tier": "HIGH", "buffer": 1.0, "reject": False},
+    "TWO_MADE": {"tier": "MED", "buffer": 1.0, "reject": False},
+    "TWO_ATT": {"tier": "MED", "buffer": 1.0, "reject": False},
+    "PTS_1ST_3": {"tier": "HIGH", "buffer": 1.0, "reject": False},
+    "AST_1ST_3": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "REB_1ST_3": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    # NBA Combo (RED TIER)
     "PRA": {"tier": "HIGH", "buffer": 3.0, "reject": True},
     "PR": {"tier": "HIGH", "buffer": 2.0, "reject": True},
     "PA": {"tier": "HIGH", "buffer": 2.0, "reject": True},
+    "RA": {"tier": "HIGH", "buffer": 2.0, "reject": True},
+    "BLK_STL": {"tier": "HIGH", "buffer": 1.0, "reject": True},
+    "NBA_FS": {"tier": "HIGH", "buffer": 3.0, "reject": True},
+    "THREES_COMBO": {"tier": "HIGH", "buffer": 1.0, "reject": True},
+    "AST_COMBO": {"tier": "HIGH", "buffer": 2.0, "reject": True},
+    "REB_COMBO": {"tier": "HIGH", "buffer": 1.0, "reject": True},
+    "PTS_COMBO": {"tier": "HIGH", "buffer": 2.0, "reject": True},
+    "DOUBLE_DOUBLE": {"tier": "HIGH", "buffer": 0.5, "reject": True},
+    "TRIPLE_DOUBLE": {"tier": "HIGH", "buffer": 0.5, "reject": True},
     "3PTM": {"tier": "HIGH", "buffer": 0.5, "reject": True},
+    
+    # ===== MLB =====
     "OUTS": {"tier": "LOW", "buffer": 0.0, "reject": False},
     "KS": {"tier": "MED", "buffer": 1.5, "reject": False},
-    "SOG": {"tier": "LOW", "buffer": 0.5, "reject": False},
+    "HITS_ALLOWED": {"tier": "LOW", "buffer": 0.5, "reject": False},
+    "ER": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "BB_ALLOWED": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "PITCHES": {"tier": "MED", "buffer": 10.0, "reject": False},
+    "1ST_INN_RA": {"tier": "HIGH", "buffer": 0.5, "reject": False},
     "HITS": {"tier": "MED", "buffer": 0.5, "reject": False},
     "TB": {"tier": "MED", "buffer": 1.0, "reject": False},
     "HR": {"tier": "HIGH", "buffer": 0.5, "reject": False},
-    "ER": {"tier": "MED", "buffer": 0.5, "reject": False},
-    "HITS_ALLOWED": {"tier": "LOW", "buffer": 0.5, "reject": False},
+    "RUNS": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "RBI": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "BB": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "SB": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "BATTER_KS": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "SINGLES": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "DOUBLES": {"tier": "MED", "buffer": 0.5, "reject": False},
+    # MLB Combo (RED TIER)
+    "H+R+RBI": {"tier": "HIGH", "buffer": 0.5, "reject": True},
+    "HITTER_FS": {"tier": "HIGH", "buffer": 3.0, "reject": True},
+    "PITCHER_FS": {"tier": "HIGH", "buffer": 5.0, "reject": True},
+    "KS_COMBO": {"tier": "HIGH", "buffer": 2.0, "reject": True},
+    
+    # ===== NHL =====
+    "SOG": {"tier": "LOW", "buffer": 0.5, "reject": False},
+    "NHL_PTS": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "SAVES": {"tier": "LOW", "buffer": 2.0, "reject": False},
+    "NHL_AST": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "GOALS": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "GA": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "TOI": {"tier": "MED", "buffer": 2.0, "reject": False},
+    "FACEOFFS": {"tier": "HIGH", "buffer": 2.0, "reject": False},
+    "PLUS_MINUS": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "PP_PTS": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "HITS": {"tier": "MED", "buffer": 1.0, "reject": False},
+    "BLK_SHOTS": {"tier": "MED", "buffer": 1.0, "reject": False},
+    
+    # ===== SOCCER =====
+    "SHOTS": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "SOC_SAVES": {"tier": "LOW", "buffer": 1.0, "reject": False},
+    "PASSES": {"tier": "MED", "buffer": 5.0, "reject": False},
+    "SOT": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "CROSSES": {"tier": "HIGH", "buffer": 1.0, "reject": False},
+    "SOC_AST": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "SOC_GOALS": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "SOC_GA": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "SHOTS_AST": {"tier": "HIGH", "buffer": 1.0, "reject": False},
+    "CLEARANCES": {"tier": "MED", "buffer": 2.0, "reject": False},
+    "TACKLES": {"tier": "MED", "buffer": 1.0, "reject": False},
+    "DRIBBLES": {"tier": "HIGH", "buffer": 1.0, "reject": False},
+    "SOCCER_FOULS": {"tier": "MED", "buffer": 1.0, "reject": False},
+    # Soccer Combo (RED TIER)
+    "SOC_SAVES_COMBO": {"tier": "HIGH", "buffer": 1.0, "reject": True},
+    "PASSES_COMBO": {"tier": "HIGH", "buffer": 5.0, "reject": True},
+    "SOT_COMBO": {"tier": "HIGH", "buffer": 1.0, "reject": True},
+    "GOAL_AST": {"tier": "HIGH", "buffer": 0.5, "reject": True},
+    "SOC_GA_COMBO": {"tier": "HIGH", "buffer": 1.0, "reject": True},
+    
+    # ===== TENNIS =====
+    "TOTAL_GAMES": {"tier": "LOW", "buffer": 2.0, "reject": False},
+    "GAMES_WON": {"tier": "LOW", "buffer": 1.0, "reject": False},
+    "TOTAL_SETS": {"tier": "LOW", "buffer": 0.5, "reject": False},
+    "ACES": {"tier": "HIGH", "buffer": 1.0, "reject": False},
+    "BREAK_PTS": {"tier": "HIGH", "buffer": 1.0, "reject": False},
+    "TIEBREAKS": {"tier": "HIGH", "buffer": 0.5, "reject": False},
+    "DOUBLE_FAULTS": {"tier": "HIGH", "buffer": 1.0, "reject": False},
+    # Tennis Combo (RED TIER)
+    "TENNIS_FS": {"tier": "HIGH", "buffer": 5.0, "reject": True},
 }
 
-RED_TIER_PROPS = ["PRA", "PR", "PA", "3PTM", "1H", "MILESTONE", "COMBO", "TD", 
-                  "UNDER 1.5", "UNDER 2.5", "OVER 1.5", "OVER 2.5"]
+RED_TIER_PROPS = [
+    # NBA
+    "PRA", "PR", "PA", "RA", "BLK_STL", "NBA_FS", "THREES_COMBO", "AST_COMBO",
+    "REB_COMBO", "PTS_COMBO", "DOUBLE_DOUBLE", "TRIPLE_DOUBLE", "3PTM",
+    # MLB
+    "H+R+RBI", "HITTER_FS", "PITCHER_FS", "KS_COMBO",
+    # Soccer
+    "SOC_SAVES_COMBO", "PASSES_COMBO", "SOT_COMBO", "GOAL_AST", "SOC_GA_COMBO",
+    # Tennis
+    "TENNIS_FS",
+    # Universal
+    "UNDER 1.5", "UNDER 2.5", "OVER 1.5", "OVER 2.5"
+]
 
 # =============================================================================
 # SEASON CONTEXT ENGINE
@@ -331,7 +432,11 @@ class AutoSettlementEngine:
                 "line": bet["line"], "pick": bet["pick"], "actual": actual, "result": "WIN" if won else "LOSS"}
     
     def settle_all_pending(self) -> List[Dict]:
-        return [self.settle_bet(bet) for bet in self.get_pending_bets()]
+        results = []
+        for bet in self.get_pending_bets():
+            results.append(self.settle_bet(bet))
+            time.sleep(0.5)
+        return results
     
     def get_settlement_summary(self) -> Dict:
         conn = sqlite3.connect(self.db_path)
@@ -434,14 +539,14 @@ class Clarity18Elite:
                 "injury": api_status["injury"], "l42_msg": l42_msg, "kelly_stake": round(min(kelly, 50), 2), "lineup": lineup_check, "bet_id": bet_id}
 
 # =============================================================================
-# DASHBOARD (FIXED DUPLICATE KEYS)
+# DASHBOARD
 # =============================================================================
 engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("🔮 CLARITY 18.0 ELITE - AUTO SETTLEMENT")
-    st.markdown(f"**Manual Analysis + Auto-Settlement | Version: {VERSION}**")
+    st.title("🔮 CLARITY 18.0 ELITE - ALL SPORTS")
+    st.markdown(f"**80+ Categories | NBA • MLB • NHL • Soccer • Tennis | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
@@ -459,12 +564,12 @@ def run_dashboard():
         c1, c2 = st.columns(2)
         with c1:
             player = st.text_input("Player", "Aaron Judge", key="tab1_player")
-            market = st.selectbox("Market", list(STAT_CONFIG.keys()), key="tab1_market")
-            line = st.number_input("Line", 0.5, 50.0, 0.5, key="tab1_line")
+            market = st.selectbox("Market", sorted(list(STAT_CONFIG.keys())), key="tab1_market")
+            line = st.number_input("Line", 0.5, 100.0, 0.5, key="tab1_line")
             pick = st.selectbox("Pick", ["OVER", "UNDER"], key="tab1_pick")
-            sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="tab1_sport")
+            sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "SOCCER", "TENNIS", "NFL"], key="tab1_sport")
         with c2:
-            data_str = st.text_area("Recent Games", "0, 1, 0, 2, 0, 1", key="tab1_data")
+            data_str = st.text_area("Recent Games (comma separated)", "0, 1, 0, 2, 0, 1", key="tab1_data")
             odds = st.number_input("Odds (American)", -500, 500, -110, key="tab1_odds")
             team = st.text_input("Team (Optional)", "Yankees", key="tab1_team")
             log_bet = st.checkbox("📝 Log this bet for auto-settlement", value=True, key="tab1_log")
