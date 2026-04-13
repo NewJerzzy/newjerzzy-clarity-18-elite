@@ -22,13 +22,14 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (Multi-API Auto-Scan)"
+VERSION = "18.0 Elite (Multi-Source + Diagnostics)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
 DRAFTKINGS_API_BASE = "https://sportsbook.draftkings.com/api/sportsbook/v1"
+PROPS_CASH_BASE = "https://www.props.cash"
 
 SCAN_SCHEDULE = {
     "10:00": "Initial scan - lines posted",
@@ -166,30 +167,44 @@ class APISportsClient:
         return {"starting": False, "status": "NOT_IN_LINEUP", "confidence": "MEDIUM"}
 
 # =============================================================================
-# MULTI-SOURCE PROP SCANNER
+# MULTI-SOURCE PROP SCANNER (WITH DIAGNOSTICS)
 # =============================================================================
 class MultiSourcePropScanner:
     def __init__(self, api_client):
         self.api = api_client
         self.sport_keys = {"NBA": "basketball_nba", "MLB": "baseball_mlb", "NHL": "icehockey_nhl", "NFL": "americanfootball_nfl"}
+        self.diagnostic_log = []
+    
+    def log_diagnostic(self, source: str, message: str, data: Any = None):
+        self.diagnostic_log.append({
+            "timestamp": datetime.now().isoformat(),
+            "source": source,
+            "message": message,
+            "data": str(data)[:500] if data else None
+        })
     
     def fetch_prizepicks_props(self, sport: str = "NBA") -> List[Dict]:
         sport_key = self.sport_keys.get(sport, "basketball_nba")
-        result = self.api.odds_api_call(
-            f"sports/{sport_key}/odds",
-            {"regions": "us", "bookmakers": "prizepicks",
-             "markets": "player_points,player_rebounds,player_assists"}
-        )
         
+        # Try multiple bookmaker keys
+        bookmaker_keys = ["prizepicks", "prizepicks_us", "pp"]
         props = []
-        if result.get("success"):
-            for event in result["data"]:
-                for bookmaker in event.get("bookmakers", []):
-                    if bookmaker["key"] == "prizepicks":
+        
+        for bk in bookmaker_keys:
+            result = self.api.odds_api_call(
+                f"sports/{sport_key}/odds",
+                {"regions": "us", "bookmakers": bk, "markets": "player_points,player_rebounds,player_assists"}
+            )
+            
+            self.log_diagnostic("PrizePicks", f"Tried bookmaker key: {bk}", result.get("success"))
+            
+            if result.get("success"):
+                for event in result["data"]:
+                    for bookmaker in event.get("bookmakers", []):
                         for market in bookmaker.get("markets", []):
                             for outcome in market.get("outcomes", []):
                                 props.append({
-                                    "source": "PrizePicks",
+                                    "source": f"PrizePicks ({bk})",
                                     "sport": sport,
                                     "player": outcome["description"],
                                     "market": market["key"].replace("player_", "").upper(),
@@ -198,13 +213,21 @@ class MultiSourcePropScanner:
                                     "home_team": event.get("home_team"),
                                     "away_team": event.get("away_team")
                                 })
+                if props:
+                    break
+        
+        self.log_diagnostic("PrizePicks", f"Total props found: {len(props)}")
         return props
     
     def fetch_draftkings_props(self, sport: str = "NBA") -> List[Dict]:
         props = []
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        
         try:
             url = f"{DRAFTKINGS_API_BASE}/sports/{sport}/events"
-            response = requests.get(url, timeout=10)
+            response = requests.get(url, headers=headers, timeout=10)
+            self.log_diagnostic("DraftKings", f"API response status: {response.status_code}")
+            
             if response.status_code == 200:
                 data = response.json()
                 for event in data.get("events", []):
@@ -220,20 +243,68 @@ class MultiSourcePropScanner:
                                         "line": outcome.get("line", 0),
                                         "odds": outcome.get("oddsDecimal", 2.0)
                                     })
-        except:
-            pass
+        except Exception as e:
+            self.log_diagnostic("DraftKings", f"Error: {str(e)}")
+        
+        self.log_diagnostic("DraftKings", f"Total props found: {len(props)}")
+        return props
+    
+    def fetch_propscash_data(self, sport: str = "NBA") -> List[Dict]:
+        """Props.cash free tier scraper - NBA player props"""
+        props = []
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        
+        try:
+            url = f"{PROPS_CASH_BASE}/nba/player-props"
+            response = requests.get(url, headers=headers, timeout=15)
+            self.log_diagnostic("Props.cash", f"Response status: {response.status_code}")
+            
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'html.parser')
+                prop_rows = soup.find_all('tr', class_='prop-row')
+                
+                for row in prop_rows[:50]:
+                    try:
+                        player_elem = row.find('td', class_='player-name')
+                        market_elem = row.find('td', class_='prop-type')
+                        line_elem = row.find('td', class_='prop-line')
+                        odds_elem = row.find('td', class_='prop-odds')
+                        
+                        if player_elem and line_elem:
+                            props.append({
+                                "source": "Props.cash",
+                                "sport": sport,
+                                "player": player_elem.text.strip(),
+                                "market": market_elem.text.strip() if market_elem else "PTS",
+                                "line": float(line_elem.text.strip()) if line_elem else 0,
+                                "odds": float(odds_elem.text.strip().replace('+', '')) if odds_elem else -110
+                            })
+                    except:
+                        continue
+        except Exception as e:
+            self.log_diagnostic("Props.cash", f"Error: {str(e)}")
+        
+        self.log_diagnostic("Props.cash", f"Total props found: {len(props)}")
         return props
     
     def scan_all_sources(self, sports: List[str] = None) -> List[Dict]:
         if sports is None:
             sports = ["NBA", "MLB", "NHL"]
         
+        self.diagnostic_log = []
         all_props = []
+        
         for sport in sports:
+            self.log_diagnostic("Scanner", f"Scanning {sport}...")
             all_props.extend(self.fetch_prizepicks_props(sport))
             all_props.extend(self.fetch_draftkings_props(sport))
+            all_props.extend(self.fetch_propscash_data(sport))
         
+        self.log_diagnostic("Scanner", f"Total props across all sources: {len(all_props)}")
         return all_props
+    
+    def get_diagnostics(self) -> List[Dict]:
+        return self.diagnostic_log
 
 # =============================================================================
 # UNIFIED API CLIENT
@@ -298,7 +369,12 @@ class Clarity18Elite:
                 "edge": round(np.random.uniform(4, 9), 1)
             })
         
-        return {"total_scanned": len(all_props), "approved": approved, "rejected": rejected}
+        return {
+            "total_scanned": len(all_props),
+            "approved": approved,
+            "rejected": rejected,
+            "diagnostics": self.prop_scanner.get_diagnostics()
+        }
     
     def run_scheduled_scan(self):
         current_time = datetime.now().strftime("%H:%M")
@@ -313,14 +389,14 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("CLARITY 18.0 ELITE - MULTI-API AUTO-SCAN")
-    st.markdown(f"**PrizePicks + DraftKings | Version: {VERSION}**")
+    st.title("CLARITY 18.0 ELITE - MULTI-API + DIAGNOSTICS")
+    st.markdown(f"**PrizePicks + DraftKings + Props.cash | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("SYSTEM STATUS")
         st.success("Perplexity API LIVE")
-        st.success("Odds API LIVE (PrizePicks)")
-        st.success("DraftKings API LIVE")
+        st.success("Odds API LIVE")
+        st.success("Props.cash Enabled")
         st.metric("Version", VERSION)
         st.divider()
         st.subheader("Scan Schedule (ET)")
@@ -329,7 +405,7 @@ def run_dashboard():
         current_time = datetime.now().strftime("%H:%M")
         st.metric("Current Time (ET)", current_time)
     
-    tab1, tab2 = st.tabs(["SCAN BOARDS", "PRIZEPICKS"])
+    tab1, tab2, tab3 = st.tabs(["SCAN BOARDS", "DIAGNOSTICS", "PRIZEPICKS"])
     
     with tab1:
         st.header("Multi-Source Board Scanner")
@@ -344,6 +420,17 @@ def run_dashboard():
                     st.dataframe(df.sort_values('edge', ascending=False))
     
     with tab2:
+        st.header("API Diagnostics")
+        if st.button("RUN DIAGNOSTIC SCAN", type="primary"):
+            with st.spinner("Testing all API connections..."):
+                result = engine.scan_all_boards()
+                st.subheader("Diagnostic Log")
+                for log in result['diagnostics']:
+                    st.text(f"[{log['timestamp']}] {log['source']}: {log['message']}")
+                    if log.get('data'):
+                        st.caption(f"Data: {log['data']}")
+    
+    with tab3:
         st.header("PrizePicks Board (via Odds API)")
         sport_pp = st.selectbox("Sport", ["NBA", "MLB", "NHL"])
         if st.button("FETCH PRIZEPICKS", type="primary"):
@@ -353,7 +440,7 @@ def run_dashboard():
                     st.dataframe(pd.DataFrame(props))
                     st.success(f"Found {len(props)} props")
                 else:
-                    st.warning("No props found")
+                    st.warning("No props found - check Diagnostics tab")
 
 if __name__ == "__main__":
     run_dashboard()
