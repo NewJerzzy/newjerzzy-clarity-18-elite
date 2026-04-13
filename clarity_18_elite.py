@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (Auto-Settlement + HR Fixed)"
+VERSION = "18.0 Elite (Fixed Keys)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -46,10 +46,9 @@ SPORT_MODELS = {
 }
 
 # =============================================================================
-# STAT CONFIG (L42) - HR ADDED
+# STAT CONFIG (L42)
 # =============================================================================
 STAT_CONFIG = {
-    # NBA
     "REB": {"tier": "LOW", "buffer": 1.0, "reject": False},
     "AST": {"tier": "LOW", "buffer": 1.5, "reject": False},
     "PTS": {"tier": "MED", "buffer": 1.5, "reject": False},
@@ -60,16 +59,14 @@ STAT_CONFIG = {
     "PR": {"tier": "HIGH", "buffer": 2.0, "reject": True},
     "PA": {"tier": "HIGH", "buffer": 2.0, "reject": True},
     "3PTM": {"tier": "HIGH", "buffer": 0.5, "reject": True},
-    # MLB
     "OUTS": {"tier": "LOW", "buffer": 0.0, "reject": False},
     "KS": {"tier": "MED", "buffer": 1.5, "reject": False},
+    "SOG": {"tier": "LOW", "buffer": 0.5, "reject": False},
     "HITS": {"tier": "MED", "buffer": 0.5, "reject": False},
     "TB": {"tier": "MED", "buffer": 1.0, "reject": False},
     "HR": {"tier": "HIGH", "buffer": 0.5, "reject": False},
     "ER": {"tier": "MED", "buffer": 0.5, "reject": False},
     "HITS_ALLOWED": {"tier": "LOW", "buffer": 0.5, "reject": False},
-    # NHL
-    "SOG": {"tier": "LOW", "buffer": 0.5, "reject": False},
 }
 
 RED_TIER_PROPS = ["PRA", "PR", "PA", "3PTM", "1H", "MILESTONE", "COMBO", "TD", 
@@ -260,7 +257,6 @@ class UnifiedAPIClient:
         }
     
     def fetch_player_result(self, player: str, market: str, sport: str, date: str) -> Optional[float]:
-        """Fetch actual player stat result via Perplexity"""
         prompt = f"How many {market} did {player} have in their {sport} game on {date}? Return ONLY the number."
         response = self.perplexity_call(prompt)
         match = re.search(r'(\d+\.?\d*)', response)
@@ -270,15 +266,12 @@ class UnifiedAPIClient:
 # AUTO-SETTLEMENT ENGINE
 # =============================================================================
 class AutoSettlementEngine:
-    """Automatically settle pending bets using Perplexity API"""
-    
     def __init__(self, api_client, db_path: str = "clarity_history.db"):
         self.api = api_client
         self.db_path = db_path
         self._init_db()
     
     def _init_db(self):
-        """Initialize bets table if not exists"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         c.execute("""
@@ -303,112 +296,53 @@ class AutoSettlementEngine:
     
     def log_bet(self, player: str, market: str, line: float, pick: str,
                 sport: str, odds: int, edge: float) -> str:
-        """Log a bet before the game"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        
         bet_id = hashlib.md5(f"{player}{market}{line}{datetime.now()}".encode()).hexdigest()[:12]
-        
         c.execute("""
             INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (bet_id, player, sport, market, line, pick, odds, edge, "PENDING", datetime.now().strftime("%Y-%m-%d")))
-        
         conn.commit()
         conn.close()
         return bet_id
     
     def get_pending_bets(self) -> List[Dict]:
-        """Get all unsettled bets"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         c.execute("SELECT * FROM bets WHERE result = 'PENDING'")
         rows = c.fetchall()
         conn.close()
-        
-        bets = []
-        for row in rows:
-            bets.append({
-                "id": row[0], "player": row[1], "sport": row[2], "market": row[3],
-                "line": row[4], "pick": row[5], "odds": row[6], "edge": row[7],
-                "result": row[8], "actual": row[9], "date": row[10]
-            })
-        return bets
+        return [{"id": r[0], "player": r[1], "sport": r[2], "market": r[3], "line": r[4], 
+                 "pick": r[5], "odds": r[6], "edge": r[7], "result": r[8], "actual": r[9], "date": r[10]} for r in rows]
     
     def settle_bet(self, bet: Dict) -> Dict:
-        """Fetch result and settle a single bet"""
         actual = self.api.fetch_player_result(bet["player"], bet["market"], bet["sport"], bet["date"])
-        
         if actual is None:
             return {"status": "PENDING", "bet": bet}
-        
-        if bet["pick"] == "OVER":
-            won = actual > bet["line"]
-        else:
-            won = actual < bet["line"]
-        
+        won = actual > bet["line"] if bet["pick"] == "OVER" else actual < bet["line"]
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        c.execute("""
-            UPDATE bets 
-            SET result = ?, actual = ?, settled_date = ?
-            WHERE id = ?
-        """, ("WIN" if won else "LOSS", actual, datetime.now().strftime("%Y-%m-%d"), bet["id"]))
+        c.execute("UPDATE bets SET result = ?, actual = ?, settled_date = ? WHERE id = ?",
+                  ("WIN" if won else "LOSS", actual, datetime.now().strftime("%Y-%m-%d"), bet["id"]))
         conn.commit()
         conn.close()
-        
-        return {
-            "status": "SETTLED",
-            "player": bet["player"],
-            "market": bet["market"],
-            "line": bet["line"],
-            "pick": bet["pick"],
-            "actual": actual,
-            "result": "WIN" if won else "LOSS"
-        }
+        return {"status": "SETTLED", "player": bet["player"], "market": bet["market"], 
+                "line": bet["line"], "pick": bet["pick"], "actual": actual, "result": "WIN" if won else "LOSS"}
     
     def settle_all_pending(self) -> List[Dict]:
-        """Settle all pending bets"""
-        pending = self.get_pending_bets()
-        results = []
-        
-        for bet in pending:
-            result = self.settle_bet(bet)
-            results.append(result)
-            time.sleep(0.5)
-        
-        return results
+        return [self.settle_bet(bet) for bet in self.get_pending_bets()]
     
     def get_settlement_summary(self) -> Dict:
-        """Get win/loss summary"""
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
-        
-        c.execute("SELECT COUNT(*) FROM bets WHERE result = 'WIN'")
-        wins = c.fetchone()[0]
-        
-        c.execute("SELECT COUNT(*) FROM bets WHERE result = 'LOSS'")
-        losses = c.fetchone()[0]
-        
-        c.execute("SELECT COUNT(*) FROM bets WHERE result = 'PENDING'")
-        pending = c.fetchone()[0]
-        
-        c.execute("SELECT SUM(edge) FROM bets WHERE result IN ('WIN', 'LOSS')")
-        total_edge = c.fetchone()[0] or 0
-        
+        c.execute("SELECT COUNT(*) FROM bets WHERE result = 'WIN'"); wins = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM bets WHERE result = 'LOSS'"); losses = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM bets WHERE result = 'PENDING'"); pending = c.fetchone()[0]
         conn.close()
-        
         total = wins + losses
         win_rate = (wins / total * 100) if total > 0 else 0
-        
-        return {
-            "total_bets": total,
-            "wins": wins,
-            "losses": losses,
-            "pending": pending,
-            "win_rate": round(win_rate, 1),
-            "total_edge": round(total_edge, 2)
-        }
+        return {"total_bets": total, "wins": wins, "losses": losses, "pending": pending, "win_rate": round(win_rate, 1)}
 
 # =============================================================================
 # CLARITY 18.0 ELITE - MASTER ENGINE
@@ -458,14 +392,12 @@ class Clarity18Elite:
         w[-3:] *= 1.5
         w /= w.sum()
         lam = np.average(data, weights=w)
-        
         if model["distribution"] == "nbinom":
             n = max(1, int(lam / 2))
             p = n / (n + lam)
             sims = nbinom.rvs(n, p, size=self.sims)
         else:
             sims = poisson.rvs(lam, size=self.sims)
-        
         proj = np.mean(sims)
         prob = np.mean(sims >= line) if pick == "OVER" else np.mean(sims <= line)
         dtm = (proj - line) / line if line != 0 else 0
@@ -487,49 +419,22 @@ class Clarity18Elite:
     def analyze_prop(self, player: str, market: str, line: float, pick: str,
                      data: List[float], sport: str, odds: int, team: str = None,
                      log_bet: bool = False) -> dict:
-        
         api_status = self.api.get_injury_status(player, sport)
         l42_pass, l42_msg = self.l42_check(market, line, np.mean(data))
         sim = self.simulate_prop(data, line, pick, sport)
         wsem_ok, wsem = self.wsem_check(data)
         bolt = self.sovereign_bolt(sim["prob"], sim["dtm"], wsem_ok, l42_pass, api_status["injury"])
-        
         raw_edge = (sim["prob"] - 0.524) * 2
-        
-        if market.upper() in RED_TIER_PROPS:
-            tier = "REJECT"
-        elif raw_edge >= 0.08:
-            tier = "SAFE"
-        elif raw_edge >= 0.05:
-            tier = "BALANCED+"
-        elif raw_edge >= 0.03:
-            tier = "RISKY"
-        else:
-            tier = "PASS"
-        
+        tier = "REJECT" if market.upper() in RED_TIER_PROPS else ("SAFE" if raw_edge >= 0.08 else "BALANCED+" if raw_edge >= 0.05 else "RISKY" if raw_edge >= 0.03 else "PASS")
         kelly = raw_edge * self.bankroll * 0.25 if raw_edge > 0 else 0
-        
-        lineup_check = None
-        if team:
-            lineup_check = self.api_sports.is_player_starting(sport, team, player)
-        
-        bet_id = None
-        if log_bet and bolt["units"] > 0:
-            bet_id = self.settlement.log_bet(player, market, line, pick, sport, odds, raw_edge)
-        
-        return {
-            "player": player, "market": market, "line": line, "pick": pick,
-            "signal": bolt["signal"], "units": bolt["units"],
-            "projection": sim["proj"], "probability": sim["prob"],
-            "raw_edge": round(raw_edge, 4), "tier": tier,
-            "injury": api_status["injury"], "l42_msg": l42_msg,
-            "kelly_stake": round(min(kelly, 50), 2),
-            "lineup": lineup_check,
-            "bet_id": bet_id
-        }
+        lineup_check = self.api_sports.is_player_starting(sport, team, player) if team else None
+        bet_id = self.settlement.log_bet(player, market, line, pick, sport, odds, raw_edge) if log_bet and bolt["units"] > 0 else None
+        return {"player": player, "market": market, "line": line, "pick": pick, "signal": bolt["signal"], "units": bolt["units"],
+                "projection": sim["proj"], "probability": sim["prob"], "raw_edge": round(raw_edge, 4), "tier": tier,
+                "injury": api_status["injury"], "l42_msg": l42_msg, "kelly_stake": round(min(kelly, 50), 2), "lineup": lineup_check, "bet_id": bet_id}
 
 # =============================================================================
-# DASHBOARD
+# DASHBOARD (FIXED DUPLICATE KEYS)
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -551,76 +456,55 @@ def run_dashboard():
     
     with tab1:
         st.header("Player Prop Analyzer")
-        st.markdown("*Paste your prop details below*")
-        
         c1, c2 = st.columns(2)
         with c1:
-            player = st.text_input("Player", "Aaron Judge")
-            market = st.selectbox("Market", list(STAT_CONFIG.keys()))
-            line = st.number_input("Line", 0.5, 50.0, 0.5)
-            pick = st.selectbox("Pick", ["OVER", "UNDER"])
-            sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"])
+            player = st.text_input("Player", "Aaron Judge", key="tab1_player")
+            market = st.selectbox("Market", list(STAT_CONFIG.keys()), key="tab1_market")
+            line = st.number_input("Line", 0.5, 50.0, 0.5, key="tab1_line")
+            pick = st.selectbox("Pick", ["OVER", "UNDER"], key="tab1_pick")
+            sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="tab1_sport")
         with c2:
-            data_str = st.text_area("Recent Games (comma separated)", "0, 1, 0, 2, 0, 1")
-            odds = st.number_input("Odds (American)", -500, 500, -110)
-            team = st.text_input("Team (Optional)", "Yankees")
-            log_bet = st.checkbox("📝 Log this bet for auto-settlement", value=True)
+            data_str = st.text_area("Recent Games", "0, 1, 0, 2, 0, 1", key="tab1_data")
+            odds = st.number_input("Odds (American)", -500, 500, -110, key="tab1_odds")
+            team = st.text_input("Team (Optional)", "Yankees", key="tab1_team")
+            log_bet = st.checkbox("📝 Log this bet for auto-settlement", value=True, key="tab1_log")
         
-        if st.button("🚀 RUN ANALYSIS", type="primary"):
+        if st.button("🚀 RUN ANALYSIS", type="primary", key="tab1_button"):
             data = [float(x.strip()) for x in data_str.split(",")]
             result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team, log_bet)
-            
             st.markdown(f"### {result['signal']}")
-            
             c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("Projection", f"{result['projection']:.1f}")
-            with c2:
-                st.metric("Probability", f"{result['probability']:.1%}")
-            with c3:
-                st.metric("Edge", f"{result['raw_edge']:+.1%}")
-            
+            with c1: st.metric("Projection", f"{result['projection']:.1f}")
+            with c2: st.metric("Probability", f"{result['probability']:.1%}")
+            with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
             st.metric("Tier", result['tier'])
             st.info(f"Injury: {result['injury']} | L42: {result['l42_msg']}")
-            
             if result.get('lineup'):
                 lu = result['lineup']
                 if lu['starting']:
                     st.success(f"✅ Lineup: {lu['status']} ({lu['confidence']} confidence)")
                 else:
                     st.warning(f"⚠️ Lineup: {lu['status']}")
-            
             if result['units'] > 0:
                 st.success(f"RECOMMENDED UNITS: {result['units']} (Kelly: ${result['kelly_stake']:.2f})")
-            
             if result.get('bet_id'):
                 st.info(f"📝 Bet logged! ID: {result['bet_id']}")
     
     with tab2:
         st.header("📊 Auto-Settlement Dashboard")
-        st.markdown("*Settle pending bets using Perplexity API*")
-        
         summary = engine.settlement.get_settlement_summary()
-        
         c1, c2, c3, c4 = st.columns(4)
-        with c1:
-            st.metric("Total Bets", summary['total_bets'])
-        with c2:
-            st.metric("Wins", summary['wins'])
-        with c3:
-            st.metric("Losses", summary['losses'])
-        with c4:
-            st.metric("Win Rate", f"{summary['win_rate']}%")
-        
+        with c1: st.metric("Total Bets", summary['total_bets'])
+        with c2: st.metric("Wins", summary['wins'])
+        with c3: st.metric("Losses", summary['losses'])
+        with c4: st.metric("Win Rate", f"{summary['win_rate']}%")
         st.metric("Pending Bets", summary['pending'])
         
-        if st.button("🔄 SETTLE ALL PENDING BETS", type="primary"):
+        if st.button("🔄 SETTLE ALL PENDING BETS", type="primary", key="tab2_settle"):
             with st.spinner("Fetching results via Perplexity..."):
                 results = engine.settlement.settle_all_pending()
-                
                 if results:
                     st.success(f"Settled {len(results)} bets!")
-                    
                     for r in results:
                         if r['status'] == 'SETTLED':
                             if r['result'] == 'WIN':
@@ -630,7 +514,7 @@ def run_dashboard():
                 else:
                     st.info("No pending bets to settle.")
         
-        if st.button("📋 SHOW PENDING BETS"):
+        if st.button("📋 SHOW PENDING BETS", key="tab2_show"):
             pending = engine.settlement.get_pending_bets()
             if pending:
                 for bet in pending:
@@ -640,13 +524,11 @@ def run_dashboard():
     
     with tab3:
         st.header("⚾ Statcast MLB - Quality of Contact")
-        player_mlb = st.text_input("MLB Player", "Aaron Judge")
-        
-        if st.button("🔍 GET STATCAST METRICS"):
+        player_mlb = st.text_input("MLB Player", "Aaron Judge", key="tab3_player")
+        if st.button("🔍 GET STATCAST METRICS", key="tab3_button"):
             if STATCAST_AVAILABLE:
                 with st.spinner("Fetching Statcast data..."):
                     metrics = engine.statcast.get_statcast_metrics(player_mlb)
-                    
                     c1, c2, c3 = st.columns(3)
                     with c1:
                         st.metric("Barrel %", f"{metrics['barrel_pct']:.1%}")
@@ -664,12 +546,11 @@ def run_dashboard():
         st.header("📋 Lineup Check (API-Sports)")
         c1, c2 = st.columns(2)
         with c1:
-            sport_lu = st.selectbox("Sport", ["NBA", "MLB", "NHL", "NFL"], key="sport_lu")
-            team_lu = st.text_input("Team", "Yankees")
+            sport_lu = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="tab4_sport")
+            team_lu = st.text_input("Team", "Yankees", key="tab4_team")
         with c2:
-            player_lu = st.text_input("Player", "Aaron Judge")
-        
-        if st.button("🔍 CHECK LINEUP"):
+            player_lu = st.text_input("Player", "Aaron Judge", key="tab4_player")
+        if st.button("🔍 CHECK LINEUP", key="tab4_button"):
             with st.spinner("Checking lineup..."):
                 result = engine.api_sports.is_player_starting(sport_lu, team_lu, player_lu)
                 if result['starting']:
