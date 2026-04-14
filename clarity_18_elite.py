@@ -585,23 +585,29 @@ def run_dashboard():
             player = st.selectbox("Player", roster, key="prop_player")
             available_markets = SPORT_CATEGORIES.get(sport, ["PTS"])
             market = st.selectbox("Market", available_markets, key="prop_market")
-            line = st.number_input("Line", 0.5, 100.0, 0.5, key="prop_line")
+            line = st.number_input("Line", min_value=0.5, max_value=100.0, value=0.5, step=0.5, key="prop_line")
             pick = st.selectbox("Pick", ["OVER", "UNDER"], key="prop_pick")
         with c2:
             data_str = st.text_area("Recent Games (comma separated)", "0, 1, 0, 2, 0, 1", key="prop_data")
-            odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
+            odds = st.number_input("Odds (American)", min_value=-500, max_value=500, value=-110, step=5, key="prop_odds")
         
         if st.button("🚀 ANALYZE PROP", type="primary", key="prop_button"):
-            data = [float(x.strip()) for x in data_str.split(",")]
-            result = engine.analyze_prop(player, market, line, pick, data, sport, odds)
-            st.markdown(f"### {result['signal']}")
-            c1, c2, c3 = st.columns(3)
-            with c1: st.metric("Projection", f"{result['projection']:.1f}")
-            with c2: st.metric("Probability", f"{result['probability']:.1%}")
-            with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
-            st.metric("Tier", result['tier'])
-            if result['units'] > 0:
-                st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+            data = [float(x.strip()) for x in data_str.split(",") if x.strip() != ""]
+            if len(data) == 0:
+                st.error("Please enter at least one game value.")
+            else:
+                result = engine.analyze_prop(player, market, line, pick, data, sport, odds)
+                st.markdown(f"### {result['signal']}")
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Projection", f"{result['projection']:.1f}")
+                with c2:
+                    st.metric("Probability", f"{result['probability']:.1%}")
+                with c3:
+                    st.metric("Edge", f"{result['raw_edge']:+.1%}")
+                st.metric("Tier", result['tier'])
+                if result['units'] > 0:
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
     
     # =========================================================================
     # TAB 2: MONEYLINE
@@ -615,17 +621,21 @@ def run_dashboard():
             home = st.selectbox("Home Team", teams_ml, key="ml_home")
             away = st.selectbox("Away Team", teams_ml, key="ml_away")
         with c2:
-            home_odds = st.number_input("Home Odds", -500, 500, -110, key="ml_home_odds")
-            away_odds = st.number_input("Away Odds", -500, 500, -110, key="ml_away_odds")
+            home_odds = st.number_input("Home Odds", min_value=-500, max_value=500, value=-110, step=5, key="ml_home_odds")
+            away_odds = st.number_input("Away Odds", min_value=-500, max_value=500, value=-110, step=5, key="ml_away_odds")
         
         if st.button("💰 ANALYZE MONEYLINE", type="primary", key="ml_button"):
-            result = engine.analyze_moneyline(home, away, sport_ml, home_odds, away_odds)
-            st.markdown(f"### {result['signal']}")
-            st.metric("Pick", result['pick'])
-            st.metric("Edge", f"{result['edge']:+.1%}")
-            st.metric("Win Probability", f"{result['win_prob']:.1%}")
-            if result['units'] > 0:
-                st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+            if home == away:
+                st.error("Home and Away teams must be different.")
+            else:
+                result = engine.analyze_moneyline(home, away, sport_ml, home_odds, away_odds)
+                st.markdown(f"### {result['signal']}")
+                st.metric("Pick", result['pick'])
+                st.metric("Edge", f"{result['edge']:+.1%}")
+                if result['pick'] != "PASS":
+                    st.metric("Win Probability", f"{result['win_prob']:.1%}")
+                if result['units'] > 0:
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
     
     # =========================================================================
     # TAB 3: SPREAD
@@ -638,19 +648,22 @@ def run_dashboard():
             teams_sp = engine.get_teams(sport_sp)
             home_sp = st.selectbox("Home Team", teams_sp, key="sp_home")
             away_sp = st.selectbox("Away Team", teams_sp, key="sp_away")
-            spread = st.number_input("Spread", -30.0, 30.0, -5.5, key="sp_line")
+            spread = st.number_input("Spread", min_value=-30.0, max_value=30.0, value=-5.5, step=0.5, key="sp_line")
         with c2:
             pick_sp = st.selectbox("Pick", [home_sp, away_sp], key="sp_pick")
-            odds_sp = st.number_input("Odds", -500, 500, -110, key="sp_odds")
+            odds_sp = st.number_input("Odds", min_value=-500, max_value=500, value=-110, step=5, key="sp_odds")
         
         if st.button("📊 ANALYZE SPREAD", type="primary", key="sp_button"):
-            result = engine.analyze_spread(home_sp, away_sp, spread, pick_sp, sport_sp, odds_sp)
-            st.markdown(f"### {result['signal']}")
-            st.metric("Cover Probability", f"{result['prob_cover']:.1%}")
-            st.metric("Push Probability", f"{result['prob_push']:.1%}")
-            st.metric("Edge", f"{result['edge']:+.1%}")
-            if result['units'] > 0:
-                st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+            if home_sp == away_sp:
+                st.error("Home and Away teams must be different.")
+            else:
+                result = engine.analyze_spread(home_sp, away_sp, spread, pick_sp, sport_sp, odds_sp)
+                st.markdown(f"### {result['signal']}")
+                st.metric("Cover Probability", f"{result['prob_cover']:.1%}")
+                st.metric("Push Probability", f"{result['prob_push']:.1%}")
+                st.metric("Edge", f"{result['edge']:+.1%}")
+                if result['units'] > 0:
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
     
     # =========================================================================
     # TAB 4: TOTALS (OVER/UNDER)
@@ -663,22 +676,38 @@ def run_dashboard():
             teams_tot = engine.get_teams(sport_tot)
             home_tot = st.selectbox("Home Team", teams_tot, key="tot_home")
             away_tot = st.selectbox("Away Team", teams_tot, key="tot_away")
-            total_line = st.number_input("Total Line", 0.5, 100.0, 220.5, key="tot_line")
+            # FIXED: default value must be <= max_value
+            default_total = 220.5 if sport_tot == "NBA" else 8.5
+            max_total = 500.0 if sport_tot == "NBA" else 100.0
+            total_line = st.number_input(
+                "Total Line",
+                min_value=0.5,
+                max_value=max_total,
+                value=min(default_total, max_total),
+                step=0.5,
+                key="tot_line",
+            )
         with c2:
             pick_tot = st.selectbox("Pick", ["OVER", "UNDER"], key="tot_pick")
-            odds_tot = st.number_input("Odds", -500, 500, -110, key="tot_odds")
+            odds_tot = st.number_input("Odds", min_value=-500, max_value=500, value=-110, step=5, key="tot_odds")
         
         if st.button("📈 ANALYZE TOTAL", type="primary", key="tot_button"):
-            result = engine.analyze_total(home_tot, away_tot, total_line, pick_tot, sport_tot, odds_tot)
-            st.markdown(f"### {result['signal']}")
-            c1, c2, c3 = st.columns(3)
-            with c1: st.metric("Projection", f"{result['projection']:.1f}")
-            with c2: st.metric("OVER Prob", f"{result['prob_over']:.1%}")
-            with c3: st.metric("UNDER Prob", f"{result['prob_under']:.1%}")
-            st.metric("Push Prob", f"{result['prob_push']:.1%}")
-            st.metric("Edge", f"{result['edge']:+.1%}")
-            if result['units'] > 0:
-                st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+            if home_tot == away_tot:
+                st.error("Home and Away teams must be different.")
+            else:
+                result = engine.analyze_total(home_tot, away_tot, total_line, pick_tot, sport_tot, odds_tot)
+                st.markdown(f"### {result['signal']}")
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Projection", f"{result['projection']:.1f}")
+                with c2:
+                    st.metric("OVER Prob", f"{result['prob_over']:.1%}")
+                with c3:
+                    st.metric("UNDER Prob", f"{result['prob_under']:.1%}")
+                st.metric("Push Prob", f"{result['prob_push']:.1%}")
+                st.metric("Edge", f"{result['edge']:+.1%}")
+                if result['units'] > 0:
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
     
     # =========================================================================
     # TAB 5: ALTERNATE LINES
@@ -688,11 +717,28 @@ def run_dashboard():
         c1, c2 = st.columns(2)
         with c1:
             sport_alt = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="alt_sport")
-            base_line = st.number_input("Main Line", 0.5, 100.0, 220.5, key="alt_base")
-            alt_line = st.number_input("Alternate Line", 0.5, 100.0, 230.5, key="alt_line")
+            # Use sport-specific sensible defaults but keep them within bounds
+            base_default = 220.5 if sport_alt == "NBA" else 8.5
+            alt_default = base_default + 10 if sport_alt == "NBA" else base_default + 1
+            base_line = st.number_input(
+                "Main Line",
+                min_value=0.5,
+                max_value=500.0,
+                value=min(base_default, 500.0),
+                step=0.5,
+                key="alt_base",
+            )
+            alt_line = st.number_input(
+                "Alternate Line",
+                min_value=0.5,
+                max_value=500.0,
+                value=min(alt_default, 500.0),
+                step=0.5,
+                key="alt_line",
+            )
         with c2:
             pick_alt = st.selectbox("Pick", ["OVER", "UNDER"], key="alt_pick")
-            odds_alt = st.number_input("Odds", -500, 500, -110, key="alt_odds")
+            odds_alt = st.number_input("Odds", min_value=-500, max_value=500, value=-110, step=5, key="alt_odds")
         
         if st.button("🔄 ANALYZE ALTERNATE", type="primary", key="alt_button"):
             result = engine.analyze_alternate(base_line, alt_line, pick_alt, sport_alt, odds_alt)
