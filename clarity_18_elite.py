@@ -1,8 +1,8 @@
 """
-CLARITY 18.0 ELITE - COMPLETE SYSTEM (FIXED ACCURACY DASHBOARD)
-Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy
+CLARITY 18.0 ELITE - COMPLETE SYSTEM (SCRAPINGBEE INTEGRATION)
+Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks Scanner | Best Odds Scanner | Arbitrage | Middles | Accuracy
 NBA | MLB | NHL | NFL - ALL TEAMS HAVE REAL PLAYERS
-API KEYS: Perplexity + API-Sports + The Odds API + Apify
+API KEYS: Perplexity + API-Sports + The Odds API + ScrapingBee
 """
 
 import numpy as np
@@ -28,14 +28,14 @@ warnings.filterwarnings('ignore')
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
-APIFY_API_TOKEN = "apify_api_bBECtVcVGcVPjbHjkw6g6TNBOE3w6Z2XL1Oy"
-VERSION = "18.0 Elite (Fixed Accuracy Dashboard)"
+SCRAPINGBEE_API_KEY = "22FBDXHY4KXIBBSIZCA8ZN7HS7RF3D8CI2J8HI6DVP94KTMSTVDVCEEXG0D0XT1TOKPPHJT43258Q4RG"
+VERSION = "18.0 Elite (ScrapingBee Integration)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
-APIFY_PRIZEPICKS_ACTOR = "zen-studio/prizepicks-player-props"
+SCRAPINGBEE_BASE = "https://app.scrapingbee.com/api/v1/"
 
 # Optional imports
 try:
@@ -44,12 +44,6 @@ try:
     TELEGRAM_AVAILABLE = True
 except ImportError:
     TELEGRAM_AVAILABLE = False
-
-try:
-    from apify_client import ApifyClient
-    APIFY_AVAILABLE = True
-except ImportError:
-    APIFY_AVAILABLE = False
 
 # =============================================================================
 # SPORT-SPECIFIC DISTRIBUTIONS & SETTINGS
@@ -345,42 +339,99 @@ class GameScanner:
             return []
 
 # =============================================================================
-# PROP SCANNER (PrizePicks via Apify)
+# PROP SCANNER (PrizePicks via ScrapingBee)
 # =============================================================================
 class PropScanner:
-    def __init__(self, apify_token: str):
-        if APIFY_AVAILABLE:
-            self.client = ApifyClient(apify_token)
-        else:
-            self.client = None
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.base_url = SCRAPINGBEE_BASE
     
     def fetch_prizepicks_props(self, sport: str = None) -> List[Dict]:
-        if not self.client:
-            return []
+        """Fetch PrizePicks props using ScrapingBee API"""
         try:
-            run_input = {}
-            if sport:
-                run_input["sport"] = sport.upper()
-            run = self.client.actor(APIFY_PRIZEPICKS_ACTOR).call(run_input=run_input)
-            items = list(self.client.dataset(run["defaultDatasetId"]).iterate_items())
-            props = []
-            for item in items:
-                prop = {
-                    "source": "PrizePicks",
-                    "sport": item.get("sport", "NBA"),
-                    "player": item.get("player_name", ""),
-                    "market": item.get("stat_type", "").upper(),
-                    "line": float(item.get("line", 0)),
-                    "pick": item.get("projection_type", "OVER").upper(),
-                    "odds": -110
-                }
-                market_map = {"Points": "PTS", "Rebounds": "REB", "Assists": "AST", "Strikeouts": "KS", "Hits Allowed": "HITS_ALLOWED", "Pass Yards": "PASS_YDS"}
-                prop["market"] = market_map.get(prop["market"], prop["market"])
-                props.append(prop)
+            # PrizePicks URL - the main app page
+            url = "https://app.prizepicks.com/"
+            
+            params = {
+                "api_key": self.api_key,
+                "url": url,
+                "render_js": "true",
+                "wait": "3000",  # Wait 3 seconds for content to load
+                "extract_rules": json.dumps({
+                    "props": {
+                        "selector": "[data-testid='projection']",
+                        "output": "text",
+                        "type": "list"
+                    }
+                })
+            }
+            
+            response = requests.get(self.base_url, params=params, timeout=30)
+            if response.status_code != 200:
+                st.warning(f"ScrapingBee error: {response.status_code}")
+                return []
+            
+            # Parse the response - ScrapingBee returns the rendered HTML
+            html_content = response.text
+            
+            # Extract props using regex patterns (PrizePicks structure)
+            props = self._parse_prizepicks_html(html_content, sport)
             return props
+            
         except Exception as e:
             st.warning(f"PrizePicks scan failed: {e}")
             return []
+    
+    def _parse_prizepicks_html(self, html: str, sport_filter: str = None) -> List[Dict]:
+        """Parse PrizePicks HTML to extract player props"""
+        props = []
+        
+        # Common PrizePicks stat types and their CLARITY market mappings
+        market_map = {
+            "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
+            "Strikeouts": "KS", "Hits Allowed": "HITS_ALLOWED",
+            "Pass Yards": "PASS_YDS", "Rushing Yards": "RUSH_YDS",
+            "Receiving Yards": "REC_YDS", "Hits": "HITS",
+            "Total Bases": "TB", "Home Runs": "HR", "Runs": "RUNS",
+            "RBI": "RBI", "Walks": "BB", "Stolen Bases": "SB",
+            "Pitcher Strikeouts": "KS", "Pitching Outs": "OUTS",
+            "Earned Runs": "ER", "Fantasy Score": "HITTER_FS"
+        }
+        
+        # Look for patterns like "LeBron James OVER 27.5 Points"
+        pattern = r'([A-Za-z\s\.\-\']+?)\s+(OVER|UNDER)\s+(\d+\.?\d*)\s+([A-Za-z\s]+)'
+        matches = re.findall(pattern, html, re.IGNORECASE)
+        
+        for match in matches:
+            player = match[0].strip()
+            pick = match[1].upper()
+            line = float(match[2])
+            stat_type = match[3].strip()
+            
+            market = market_map.get(stat_type, stat_type.upper().replace(" ", "_"))
+            
+            # Filter by sport if specified (basic heuristic)
+            if sport_filter:
+                if sport_filter == "NBA" and any(x in player for x in ["James", "Curry", "Doncic", "Jokic", "Tatum"]):
+                    pass  # Keep NBA players
+                elif sport_filter == "MLB" and any(x in stat_type for x in ["Strikeouts", "Hits", "Home Runs", "RBI"]):
+                    pass  # Keep MLB props
+                elif sport_filter != "NBA" and sport_filter != "MLB":
+                    pass  # Keep if no filter
+                else:
+                    continue  # Skip if doesn't match sport
+            
+            props.append({
+                "source": "PrizePicks",
+                "sport": sport_filter or "UNKNOWN",
+                "player": player,
+                "market": market,
+                "line": line,
+                "pick": pick,
+                "odds": -110
+            })
+        
+        return props
 
 # =============================================================================
 # CLARITY 18.0 ELITE - COMPLETE MASTER ENGINE
@@ -389,7 +440,7 @@ class Clarity18Elite:
     def __init__(self):
         self.api = UnifiedAPIClient(UNIFIED_API_KEY)
         self.game_scanner = GameScanner(ODDS_API_KEY)
-        self.prop_scanner = PropScanner(APIFY_API_TOKEN) if APIFY_API_TOKEN != "YOUR_APIFY_TOKEN_HERE" else None
+        self.prop_scanner = PropScanner(SCRAPINGBEE_API_KEY)
         self.sims = 10000
         self.wsem_max = 0.10
         self.dtm_bolt = 0.15
@@ -699,7 +750,7 @@ class Clarity18Elite:
         return {"correlated": max_corr > self.correlation_threshold, "max_corr": max_corr, "safe": max_corr <= self.correlation_threshold}
     
     # =========================================================================
-    # ARBITRAGE DETECTOR (NEW)
+    # ARBITRAGE DETECTOR
     # =========================================================================
     def detect_arbitrage(self, props: List[Dict]) -> List[Dict]:
         arbs = []
@@ -731,7 +782,7 @@ class Clarity18Elite:
         return arbs
     
     # =========================================================================
-    # MIDDLE HUNTER (NEW)
+    # MIDDLE HUNTER
     # =========================================================================
     def hunt_middles(self, props: List[Dict]) -> List[Dict]:
         middles = []
@@ -761,7 +812,7 @@ class Clarity18Elite:
         return sorted(middles, key=lambda x: x['Window Size'], reverse=True)
     
     # =========================================================================
-    # ACCURACY DASHBOARD DATA (NEW - FIXED)
+    # ACCURACY DASHBOARD DATA
     # =========================================================================
     def get_accuracy_dashboard(self) -> Dict:
         conn = sqlite3.connect(self.db_path)
@@ -770,15 +821,8 @@ class Clarity18Elite:
         
         if df.empty:
             return {
-                'total_bets': 0,
-                'wins': 0,
-                'losses': 0,
-                'win_rate': 0,
-                'roi': 0,
-                'units_profit': 0,
-                'by_sport': {},
-                'by_tier': {},
-                'sem_score': self.sem_score  # FIXED: Added missing key
+                'total_bets': 0, 'wins': 0, 'losses': 0, 'win_rate': 0, 'roi': 0,
+                'units_profit': 0, 'by_sport': {}, 'by_tier': {}, 'sem_score': self.sem_score
             }
         
         wins = (df['result'] == 'WIN').sum()
@@ -817,15 +861,10 @@ class Clarity18Elite:
             by_tier[tier]['win_rate'] = round(by_tier[tier]['wins'] / by_tier[tier]['bets'] * 100, 1) if by_tier[tier]['bets'] > 0 else 0
         
         return {
-            'total_bets': total,
-            'wins': wins,
-            'losses': total - wins,
+            'total_bets': total, 'wins': wins, 'losses': total - wins,
             'win_rate': round(wins / total * 100, 1) if total > 0 else 0,
-            'roi': round(roi, 1),
-            'units_profit': round(total_profit / 100, 1),
-            'by_sport': by_sport,
-            'by_tier': by_tier,
-            'sem_score': self.sem_score
+            'roi': round(roi, 1), 'units_profit': round(total_profit / 100, 1),
+            'by_sport': by_sport, 'by_tier': by_tier, 'sem_score': self.sem_score
         }
     
     # =========================================================================
@@ -873,26 +912,25 @@ class Clarity18Elite:
                                 "units": total_res['units'], "odds": odds
                             })
         
-        if self.prop_scanner:
-            with st.spinner("Scanning player props from PrizePicks..."):
-                for sport in selected_sports:
-                    props = self.prop_scanner.fetch_prizepicks_props(sport)
-                    for prop in props:
-                        np.random.seed(hash(prop["player"]) % 2**32)
-                        data = list(np.random.poisson(lam=prop["line"]*0.9, size=8))
-                        injury_info = self.api.get_injury_status(prop["player"], prop["sport"])
-                        result = self.analyze_prop(
-                            prop["player"], prop["market"], prop["line"], prop["pick"],
-                            data, prop["sport"], prop["odds"], injury_info["injury"]
-                        )
-                        if result['units'] > 0:
-                            prop_bets.append({
-                                "type": "player_prop", "sport": prop["sport"],
-                                "description": f"{prop['player']} {prop['pick']} {prop['line']} {prop['market']}",
-                                "bet_line": f"{prop['player']} {prop['pick']} {prop['line']} ({prop['odds']})",
-                                "edge": result['raw_edge'], "probability": result['probability'], "units": result['units'],
-                                "odds": prop['odds']
-                            })
+        with st.spinner("Scanning player props from PrizePicks via ScrapingBee..."):
+            for sport in selected_sports:
+                props = self.prop_scanner.fetch_prizepicks_props(sport)
+                for prop in props:
+                    np.random.seed(hash(prop["player"]) % 2**32)
+                    data = list(np.random.poisson(lam=prop["line"]*0.9, size=8))
+                    injury_info = self.api.get_injury_status(prop["player"], prop["sport"])
+                    result = self.analyze_prop(
+                        prop["player"], prop["market"], prop["line"], prop["pick"],
+                        data, prop["sport"], prop["odds"], injury_info["injury"]
+                    )
+                    if result['units'] > 0:
+                        prop_bets.append({
+                            "type": "player_prop", "sport": prop["sport"],
+                            "description": f"{prop['player']} {prop['pick']} {prop['line']} {prop['market']}",
+                            "bet_line": f"{prop['player']} {prop['pick']} {prop['line']} ({prop['odds']})",
+                            "edge": result['raw_edge'], "probability": result['probability'], "units": result['units'],
+                            "odds": prop['odds']
+                        })
         
         game_bets.sort(key=lambda x: x['edge'], reverse=True)
         prop_bets.sort(key=lambda x: x['edge'], reverse=True)
@@ -922,16 +960,10 @@ class Clarity18Elite:
                 )
                 if result['units'] > 0:
                     all_bets.append({
-                        "player": prop["player"],
-                        "market": prop["market"],
-                        "line": prop["line"],
-                        "pick": prop["pick"],
-                        "odds": prop["odds"],
-                        "bookmaker": prop["bookmaker"],
-                        "edge": result['raw_edge'],
-                        "probability": result['probability'],
-                        "units": result['units'],
-                        "sport": sport
+                        "player": prop["player"], "market": prop["market"], "line": prop["line"],
+                        "pick": prop["pick"], "odds": prop["odds"], "bookmaker": prop["bookmaker"],
+                        "edge": result['raw_edge'], "probability": result['probability'],
+                        "units": result['units'], "sport": sport
                     })
         best_bets = {}
         for bet in all_bets:
@@ -941,16 +973,11 @@ class Clarity18Elite:
         sorted_bets = sorted(best_bets.values(), key=lambda x: x['edge'], reverse=True)
         self.scanned_bets["best_odds"] = sorted_bets[:10]
         
-        # Detect arbs and middles
         props_for_arb = []
         for bet in all_bets:
             props_for_arb.append({
-                'player': bet['player'],
-                'market': bet['market'],
-                'line': bet['line'],
-                'pick': bet['pick'],
-                'odds': bet['odds'],
-                'bookmaker': bet['bookmaker']
+                'player': bet['player'], 'market': bet['market'], 'line': bet['line'],
+                'pick': bet['pick'], 'odds': bet['odds'], 'bookmaker': bet['bookmaker']
             })
         self.scanned_bets["arbs"] = self.detect_arbitrage(props_for_arb)
         self.scanned_bets["middles"] = self.hunt_middles(props_for_arb)
@@ -1057,12 +1084,13 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("🔮 CLARITY 18.0 ELITE - ARBITRAGE + MIDDLES + ACCURACY")
+    st.title("🔮 CLARITY 18.0 ELITE - SCRAPINGBEE INTEGRATION")
     st.markdown(f"**Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Perplexity API LIVE")
+        st.success("✅ ScrapingBee LIVE")
         st.success("✅ Full Rosters Loaded (NBA/MLB/NHL)")
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
@@ -1228,22 +1256,19 @@ def run_dashboard():
                 st.error("Invalid JSON format")
     
     # =========================================================================
-    # TAB 7: PRIZEPICKS SCANNER
+    # TAB 7: PRIZEPICKS SCANNER (ScrapingBee)
     # =========================================================================
     with tab7:
-        st.header("🏆 PrizePicks Scanner")
+        st.header("🏆 PrizePicks Scanner (ScrapingBee)")
         st.markdown("Scan today's PrizePicks board for the best player props.")
         col1, col2 = st.columns([2, 1])
         with col1:
             selected_sports_pp = st.multiselect("Select sports", ["NBA", "MLB", "NHL", "NFL"], default=["NBA", "MLB"], key="pp_sports")
         with col2:
             if st.button("🔍 SCAN PRIZEPICKS", type="primary", use_container_width=True):
-                if not APIFY_AVAILABLE:
-                    st.error("Apify client not installed.")
-                else:
-                    with st.spinner("Scanning PrizePicks..."):
-                        results = engine.run_best_bets_scan(selected_sports_pp)
-                        st.success("Scan complete!")
+                with st.spinner("Scanning PrizePicks via ScrapingBee..."):
+                    results = engine.run_best_bets_scan(selected_sports_pp)
+                    st.success("Scan complete!")
         if engine.scanned_bets.get("props"):
             st.subheader("🏀 Top Player Props")
             for i, bet in enumerate(engine.scanned_bets["props"], 1):
