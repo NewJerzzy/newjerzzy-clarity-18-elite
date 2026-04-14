@@ -1,8 +1,8 @@
 """
-CLARITY 18.0 ELITE - COMPLETE SYSTEM (PGA + TENNIS + UFC ADDED)
+CLARITY 18.0 ELITE - COMPLETE SYSTEM (DIRECT API + CORS PROXY)
 Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy
-NBA | MLB | NHL | NFL | PGA | TENNIS | UFC - ALL TEAMS HAVE REAL PLAYERS
-API KEYS: Perplexity + API-Sports + The Odds API + ScrapingBee (optional fallback)
+NBA | MLB | NHL | NFL | PGA | TENNIS | UFC
+API KEYS: Perplexity + API-Sports + The Odds API
 """
 
 import numpy as np
@@ -28,16 +28,14 @@ warnings.filterwarnings('ignore')
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
-SCRAPINGBEE_API_KEY = "22FBDXHY4KXIBBSIZCA8ZN7HS7RF3D8CI2J8HI6DVP94KTMSTVDVCEEXG0D0XT1TOKPPHJT43258Q4RG"
-VERSION = "18.0 Elite (PGA + Tennis + UFC)"
+VERSION = "18.0 Elite (Direct API + CORS Proxy)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
-SCRAPINGBEE_BASE = "https://app.scrapingbee.com/api/v1/"
 
-# Optional imports
+# Optional Telegram
 try:
     from telegram.ext import Application, CommandHandler, ContextTypes
     from telegram import Update
@@ -46,7 +44,7 @@ except ImportError:
     TELEGRAM_AVAILABLE = False
 
 # =============================================================================
-# SPORT-SPECIFIC DISTRIBUTIONS & SETTINGS (EXPANDED)
+# SPORT-SPECIFIC DISTRIBUTIONS & SETTINGS
 # =============================================================================
 SPORT_MODELS = {
     "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "avg_total": 228.5, "home_advantage": 3.0},
@@ -59,7 +57,7 @@ SPORT_MODELS = {
 }
 
 # =============================================================================
-# SPORT-SPECIFIC CATEGORIES (EXPANDED)
+# SPORT-SPECIFIC CATEGORIES
 # =============================================================================
 SPORT_CATEGORIES = {
     "NBA": ["PTS", "REB", "AST", "STL", "BLK", "THREES", "PRA", "PR", "PA"],
@@ -94,7 +92,6 @@ STAT_CONFIG = {
     "H+R+RBI": {"tier": "HIGH", "buffer": 0.5, "reject": True},
     "HITTER_FS": {"tier": "HIGH", "buffer": 3.0, "reject": True},
     "PITCHER_FS": {"tier": "HIGH", "buffer": 5.0, "reject": True},
-    # New sports defaults
     "STROKES": {"tier": "LOW", "buffer": 2.0, "reject": False},
     "BIRDIES": {"tier": "MED", "buffer": 1.0, "reject": False},
     "ACES": {"tier": "HIGH", "buffer": 1.0, "reject": False},
@@ -139,7 +136,7 @@ HARDCODED_TEAMS = {
             "Minnesota Vikings", "New England Patriots", "New Orleans Saints", "New York Giants",
             "New York Jets", "Philadelphia Eagles", "Pittsburgh Steelers", "San Francisco 49ers",
             "Seattle Seahawks", "Tampa Bay Buccaneers", "Tennessee Titans", "Washington Commanders"],
-    "PGA": ["PGA Tour"],  # Individual sport, no teams
+    "PGA": ["PGA Tour"],
     "TENNIS": ["ATP", "WTA"],
     "UFC": ["UFC"]
 }
@@ -422,20 +419,17 @@ class GameScanner:
             return []
 
 # =============================================================================
-# PROP SCANNER (PrizePicks Direct API + ScrapingBee Fallback) - EXPANDED
+# PROP SCANNER (Direct PrizePicks API with CORS Proxy Fallback)
 # =============================================================================
 class PropScanner:
-    """Fetches PrizePicks props for NBA, MLB, NHL, NFL, PGA, Tennis, UFC."""
-    
     BASE_URL = "https://api.prizepicks.com/projections"
+    CORS_PROXY = "https://corsproxy.io/?"
+    
     DEFAULT_HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
         'Accept': 'application/json, text/plain, */*',
         'Accept-Language': 'en-US,en;q=0.9',
         'Referer': 'https://app.prizepicks.com/',
-        'Sec-Fetch-Site': 'same-origin',
-        'Sec-Fetch-Mode': 'cors',
-        'Connection': 'keep-alive',
     }
     LEAGUE_IDS = {
         "NBA": 7, "MLB": 8, "NHL": 9, "NFL": 6,
@@ -453,48 +447,44 @@ class PropScanner:
         "Pitcher Fantasy Score": "PITCHER_FS", "Fantasy Score": "HITTER_FS",
         "Pts+Rebs+Asts": "PRA", "Pts+Rebs": "PR", "Pts+Asts": "PA",
         "Rebs+Asts": "RA", "Blks+Stls": "BLK_STL",
-        # PGA
         "Strokes": "STROKES", "Birdies": "BIRDIES", "Bogeys": "BOGEYS",
         "Eagles": "EAGLES", "Driving Distance": "DRIVING_DISTANCE",
         "Greens in Regulation": "GIR",
-        # Tennis
         "Aces": "ACES", "Double Faults": "DOUBLE_FAULTS",
         "Games Won": "GAMES_WON", "Total Games": "TOTAL_GAMES",
         "Break Points": "BREAK_PTS",
-        # UFC
         "Significant Strikes": "SIGNIFICANT_STRIKES", "Takedowns": "TAKEDOWNS",
         "Fight Time": "FIGHT_TIME", "Submission Attempts": "SUB_ATTEMPTS"
     }
-    
-    def __init__(self, scrapingbee_key: str = None):
-        self.scrapingbee_key = scrapingbee_key
-        self.scrapingbee_base = SCRAPINGBEE_BASE if scrapingbee_key else None
+
+    def __init__(self):
         self.session = requests.Session()
         self.session.headers.update(self.DEFAULT_HEADERS)
-    
+
     def fetch_prizepicks_props(self, sport: str = None) -> List[Dict]:
-        """Primary: direct API. Fallback: ScrapingBee. Final: sample data."""
+        # Attempt 1: Direct API
         try:
-            props = self._fetch_via_direct_api(sport)
+            props = self._fetch_direct(sport, use_proxy=False)
             if props:
                 st.success(f"✅ Direct API: {len(props)} props fetched")
                 return props
         except Exception as e:
             st.warning(f"Direct API failed: {str(e)[:100]}")
-        
-        if self.scrapingbee_key:
-            try:
-                props = self._fetch_via_scrapingbee(sport)
-                if props:
-                    st.info(f"🔄 ScrapingBee fallback: {len(props)} props fetched")
-                    return props
-            except Exception as e:
-                st.warning(f"ScrapingBee failed: {str(e)[:100]}")
-        
+
+        # Attempt 2: CORS Proxy
+        try:
+            props = self._fetch_direct(sport, use_proxy=True)
+            if props:
+                st.info(f"🔄 CORS Proxy: {len(props)} props fetched")
+                return props
+        except Exception as e:
+            st.warning(f"CORS Proxy failed: {str(e)[:100]}")
+
+        # Final fallback
         st.warning("All sources failed. Using sample data.")
         return self._fallback_prizepicks_props(sport)
-    
-    def _fetch_via_direct_api(self, sport: str = None) -> List[Dict]:
+
+    def _fetch_direct(self, sport: str = None, use_proxy: bool = False) -> List[Dict]:
         all_props = []
         sports_to_fetch = [sport] if sport else list(self.LEAGUE_IDS.keys())
         for s in sports_to_fetch:
@@ -502,16 +492,19 @@ class PropScanner:
             if not league_id:
                 continue
             params = {'league_id': league_id, 'per_page': 500, 'single_stat': 'true', 'game_mode': 'pickem'}
-            response = self.session.get(self.BASE_URL, params=params, timeout=15)
+            url = self.BASE_URL
+            if use_proxy:
+                url = f"{self.CORS_PROXY}{url}"
+            response = self.session.get(url, params=params, timeout=20)
             if response.status_code != 200:
                 continue
             data = response.json()
-            props = self._parse_direct_api_response(data, s)
+            props = self._parse_response(data, s)
             all_props.extend(props)
-            time.sleep(0.5)
+            time.sleep(0.3)
         return all_props
-    
-    def _parse_direct_api_response(self, data: dict, sport: str) -> List[Dict]:
+
+    def _parse_response(self, data: dict, sport: str) -> List[Dict]:
         props = []
         records = data.get('data', []) or [item for item in data.get('included', []) if item.get('type') == 'projection']
         players = {item['id']: item['attributes']['name'] for item in data.get('included', []) if item.get('type') == 'new_player'}
@@ -526,25 +519,7 @@ class PropScanner:
             props.append({"source": "PrizePicks", "sport": sport, "player": player_name, "market": market,
                           "line": float(line), "pick": "OVER", "odds": -110})
         return props
-    
-    def _fetch_via_scrapingbee(self, sport: str = None) -> List[Dict]:
-        all_props = []
-        sports_to_fetch = [sport] if sport else list(self.LEAGUE_IDS.keys())
-        for s in sports_to_fetch:
-            league_id = self.LEAGUE_IDS.get(s)
-            if not league_id:
-                continue
-            url = f"{self.BASE_URL}?league_id={league_id}&per_page=500&single_stat=true&game_mode=pickem"
-            params = {"api_key": self.scrapingbee_key, "url": url, "render_js": "false", "premium_proxy": "true"}
-            response = requests.get(self.scrapingbee_base, params=params, timeout=45)
-            if response.status_code != 200:
-                continue
-            data = response.json()
-            props = self._parse_direct_api_response(data, s)
-            all_props.extend(props)
-            time.sleep(1)
-        return all_props
-    
+
     def _fallback_prizepicks_props(self, sport: str = None) -> List[Dict]:
         props = []
         if sport in ["NBA", None]:
@@ -555,18 +530,6 @@ class PropScanner:
             for p in ["Shohei Ohtani", "Aaron Judge", "Ronald Acuna Jr", "Mookie Betts"]:
                 props.append({"source": "Fallback", "sport": "MLB", "player": p, "market": "HR",
                               "line": 0.5, "pick": "OVER", "odds": -110})
-        if sport in ["PGA", None]:
-            for p in ["Scottie Scheffler", "Rory McIlroy", "Jon Rahm", "Ludvig Aberg"]:
-                props.append({"source": "Fallback", "sport": "PGA", "player": p, "market": "STROKES",
-                              "line": 70.5, "pick": "UNDER", "odds": -110})
-        if sport in ["TENNIS", None]:
-            for p in ["Novak Djokovic", "Carlos Alcaraz", "Iga Swiatek", "Coco Gauff"]:
-                props.append({"source": "Fallback", "sport": "TENNIS", "player": p, "market": "ACES",
-                              "line": 6.5, "pick": "OVER", "odds": -110})
-        if sport in ["UFC", None]:
-            for p in ["Jon Jones", "Islam Makhachev", "Alex Pereira", "Sean O'Malley"]:
-                props.append({"source": "Fallback", "sport": "UFC", "player": p, "market": "SIGNIFICANT_STRIKES",
-                              "line": 45.5, "pick": "OVER", "odds": -110})
         return props
 
 # =============================================================================
@@ -576,7 +539,7 @@ class Clarity18Elite:
     def __init__(self):
         self.api = UnifiedAPIClient(UNIFIED_API_KEY)
         self.game_scanner = GameScanner(ODDS_API_KEY)
-        self.prop_scanner = PropScanner(scrapingbee_key=SCRAPINGBEE_API_KEY)
+        self.prop_scanner = PropScanner()
         self.season_context = SeasonContextEngine(self.api)
         self.sims = 10000
         self.wsem_max = 0.10
@@ -1226,13 +1189,13 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("🔮 CLARITY 18.0 ELITE - PGA + TENNIS + UFC")
-    st.markdown(f"**7 Sports | Direct PrizePicks API | Season Context Active | Version: {VERSION}**")
+    st.title("🔮 CLARITY 18.0 ELITE - DIRECT API + CORS PROXY")
+    st.markdown(f"**7 Sports | PrizePicks Direct API | Season Context Active | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Perplexity API LIVE")
-        st.success("✅ PrizePicks Direct API (7 Sports)")
+        st.success("✅ PrizePicks Direct API + CORS Proxy")
         st.success("✅ Season Context ACTIVE")
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
@@ -1393,7 +1356,7 @@ def run_dashboard():
                 st.error("Invalid JSON format")
     
     with tab7:
-        st.header("🏆 PrizePicks Scanner (7 Sports)")
+        st.header("🏆 PrizePicks Scanner (Direct API + CORS Proxy)")
         col1, col2 = st.columns([2, 1])
         with col1:
             selected_sports_pp = st.multiselect("Select sports", list(PropScanner.LEAGUE_IDS.keys()), default=["NBA", "MLB"], key="pp_sports")
