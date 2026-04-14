@@ -25,7 +25,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"  # Replace with actual Odds API key if different
+ODDS_API_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"  # Replace with actual Odds API key if different
 VERSION = "18.0 Elite (Fixed - Live Data)"
 BUILD_DATE = "2026-04-13"
 
