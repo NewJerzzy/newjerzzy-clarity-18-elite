@@ -691,11 +691,7 @@ class ClarityApp:
                 st.success("✅ Perplexity API Reachable")
             except:
                 st.warning("⚠️ Perplexity API Unreachable")
-            try:
-                requests.get(f"{API_SPORTS_BASE}/status", headers={"x-apisports-key": API_SPORTS_KEY}, timeout=3)
-                st.success("✅ API-Sports Connected")
-            except:
-                st.warning("⚠️ API-Sports Unreachable")
+            st.info("ℹ️ API-Sports: Using fallback/manual stats")
             try:
                 requests.get(f"{ODDS_API_BASE}/sports", params={"apiKey": ODDS_API_KEY}, timeout=3)
                 st.success("✅ Odds API Connected")
@@ -703,7 +699,7 @@ class ClarityApp:
                 st.warning("⚠️ Odds API Unreachable")
             st.metric("Version", VERSION)
             st.metric("Bankroll", f"${self.evaluator.bankroll:,.0f}")
-            st.info("💡 Live stats and odds are fetched in real-time.")
+            st.info("💡 Live odds are fetched in real-time.")
         
         tab1, tab2, tab3, tab4, tab5 = st.tabs([
             "🎯 PLAYER PROPS", "💰 MONEYLINE", "📊 SPREAD", "📈 TOTALS", "🔄 ALT LINES"
