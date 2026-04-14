@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE - COMPLETE SYSTEM (DIRECT API + CORS PROXY)
+CLARITY 18.0 ELITE - COMPLETE SYSTEM (DIRECT API + ALLORIGINS PROXY)
 Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy
 NBA | MLB | NHL | NFL | PGA | TENNIS | UFC
 API KEYS: Perplexity + API-Sports + The Odds API
@@ -28,7 +28,7 @@ warnings.filterwarnings('ignore')
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
-VERSION = "18.0 Elite (Direct API + CORS Proxy)"
+VERSION = "18.0 Elite (AllOrigins Proxy Fixed)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -419,11 +419,11 @@ class GameScanner:
             return []
 
 # =============================================================================
-# PROP SCANNER (Direct PrizePicks API with CORS Proxy Fallback)
+# PROP SCANNER (Direct PrizePicks API + AllOrigins Proxy)
 # =============================================================================
 class PropScanner:
     BASE_URL = "https://api.prizepicks.com/projections"
-    CORS_PROXY = "https://corsproxy.io/?"
+    CORS_PROXY = "https://api.allorigins.win/raw?url="
     
     DEFAULT_HEADERS = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
@@ -471,14 +471,14 @@ class PropScanner:
         except Exception as e:
             st.warning(f"Direct API failed: {str(e)[:100]}")
 
-        # Attempt 2: CORS Proxy
+        # Attempt 2: AllOrigins Proxy
         try:
             props = self._fetch_direct(sport, use_proxy=True)
             if props:
-                st.info(f"🔄 CORS Proxy: {len(props)} props fetched")
+                st.info(f"🔄 AllOrigins Proxy: {len(props)} props fetched")
                 return props
         except Exception as e:
-            st.warning(f"CORS Proxy failed: {str(e)[:100]}")
+            st.warning(f"Proxy failed: {str(e)[:100]}")
 
         # Final fallback
         st.warning("All sources failed. Using sample data.")
@@ -495,13 +495,13 @@ class PropScanner:
             url = self.BASE_URL
             if use_proxy:
                 url = f"{self.CORS_PROXY}{url}"
-            response = self.session.get(url, params=params, timeout=20)
+            response = self.session.get(url, params=params, timeout=25)
             if response.status_code != 200:
                 continue
             data = response.json()
             props = self._parse_response(data, s)
             all_props.extend(props)
-            time.sleep(0.3)
+            time.sleep(0.5)
         return all_props
 
     def _parse_response(self, data: dict, sport: str) -> List[Dict]:
@@ -1189,13 +1189,13 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("🔮 CLARITY 18.0 ELITE - DIRECT API + CORS PROXY")
-    st.markdown(f"**7 Sports | PrizePicks Direct API | Season Context Active | Version: {VERSION}**")
+    st.title("🔮 CLARITY 18.0 ELITE - ALLORIGINS PROXY")
+    st.markdown(f"**7 Sports | Direct API + Proxy | Season Context | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Perplexity API LIVE")
-        st.success("✅ PrizePicks Direct API + CORS Proxy")
+        st.success("✅ PrizePicks API + AllOrigins Proxy")
         st.success("✅ Season Context ACTIVE")
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
@@ -1356,7 +1356,7 @@ def run_dashboard():
                 st.error("Invalid JSON format")
     
     with tab7:
-        st.header("🏆 PrizePicks Scanner (Direct API + CORS Proxy)")
+        st.header("🏆 PrizePicks Scanner (Direct API + AllOrigins Proxy)")
         col1, col2 = st.columns([2, 1])
         with col1:
             selected_sports_pp = st.multiselect("Select sports", list(PropScanner.LEAGUE_IDS.keys()), default=["NBA", "MLB"], key="pp_sports")
