@@ -1,7 +1,7 @@
 """
-CLARITY 18.0 ELITE - COMPLETE SYSTEM (DUAL PRIZEPICKS SCANNER)
+CLARITY 18.0 ELITE - COMPLETE SYSTEM (PGA + TENNIS + UFC ADDED)
 Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy
-NBA | MLB | NHL | NFL - ALL TEAMS HAVE REAL PLAYERS
+NBA | MLB | NHL | NFL | PGA | TENNIS | UFC - ALL TEAMS HAVE REAL PLAYERS
 API KEYS: Perplexity + API-Sports + The Odds API + ScrapingBee (optional fallback)
 """
 
@@ -28,8 +28,8 @@ warnings.filterwarnings('ignore')
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
-SCRAPINGBEE_API_KEY = "22FBDXHY4KXIBBSIZCA8ZN7HS7RF3D8CI2J8HI6DVP94KTMSTVDVCEEXG0D0XT1TOKPPHJT43258Q4RG"  # optional fallback
-VERSION = "18.0 Elite (Dual PrizePicks Scanner)"
+SCRAPINGBEE_API_KEY = "22FBDXHY4KXIBBSIZCA8ZN7HS7RF3D8CI2J8HI6DVP94KTMSTVDVCEEXG0D0XT1TOKPPHJT43258Q4RG"
+VERSION = "18.0 Elite (PGA + Tennis + UFC)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -46,23 +46,29 @@ except ImportError:
     TELEGRAM_AVAILABLE = False
 
 # =============================================================================
-# SPORT-SPECIFIC DISTRIBUTIONS & SETTINGS
+# SPORT-SPECIFIC DISTRIBUTIONS & SETTINGS (EXPANDED)
 # =============================================================================
 SPORT_MODELS = {
     "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "avg_total": 228.5, "home_advantage": 3.0},
     "MLB": {"distribution": "poisson", "variance_factor": 1.08, "avg_total": 8.5, "home_advantage": 0.12},
     "NHL": {"distribution": "poisson", "variance_factor": 1.12, "avg_total": 6.0, "home_advantage": 0.15},
-    "NFL": {"distribution": "nbinom", "variance_factor": 1.20, "avg_total": 44.5, "home_advantage": 2.8}
+    "NFL": {"distribution": "nbinom", "variance_factor": 1.20, "avg_total": 44.5, "home_advantage": 2.8},
+    "PGA": {"distribution": "nbinom", "variance_factor": 1.10, "avg_total": 70.5, "home_advantage": 0.0},
+    "TENNIS": {"distribution": "poisson", "variance_factor": 1.05, "avg_total": 22.0, "home_advantage": 0.0},
+    "UFC": {"distribution": "poisson", "variance_factor": 1.20, "avg_total": 2.5, "home_advantage": 0.0}
 }
 
 # =============================================================================
-# SPORT-SPECIFIC CATEGORIES
+# SPORT-SPECIFIC CATEGORIES (EXPANDED)
 # =============================================================================
 SPORT_CATEGORIES = {
     "NBA": ["PTS", "REB", "AST", "STL", "BLK", "THREES", "PRA", "PR", "PA"],
     "MLB": ["OUTS", "KS", "HITS", "TB", "HR", "RBI", "H+R+RBI", "HITTER_FS", "PITCHER_FS"],
     "NHL": ["SOG", "SAVES", "GOALS", "ASSISTS", "HITS", "BLK_SHOTS"],
-    "NFL": ["PASS_YDS", "PASS_TD", "RUSH_YDS", "RUSH_TD", "REC_YDS", "REC", "TD"]
+    "NFL": ["PASS_YDS", "PASS_TD", "RUSH_YDS", "RUSH_TD", "REC_YDS", "REC", "TD"],
+    "PGA": ["STROKES", "BIRDIES", "BOGEYS", "EAGLES", "DRIVING_DISTANCE", "GIR"],
+    "TENNIS": ["ACES", "DOUBLE_FAULTS", "GAMES_WON", "TOTAL_GAMES", "BREAK_PTS"],
+    "UFC": ["SIGNIFICANT_STRIKES", "TAKEDOWNS", "FIGHT_TIME", "SUB_ATTEMPTS"]
 }
 
 # =============================================================================
@@ -88,6 +94,12 @@ STAT_CONFIG = {
     "H+R+RBI": {"tier": "HIGH", "buffer": 0.5, "reject": True},
     "HITTER_FS": {"tier": "HIGH", "buffer": 3.0, "reject": True},
     "PITCHER_FS": {"tier": "HIGH", "buffer": 5.0, "reject": True},
+    # New sports defaults
+    "STROKES": {"tier": "LOW", "buffer": 2.0, "reject": False},
+    "BIRDIES": {"tier": "MED", "buffer": 1.0, "reject": False},
+    "ACES": {"tier": "HIGH", "buffer": 1.0, "reject": False},
+    "GAMES_WON": {"tier": "LOW", "buffer": 1.5, "reject": False},
+    "SIGNIFICANT_STRIKES": {"tier": "MED", "buffer": 10.0, "reject": False},
 }
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
@@ -126,7 +138,10 @@ HARDCODED_TEAMS = {
             "Las Vegas Raiders", "Los Angeles Chargers", "Los Angeles Rams", "Miami Dolphins",
             "Minnesota Vikings", "New England Patriots", "New Orleans Saints", "New York Giants",
             "New York Jets", "Philadelphia Eagles", "Pittsburgh Steelers", "San Francisco 49ers",
-            "Seattle Seahawks", "Tampa Bay Buccaneers", "Tennessee Titans", "Washington Commanders"]
+            "Seattle Seahawks", "Tampa Bay Buccaneers", "Tennessee Titans", "Washington Commanders"],
+    "PGA": ["PGA Tour"],  # Individual sport, no teams
+    "TENNIS": ["ATP", "WTA"],
+    "UFC": ["UFC"]
 }
 
 # =============================================================================
@@ -407,10 +422,10 @@ class GameScanner:
             return []
 
 # =============================================================================
-# PROP SCANNER (PrizePicks Direct API + ScrapingBee Fallback)
+# PROP SCANNER (PrizePicks Direct API + ScrapingBee Fallback) - EXPANDED
 # =============================================================================
 class PropScanner:
-    """Fetches PrizePicks props using direct API (primary) or ScrapingBee (secondary)."""
+    """Fetches PrizePicks props for NBA, MLB, NHL, NFL, PGA, Tennis, UFC."""
     
     BASE_URL = "https://api.prizepicks.com/projections"
     DEFAULT_HEADERS = {
@@ -422,7 +437,10 @@ class PropScanner:
         'Sec-Fetch-Mode': 'cors',
         'Connection': 'keep-alive',
     }
-    LEAGUE_IDS = {"NBA": 7, "MLB": 8, "NHL": 9, "NFL": 6, "SOCCER": 10, "TENNIS": 12}
+    LEAGUE_IDS = {
+        "NBA": 7, "MLB": 8, "NHL": 9, "NFL": 6,
+        "PGA": 12, "TENNIS": 14, "UFC": 16
+    }
     MARKET_MAP = {
         "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
         "Strikeouts": "KS", "Hits Allowed": "HITS_ALLOWED",
@@ -434,7 +452,18 @@ class PropScanner:
         "Earned Runs": "ER", "Hitter Fantasy Score": "HITTER_FS",
         "Pitcher Fantasy Score": "PITCHER_FS", "Fantasy Score": "HITTER_FS",
         "Pts+Rebs+Asts": "PRA", "Pts+Rebs": "PR", "Pts+Asts": "PA",
-        "Rebs+Asts": "RA", "Blks+Stls": "BLK_STL"
+        "Rebs+Asts": "RA", "Blks+Stls": "BLK_STL",
+        # PGA
+        "Strokes": "STROKES", "Birdies": "BIRDIES", "Bogeys": "BOGEYS",
+        "Eagles": "EAGLES", "Driving Distance": "DRIVING_DISTANCE",
+        "Greens in Regulation": "GIR",
+        # Tennis
+        "Aces": "ACES", "Double Faults": "DOUBLE_FAULTS",
+        "Games Won": "GAMES_WON", "Total Games": "TOTAL_GAMES",
+        "Break Points": "BREAK_PTS",
+        # UFC
+        "Significant Strikes": "SIGNIFICANT_STRIKES", "Takedowns": "TAKEDOWNS",
+        "Fight Time": "FIGHT_TIME", "Submission Attempts": "SUB_ATTEMPTS"
     }
     
     def __init__(self, scrapingbee_key: str = None):
@@ -445,7 +474,6 @@ class PropScanner:
     
     def fetch_prizepicks_props(self, sport: str = None) -> List[Dict]:
         """Primary: direct API. Fallback: ScrapingBee. Final: sample data."""
-        # Try direct API first
         try:
             props = self._fetch_via_direct_api(sport)
             if props:
@@ -454,7 +482,6 @@ class PropScanner:
         except Exception as e:
             st.warning(f"Direct API failed: {str(e)[:100]}")
         
-        # Fallback to ScrapingBee
         if self.scrapingbee_key:
             try:
                 props = self._fetch_via_scrapingbee(sport)
@@ -464,13 +491,12 @@ class PropScanner:
             except Exception as e:
                 st.warning(f"ScrapingBee failed: {str(e)[:100]}")
         
-        # Final fallback
         st.warning("All sources failed. Using sample data.")
         return self._fallback_prizepicks_props(sport)
     
     def _fetch_via_direct_api(self, sport: str = None) -> List[Dict]:
         all_props = []
-        sports_to_fetch = [sport] if sport else ["NBA", "MLB", "NHL", "NFL"]
+        sports_to_fetch = [sport] if sport else list(self.LEAGUE_IDS.keys())
         for s in sports_to_fetch:
             league_id = self.LEAGUE_IDS.get(s)
             if not league_id:
@@ -503,7 +529,7 @@ class PropScanner:
     
     def _fetch_via_scrapingbee(self, sport: str = None) -> List[Dict]:
         all_props = []
-        sports_to_fetch = [sport] if sport else ["NBA", "MLB", "NHL", "NFL"]
+        sports_to_fetch = [sport] if sport else list(self.LEAGUE_IDS.keys())
         for s in sports_to_fetch:
             league_id = self.LEAGUE_IDS.get(s)
             if not league_id:
@@ -529,6 +555,18 @@ class PropScanner:
             for p in ["Shohei Ohtani", "Aaron Judge", "Ronald Acuna Jr", "Mookie Betts"]:
                 props.append({"source": "Fallback", "sport": "MLB", "player": p, "market": "HR",
                               "line": 0.5, "pick": "OVER", "odds": -110})
+        if sport in ["PGA", None]:
+            for p in ["Scottie Scheffler", "Rory McIlroy", "Jon Rahm", "Ludvig Aberg"]:
+                props.append({"source": "Fallback", "sport": "PGA", "player": p, "market": "STROKES",
+                              "line": 70.5, "pick": "UNDER", "odds": -110})
+        if sport in ["TENNIS", None]:
+            for p in ["Novak Djokovic", "Carlos Alcaraz", "Iga Swiatek", "Coco Gauff"]:
+                props.append({"source": "Fallback", "sport": "TENNIS", "player": p, "market": "ACES",
+                              "line": 6.5, "pick": "OVER", "odds": -110})
+        if sport in ["UFC", None]:
+            for p in ["Jon Jones", "Islam Makhachev", "Alex Pereira", "Sean O'Malley"]:
+                props.append({"source": "Fallback", "sport": "UFC", "player": p, "market": "SIGNIFICANT_STRIKES",
+                              "line": 45.5, "pick": "OVER", "odds": -110})
         return props
 
 # =============================================================================
@@ -647,7 +685,7 @@ class Clarity18Elite:
             tier = "PASS"
         
         season_warning = None
-        if team:
+        if team and sport in ["NBA", "MLB", "NHL", "NFL"]:
             fade_check = self.season_context.should_fade_team(sport, team)
             if fade_check["fade"]:
                 sim["proj"] *= fade_check["multiplier"]
@@ -666,8 +704,8 @@ class Clarity18Elite:
         avg_total = model.get("avg_total", 200)
         base_proj = avg_total + (home_adv / 2)
         
-        home_fade = self.season_context.should_fade_team(sport, home)
-        away_fade = self.season_context.should_fade_team(sport, away)
+        home_fade = self.season_context.should_fade_team(sport, home) if sport in ["NBA", "MLB", "NHL", "NFL"] else {"fade": False}
+        away_fade = self.season_context.should_fade_team(sport, away) if sport in ["NBA", "MLB", "NHL", "NFL"] else {"fade": False}
         season_warnings = []
         if home_fade["fade"]:
             base_proj *= home_fade["multiplier"]
@@ -726,8 +764,8 @@ class Clarity18Elite:
         home_win_prob = 0.55 + (home_adv / 100)
         away_win_prob = 1 - home_win_prob
         
-        home_fade = self.season_context.should_fade_team(sport, home)
-        away_fade = self.season_context.should_fade_team(sport, away)
+        home_fade = self.season_context.should_fade_team(sport, home) if sport in ["NBA", "MLB", "NHL", "NFL"] else {"fade": False}
+        away_fade = self.season_context.should_fade_team(sport, away) if sport in ["NBA", "MLB", "NHL", "NFL"] else {"fade": False}
         season_warnings = []
         if home_fade["fade"]:
             home_win_prob *= home_fade["multiplier"]
@@ -779,8 +817,8 @@ class Clarity18Elite:
         home_adv = model.get("home_advantage", 0)
         base_margin = home_adv
         
-        home_fade = self.season_context.should_fade_team(sport, home)
-        away_fade = self.season_context.should_fade_team(sport, away)
+        home_fade = self.season_context.should_fade_team(sport, home) if sport in ["NBA", "MLB", "NHL", "NFL"] else {"fade": False}
+        away_fade = self.season_context.should_fade_team(sport, away) if sport in ["NBA", "MLB", "NHL", "NFL"] else {"fade": False}
         season_warnings = []
         if home_fade["fade"]:
             base_margin *= home_fade["multiplier"]
@@ -1093,7 +1131,18 @@ class Clarity18Elite:
             return MLB_ROSTERS[team]
         elif sport == "NHL" and team in NHL_ROSTERS:
             return NHL_ROSTERS[team]
+        elif sport in ["PGA", "TENNIS", "UFC"]:
+            return self._get_individual_sport_players(sport)
         return ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
+    
+    def _get_individual_sport_players(self, sport: str) -> List[str]:
+        if sport == "PGA":
+            return ["Scottie Scheffler", "Rory McIlroy", "Jon Rahm", "Ludvig Aberg", "Xander Schauffele", "Collin Morikawa"]
+        elif sport == "TENNIS":
+            return ["Novak Djokovic", "Carlos Alcaraz", "Iga Swiatek", "Coco Gauff", "Aryna Sabalenka", "Jannik Sinner"]
+        elif sport == "UFC":
+            return ["Jon Jones", "Islam Makhachev", "Alex Pereira", "Sean O'Malley", "Ilia Topuria", "Dricus Du Plessis"]
+        return ["Player 1", "Player 2", "Player 3"]
     
     def _log_bet(self, player, market, line, pick, sport, odds, edge, signal):
         conn = sqlite3.connect(self.db_path)
@@ -1177,15 +1226,14 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("🔮 CLARITY 18.0 ELITE - DUAL PRIZEPICKS SCANNER")
-    st.markdown(f"**Direct API + ScrapingBee Fallback | Season Context Active | Version: {VERSION}**")
+    st.title("🔮 CLARITY 18.0 ELITE - PGA + TENNIS + UFC")
+    st.markdown(f"**7 Sports | Direct PrizePicks API | Season Context Active | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Perplexity API LIVE")
-        st.success("✅ PrizePicks Direct API")
+        st.success("✅ PrizePicks Direct API (7 Sports)")
         st.success("✅ Season Context ACTIVE")
-        st.success("✅ Full Rosters Loaded (NBA/MLB/NHL)")
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
@@ -1199,14 +1247,14 @@ def run_dashboard():
         st.header("Player Prop Analyzer")
         c1, c2 = st.columns(2)
         with c1:
-            sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="prop_sport")
+            sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL", "PGA", "TENNIS", "UFC"], key="prop_sport")
             teams = engine.get_teams(sport)
-            team = st.selectbox("Team (for tanking check)", [""] + teams, key="prop_team")
-            roster = engine.get_roster(sport, team) if team else []
-            player = st.selectbox("Player", roster if roster else ["Select team first"], key="prop_player")
+            team = st.selectbox("Team/Event (for context)", [""] + teams, key="prop_team") if sport in ["NBA", "MLB", "NHL", "NFL"] else ""
+            roster = engine.get_roster(sport, team) if team else engine._get_individual_sport_players(sport)
+            player = st.selectbox("Player", roster, key="prop_player")
             available_markets = SPORT_CATEGORIES.get(sport, ["PTS"])
             market = st.selectbox("Market", available_markets, key="prop_market")
-            line = st.number_input("Line", 0.5, 100.0, 0.5, key="prop_line")
+            line = st.number_input("Line", 0.5, 200.0, 0.5, key="prop_line")
             pick = st.selectbox("Pick", ["OVER", "UNDER"], key="prop_pick")
         with c2:
             data_str = st.text_area("Recent Games (comma separated)", "0, 1, 0, 2, 0, 1", key="prop_data")
@@ -1345,10 +1393,10 @@ def run_dashboard():
                 st.error("Invalid JSON format")
     
     with tab7:
-        st.header("🏆 PrizePicks Scanner (Direct API + Fallback)")
+        st.header("🏆 PrizePicks Scanner (7 Sports)")
         col1, col2 = st.columns([2, 1])
         with col1:
-            selected_sports_pp = st.multiselect("Select sports", ["NBA", "MLB", "NHL", "NFL"], default=["NBA", "MLB"], key="pp_sports")
+            selected_sports_pp = st.multiselect("Select sports", list(PropScanner.LEAGUE_IDS.keys()), default=["NBA", "MLB"], key="pp_sports")
         with col2:
             if st.button("🔍 SCAN PRIZEPICKS", type="primary", use_container_width=True):
                 with st.spinner("Scanning PrizePicks..."):
