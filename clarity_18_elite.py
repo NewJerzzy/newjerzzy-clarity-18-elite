@@ -57,11 +57,9 @@ SPORT_CATEGORIES = {
     "NFL": ["PASS_YDS", "PASS_TD", "RUSH_YDS", "RUSH_TD", "REC_YDS", "REC", "TD"]
 }
 
-# API-Sports endpoint mappings
 API_SPORT_KEYS = {"NBA": "basketball", "MLB": "baseball", "NHL": "hockey", "NFL": "american-football"}
-API_LEAGUE_IDS = {"NBA": 12, "MLB": 1, "NHL": 57, "NFL": 1}  # Adjust as per API-Sports documentation
+API_LEAGUE_IDS = {"NBA": 12, "MLB": 1, "NHL": 57, "NFL": 1}
 
-# Stat mapping for player stats (API-Sports field -> our market)
 STAT_MAPPING = {
     "NBA": {"PTS": "points", "REB": "totReb", "AST": "assists", "STL": "steals", "BLK": "blocks", "THREES": "tpm"},
     "MLB": {"HITS": "hits", "HR": "homeRuns", "RBI": "rbi", "TB": "totalBases", "KS": "strikeOuts"},
@@ -70,9 +68,6 @@ STAT_MAPPING = {
             "RUSH_TD": "rushingTDs", "REC_YDS": "receivingYards", "REC": "receptions"}
 }
 
-# =============================================================================
-# STAT CONFIG (unchanged)
-# =============================================================================
 STAT_CONFIG = {
     "PTS": {"tier": "MED", "buffer": 1.5, "reject": False},
     "REB": {"tier": "LOW", "buffer": 1.0, "reject": False},
@@ -97,10 +92,190 @@ STAT_CONFIG = {
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
 # =============================================================================
-# HARDCODED TEAMS (fallback) and ROSTERS (kept as fallback)
+# HARDCODED TEAMS - ALL SPORTS
 # =============================================================================
-# (Include all HARDCODED_TEAMS, NBA_ROSTERS, MLB_ROSTERS, NHL_ROSTERS, NFL_ROSTERS from previous version)
-# I'll omit them for brevity but assume they are present in the full code.
+HARDCODED_TEAMS = {
+    "NBA": ["Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets", "Chicago Bulls",
+            "Cleveland Cavaliers", "Dallas Mavericks", "Denver Nuggets", "Detroit Pistons",
+            "Golden State Warriors", "Houston Rockets", "Indiana Pacers", "LA Clippers",
+            "Los Angeles Lakers", "Memphis Grizzlies", "Miami Heat", "Milwaukee Bucks",
+            "Minnesota Timberwolves", "New Orleans Pelicans", "New York Knicks",
+            "Oklahoma City Thunder", "Orlando Magic", "Philadelphia 76ers", "Phoenix Suns",
+            "Portland Trail Blazers", "Sacramento Kings", "San Antonio Spurs", "Toronto Raptors",
+            "Utah Jazz", "Washington Wizards"],
+    "MLB": ["Arizona Diamondbacks", "Atlanta Braves", "Baltimore Orioles", "Boston Red Sox",
+            "Chicago Cubs", "Chicago White Sox", "Cincinnati Reds", "Cleveland Guardians",
+            "Colorado Rockies", "Detroit Tigers", "Houston Astros", "Kansas City Royals",
+            "Los Angeles Angels", "Los Angeles Dodgers", "Miami Marlins", "Milwaukee Brewers",
+            "Minnesota Twins", "New York Mets", "New York Yankees", "Oakland Athletics",
+            "Philadelphia Phillies", "Pittsburgh Pirates", "San Diego Padres", "San Francisco Giants",
+            "Seattle Mariners", "St. Louis Cardinals", "Tampa Bay Rays", "Texas Rangers",
+            "Toronto Blue Jays", "Washington Nationals"],
+    "NHL": ["Anaheim Ducks", "Boston Bruins", "Buffalo Sabres", "Calgary Flames", "Carolina Hurricanes",
+            "Chicago Blackhawks", "Colorado Avalanche", "Columbus Blue Jackets", "Dallas Stars",
+            "Detroit Red Wings", "Edmonton Oilers", "Florida Panthers", "Los Angeles Kings",
+            "Minnesota Wild", "Montreal Canadiens", "Nashville Predators", "New Jersey Devils",
+            "New York Islanders", "New York Rangers", "Ottawa Senators", "Philadelphia Flyers",
+            "Pittsburgh Penguins", "San Jose Sharks", "Seattle Kraken", "St. Louis Blues",
+            "Tampa Bay Lightning", "Toronto Maple Leafs", "Utah Hockey Club", "Vancouver Canucks",
+            "Vegas Golden Knights", "Washington Capitals", "Winnipeg Jets"],
+    "NFL": ["Arizona Cardinals", "Atlanta Falcons", "Baltimore Ravens", "Buffalo Bills",
+            "Carolina Panthers", "Chicago Bears", "Cincinnati Bengals", "Cleveland Browns",
+            "Dallas Cowboys", "Denver Broncos", "Detroit Lions", "Green Bay Packers",
+            "Houston Texans", "Indianapolis Colts", "Jacksonville Jaguars", "Kansas City Chiefs",
+            "Las Vegas Raiders", "Los Angeles Chargers", "Los Angeles Rams", "Miami Dolphins",
+            "Minnesota Vikings", "New England Patriots", "New Orleans Saints", "New York Giants",
+            "New York Jets", "Philadelphia Eagles", "Pittsburgh Steelers", "San Francisco 49ers",
+            "Seattle Seahawks", "Tampa Bay Buccaneers", "Tennessee Titans", "Washington Commanders"]
+}
+
+# =============================================================================
+# COMPLETE NBA ROSTERS (Top 8 players per team)
+# =============================================================================
+NBA_ROSTERS = {
+    "Atlanta Hawks": ["Trae Young", "Jalen Johnson", "Dyson Daniels", "Onyeka Okongwu", "Zaccharie Risacher", "Bogdan Bogdanovic", "De'Andre Hunter", "Clint Capela"],
+    "Boston Celtics": ["Jayson Tatum", "Jaylen Brown", "Kristaps Porzingis", "Jrue Holiday", "Derrick White", "Al Horford", "Payton Pritchard", "Sam Hauser"],
+    "Brooklyn Nets": ["Cameron Johnson", "Nic Claxton", "Cam Thomas", "Noah Clowney", "Dorian Finney-Smith", "Dennis Schroder", "Bojan Bogdanovic", "Day'Ron Sharpe"],
+    "Charlotte Hornets": ["LaMelo Ball", "Brandon Miller", "Mark Williams", "Miles Bridges", "Josh Green", "Grant Williams", "Cody Martin", "Nick Richards"],
+    "Chicago Bulls": ["Coby White", "Nikola Vucevic", "Josh Giddey", "Patrick Williams", "Ayo Dosunmu", "Zach LaVine", "Lonzo Ball", "Jalen Smith"],
+    "Cleveland Cavaliers": ["Donovan Mitchell", "Darius Garland", "Evan Mobley", "Jarrett Allen", "Max Strus", "Caris LeVert", "Isaac Okoro", "Georges Niang"],
+    "Dallas Mavericks": ["Luka Doncic", "Kyrie Irving", "Klay Thompson", "PJ Washington", "Daniel Gafford", "Dereck Lively II", "Naji Marshall", "Quentin Grimes"],
+    "Denver Nuggets": ["Nikola Jokic", "Jamal Murray", "Michael Porter Jr", "Aaron Gordon", "Christian Braun", "Russell Westbrook", "Peyton Watson", "Dario Saric"],
+    "Detroit Pistons": ["Cade Cunningham", "Jaden Ivey", "Ausar Thompson", "Jalen Duren", "Isaiah Stewart", "Tim Hardaway Jr", "Malik Beasley", "Tobias Harris"],
+    "Golden State Warriors": ["Stephen Curry", "Draymond Green", "Andrew Wiggins", "Jonathan Kuminga", "Brandin Podziemski", "Buddy Hield", "Kevon Looney", "Gary Payton II"],
+    "Houston Rockets": ["Alperen Sengun", "Jalen Green", "Fred VanVleet", "Jabari Smith Jr", "Dillon Brooks", "Amen Thompson", "Tari Eason", "Cam Whitmore"],
+    "Indiana Pacers": ["Tyrese Haliburton", "Pascal Siakam", "Myles Turner", "Bennedict Mathurin", "Andrew Nembhard", "TJ McConnell", "Aaron Nesmith", "Obi Toppin"],
+    "LA Clippers": ["Kawhi Leonard", "James Harden", "Norman Powell", "Ivica Zubac", "Derrick Jones Jr", "Terance Mann", "Nicolas Batum", "Kris Dunn"],
+    "Los Angeles Lakers": ["LeBron James", "Anthony Davis", "Austin Reaves", "D'Angelo Russell", "Rui Hachimura", "Jarred Vanderbilt", "Gabe Vincent", "Max Christie"],
+    "Memphis Grizzlies": ["Ja Morant", "Desmond Bane", "Jaren Jackson Jr", "Marcus Smart", "Zach Edey", "Brandon Clarke", "Santi Aldama", "Luke Kennard"],
+    "Miami Heat": ["Jimmy Butler", "Bam Adebayo", "Tyler Herro", "Terry Rozier", "Jaime Jaquez Jr", "Duncan Robinson", "Nikola Jovic", "Haywood Highsmith"],
+    "Milwaukee Bucks": ["Giannis Antetokounmpo", "Damian Lillard", "Khris Middleton", "Brook Lopez", "Bobby Portis", "Gary Trent Jr", "Taurean Prince", "Delon Wright"],
+    "Minnesota Timberwolves": ["Anthony Edwards", "Karl-Anthony Towns", "Rudy Gobert", "Jaden McDaniels", "Mike Conley", "Naz Reid", "Donte DiVincenzo", "Nickeil Alexander-Walker"],
+    "New Orleans Pelicans": ["Zion Williamson", "Brandon Ingram", "CJ McCollum", "Dejounte Murray", "Herb Jones", "Trey Murphy III", "Jonas Valanciunas", "Jose Alvarado"],
+    "New York Knicks": ["Jalen Brunson", "Julius Randle", "Mikal Bridges", "OG Anunoby", "Mitchell Robinson", "Donte DiVincenzo", "Josh Hart", "Miles McBride"],
+    "Oklahoma City Thunder": ["Shai Gilgeous-Alexander", "Chet Holmgren", "Jalen Williams", "Luguentz Dort", "Isaiah Hartenstein", "Alex Caruso", "Cason Wallace", "Isaiah Joe"],
+    "Orlando Magic": ["Paolo Banchero", "Franz Wagner", "Jalen Suggs", "Kentavious Caldwell-Pope", "Wendell Carter Jr", "Cole Anthony", "Jonathan Isaac", "Moritz Wagner"],
+    "Philadelphia 76ers": ["Joel Embiid", "Tyrese Maxey", "Paul George", "Caleb Martin", "Kelly Oubre Jr", "Andre Drummond", "Eric Gordon", "Kyle Lowry"],
+    "Phoenix Suns": ["Kevin Durant", "Devin Booker", "Bradley Beal", "Jusuf Nurkic", "Grayson Allen", "Royce O'Neale", "Mason Plumlee", "Monte Morris"],
+    "Portland Trail Blazers": ["Scoot Henderson", "Anfernee Simons", "Shaedon Sharpe", "Jerami Grant", "Deandre Ayton", "Deni Avdija", "Donovan Clingan", "Toumani Camara"],
+    "Sacramento Kings": ["De'Aaron Fox", "Domantas Sabonis", "DeMar DeRozan", "Keegan Murray", "Malik Monk", "Kevin Huerter", "Trey Lyles", "Keon Ellis"],
+    "San Antonio Spurs": ["Victor Wembanyama", "Devin Vassell", "Keldon Johnson", "Jeremy Sochan", "Chris Paul", "Harrison Barnes", "Zach Collins", "Tre Jones"],
+    "Toronto Raptors": ["Scottie Barnes", "Immanuel Quickley", "RJ Barrett", "Jakob Poeltl", "Gradey Dick", "Kelly Olynyk", "Bruce Brown", "Chris Boucher"],
+    "Utah Jazz": ["Lauri Markkanen", "Collin Sexton", "John Collins", "Jordan Clarkson", "Keyonte George", "Walker Kessler", "Taylor Hendricks", "Cody Williams"],
+    "Washington Wizards": ["Jordan Poole", "Kyle Kuzma", "Bilal Coulibaly", "Jonas Valanciunas", "Malcolm Brogdon", "Corey Kispert", "Marvin Bagley III", "Saddiq Bey"]
+}
+
+# =============================================================================
+# COMPLETE MLB ROSTERS (Top 8 players per team)
+# =============================================================================
+MLB_ROSTERS = {
+    "Arizona Diamondbacks": ["Corbin Carroll", "Ketel Marte", "Zac Gallen", "Merrill Kelly", "Eduardo Rodriguez", "Christian Walker", "Gabriel Moreno", "Lourdes Gurriel Jr"],
+    "Atlanta Braves": ["Ronald Acuna Jr", "Matt Olson", "Austin Riley", "Ozzie Albies", "Michael Harris II", "Sean Murphy", "Marcell Ozuna", "Spencer Strider"],
+    "Baltimore Orioles": ["Adley Rutschman", "Gunnar Henderson", "Jackson Holliday", "Cedric Mullins", "Anthony Santander", "Ryan Mountcastle", "Corbin Burnes", "Grayson Rodriguez"],
+    "Boston Red Sox": ["Rafael Devers", "Trevor Story", "Masataka Yoshida", "Triston Casas", "Jarren Duran", "Tyler O'Neill", "Brayan Bello", "Lucas Giolito"],
+    "Chicago Cubs": ["Cody Bellinger", "Dansby Swanson", "Ian Happ", "Seiya Suzuki", "Nico Hoerner", "Christopher Morel", "Justin Steele", "Shota Imanaga"],
+    "Chicago White Sox": ["Luis Robert Jr", "Eloy Jimenez", "Andrew Vaughn", "Yoan Moncada", "Andrew Benintendi", "Nicky Lopez", "Dylan Cease", "Michael Kopech"],
+    "Cincinnati Reds": ["Elly De La Cruz", "Spencer Steer", "Matt McLain", "Jeimer Candelario", "TJ Friedl", "Will Benson", "Hunter Greene", "Frankie Montas"],
+    "Cleveland Guardians": ["Jose Ramirez", "Andres Gimenez", "Josh Naylor", "Steven Kwan", "Bo Naylor", "Brayan Rocchio", "Shane Bieber", "Triston McKenzie"],
+    "Colorado Rockies": ["Nolan Jones", "Ezequiel Tovar", "Brenton Doyle", "Kris Bryant", "Ryan McMahon", "Elias Diaz", "Kyle Freeland", "Cal Quantrill"],
+    "Detroit Tigers": ["Spencer Torkelson", "Riley Greene", "Kerry Carpenter", "Javier Baez", "Colt Keith", "Parker Meadows", "Tarik Skubal", "Jack Flaherty"],
+    "Houston Astros": ["Jose Altuve", "Yordan Alvarez", "Alex Bregman", "Kyle Tucker", "Jeremy Pena", "Yainer Diaz", "Framber Valdez", "Cristian Javier"],
+    "Kansas City Royals": ["Bobby Witt Jr", "Vinnie Pasquantino", "Salvador Perez", "Cole Ragans", "Seth Lugo", "Michael Wacha", "MJ Melendez", "Maikel Garcia"],
+    "Los Angeles Angels": ["Mike Trout", "Anthony Rendon", "Taylor Ward", "Logan O'Hoppe", "Nolan Schanuel", "Zach Neto", "Reid Detmers", "Patrick Sandoval"],
+    "Los Angeles Dodgers": ["Shohei Ohtani", "Mookie Betts", "Freddie Freeman", "Yoshinobu Yamamoto", "Will Smith", "Max Muncy", "Teoscar Hernandez", "Tyler Glasnow"],
+    "Miami Marlins": ["Luis Arraez", "Jazz Chisholm Jr", "Josh Bell", "Jake Burger", "Jesus Sanchez", "Bryan De La Cruz", "Jesus Luzardo", "Eury Perez"],
+    "Milwaukee Brewers": ["Christian Yelich", "Willy Adames", "William Contreras", "Rhys Hoskins", "Jackson Chourio", "Sal Frelick", "Freddy Peralta", "Brandon Woodruff"],
+    "Minnesota Twins": ["Carlos Correa", "Royce Lewis", "Byron Buxton", "Pablo Lopez", "Joe Ryan", "Bailey Ober", "Edouard Julien", "Alex Kirilloff"],
+    "New York Mets": ["Pete Alonso", "Francisco Lindor", "Brandon Nimmo", "Kodai Senga", "Edwin Diaz", "Jeff McNeil", "Starling Marte", "Francisco Alvarez"],
+    "New York Yankees": ["Aaron Judge", "Juan Soto", "Giancarlo Stanton", "Gerrit Cole", "Anthony Volpe", "Gleyber Torres", "DJ LeMahieu", "Carlos Rodon"],
+    "Oakland Athletics": ["Zack Gelof", "Esteury Ruiz", "Brent Rooker", "Seth Brown", "JJ Bleday", "Shea Langeliers", "JP Sears", "Paul Blackburn"],
+    "Philadelphia Phillies": ["Bryce Harper", "Trea Turner", "Kyle Schwarber", "JT Realmuto", "Nick Castellanos", "Bryson Stott", "Zack Wheeler", "Aaron Nola"],
+    "Pittsburgh Pirates": ["Oneil Cruz", "Ke'Bryan Hayes", "Bryan Reynolds", "Jack Suwinski", "Henry Davis", "Jared Triolo", "Mitch Keller", "Martin Perez"],
+    "San Diego Padres": ["Fernando Tatis Jr", "Manny Machado", "Xander Bogaerts", "Yu Darvish", "Joe Musgrove", "Jake Cronenworth", "Ha-Seong Kim", "Luis Campusano"],
+    "San Francisco Giants": ["Jung Hoo Lee", "Matt Chapman", "Jorge Soler", "Logan Webb", "Blake Snell", "Kyle Harrison", "Patrick Bailey", "Thairo Estrada"],
+    "Seattle Mariners": ["Julio Rodriguez", "Cal Raleigh", "JP Crawford", "Mitch Garver", "Mitch Haniger", "Ty France", "Luis Castillo", "George Kirby"],
+    "St. Louis Cardinals": ["Paul Goldschmidt", "Nolan Arenado", "Willson Contreras", "Jordan Walker", "Masyn Winn", "Lars Nootbaar", "Sonny Gray", "Miles Mikolas"],
+    "Tampa Bay Rays": ["Yandy Diaz", "Randy Arozarena", "Brandon Lowe", "Isaac Paredes", "Josh Lowe", "Jose Siri", "Zach Eflin", "Aaron Civale"],
+    "Texas Rangers": ["Corey Seager", "Marcus Semien", "Adolis Garcia", "Josh Jung", "Evan Carter", "Wyatt Langford", "Jacob deGrom", "Max Scherzer"],
+    "Toronto Blue Jays": ["Vladimir Guerrero Jr", "Bo Bichette", "George Springer", "Kevin Gausman", "Jose Berrios", "Chris Bassitt", "Daulton Varsho", "Alejandro Kirk"],
+    "Washington Nationals": ["CJ Abrams", "Lane Thomas", "Keibert Ruiz", "Joey Meneses", "Jesse Winker", "Joey Gallo", "Josiah Gray", "MacKenzie Gore"]
+}
+
+# =============================================================================
+# COMPLETE NHL ROSTERS (Top 8 players per team)
+# =============================================================================
+NHL_ROSTERS = {
+    "Anaheim Ducks": ["Troy Terry", "Mason McTavish", "Leo Carlsson", "Cutter Gauthier", "Frank Vatrano", "Trevor Zegras", "Alex Killorn", "Lukas Dostal"],
+    "Boston Bruins": ["David Pastrnak", "Brad Marchand", "Charlie McAvoy", "Jeremy Swayman", "Pavel Zacha", "Charlie Coyle", "Hampus Lindholm", "Jake DeBrusk"],
+    "Buffalo Sabres": ["Rasmus Dahlin", "Tage Thompson", "Alex Tuch", "Dylan Cozens", "JJ Peterka", "Owen Power", "Bowen Byram", "Ukko-Pekka Luukkonen"],
+    "Calgary Flames": ["Jonathan Huberdeau", "Nazem Kadri", "MacKenzie Weegar", "Rasmus Andersson", "Andrei Kuzmenko", "Yegor Sharangovich", "Blake Coleman", "Dustin Wolf"],
+    "Carolina Hurricanes": ["Sebastian Aho", "Andrei Svechnikov", "Seth Jarvis", "Jaccob Slavin", "Brent Burns", "Martin Necas", "Jordan Staal", "Dmitry Orlov"],
+    "Chicago Blackhawks": ["Connor Bedard", "Seth Jones", "Teuvo Teravainen", "Taylor Hall", "Philipp Kurashev", "Tyler Bertuzzi", "Ilya Mikheyev", "Petr Mrazek"],
+    "Colorado Avalanche": ["Nathan MacKinnon", "Cale Makar", "Mikko Rantanen", "Devon Toews", "Artturi Lehkonen", "Jonathan Drouin", "Casey Mittelstadt", "Alexandar Georgiev"],
+    "Columbus Blue Jackets": ["Adam Fantilli", "Zach Werenski", "Johnny Gaudreau", "Boone Jenner", "Kent Johnson", "Kirill Marchenko", "Dmitri Voronkov", "Elvis Merzlikins"],
+    "Dallas Stars": ["Jason Robertson", "Roope Hintz", "Miro Heiskanen", "Wyatt Johnston", "Matt Duchene", "Jamie Benn", "Tyler Seguin", "Jake Oettinger"],
+    "Detroit Red Wings": ["Dylan Larkin", "Moritz Seider", "Lucas Raymond", "Alex DeBrincat", "Patrick Kane", "Vladimir Tarasenko", "JT Compher", "Cam Talbot"],
+    "Edmonton Oilers": ["Connor McDavid", "Leon Draisaitl", "Evan Bouchard", "Zach Hyman", "Ryan Nugent-Hopkins", "Mattias Ekholm", "Darnell Nurse", "Stuart Skinner"],
+    "Florida Panthers": ["Matthew Tkachuk", "Aleksander Barkov", "Sam Reinhart", "Carter Verhaeghe", "Sam Bennett", "Gustav Forsling", "Aaron Ekblad", "Sergei Bobrovsky"],
+    "Los Angeles Kings": ["Anze Kopitar", "Adrian Kempe", "Kevin Fiala", "Drew Doughty", "Quinton Byfield", "Phillip Danault", "Trevor Moore", "Darcy Kuemper"],
+    "Minnesota Wild": ["Kirill Kaprizov", "Matt Boldy", "Brock Faber", "Joel Eriksson Ek", "Mats Zuccarello", "Marco Rossi", "Ryan Hartman", "Filip Gustavsson"],
+    "Montreal Canadiens": ["Nick Suzuki", "Cole Caufield", "Juraj Slafkovsky", "Lane Hutson", "Patrik Laine", "Kirby Dach", "Mike Matheson", "Sam Montembeault"],
+    "Nashville Predators": ["Filip Forsberg", "Roman Josi", "Steven Stamkos", "Jonathan Marchessault", "Ryan O'Reilly", "Brady Skjei", "Luke Evangelista", "Juuse Saros"],
+    "New Jersey Devils": ["Jack Hughes", "Jesper Bratt", "Nico Hischier", "Dougie Hamilton", "Timo Meier", "Dawson Mercer", "Ondrej Palat", "Jacob Markstrom"],
+    "New York Islanders": ["Mathew Barzal", "Bo Horvat", "Noah Dobson", "Brock Nelson", "Anders Lee", "Kyle Palmieri", "Jean-Gabriel Pageau", "Ilya Sorokin"],
+    "New York Rangers": ["Artemi Panarin", "Adam Fox", "Igor Shesterkin", "Mika Zibanejad", "Chris Kreider", "Vincent Trocheck", "Alexis Lafreniere", "K'Andre Miller"],
+    "Ottawa Senators": ["Brady Tkachuk", "Tim Stutzle", "Jake Sanderson", "Claude Giroux", "Drake Batherson", "Josh Norris", "Thomas Chabot", "Linus Ullmark"],
+    "Philadelphia Flyers": ["Travis Konecny", "Matvei Michkov", "Owen Tippett", "Travis Sanheim", "Sean Couturier", "Morgan Frost", "Joel Farabee", "Samuel Ersson"],
+    "Pittsburgh Penguins": ["Sidney Crosby", "Evgeni Malkin", "Kris Letang", "Erik Karlsson", "Bryan Rust", "Rickard Rakell", "Michael Bunting", "Tristan Jarry"],
+    "San Jose Sharks": ["Macklin Celebrini", "William Eklund", "Tyler Toffoli", "Mikael Granlund", "Fabian Zetterlund", "Will Smith", "Luke Kunin", "Yaroslav Askarov"],
+    "Seattle Kraken": ["Matty Beniers", "Jared McCann", "Vince Dunn", "Brandon Montour", "Chandler Stephenson", "Oliver Bjorkstrand", "Eeli Tolvanen", "Philipp Grubauer"],
+    "St. Louis Blues": ["Robert Thomas", "Jordan Kyrou", "Pavel Buchnevich", "Colton Parayko", "Brayden Schenn", "Jake Neighbours", "Brandon Saad", "Jordan Binnington"],
+    "Tampa Bay Lightning": ["Nikita Kucherov", "Brayden Point", "Victor Hedman", "Jake Guentzel", "Brandon Hagel", "Anthony Cirelli", "Nick Paul", "Andrei Vasilevskiy"],
+    "Toronto Maple Leafs": ["Auston Matthews", "Mitch Marner", "William Nylander", "John Tavares", "Morgan Rielly", "Chris Tanev", "Oliver Ekman-Larsson", "Matthew Knies"],
+    "Utah Hockey Club": ["Clayton Keller", "Logan Cooley", "Mikhail Sergachev", "Dylan Guenther", "Nick Schmaltz", "Lawson Crouse", "Matias Maccelli", "Connor Ingram"],
+    "Vancouver Canucks": ["Elias Pettersson", "Quinn Hughes", "J.T. Miller", "Brock Boeser", "Conor Garland", "Filip Hronek", "Jake DeBrusk", "Thatcher Demko"],
+    "Vegas Golden Knights": ["Jack Eichel", "Mark Stone", "Tomas Hertl", "Shea Theodore", "William Karlsson", "Ivan Barbashev", "Alex Pietrangelo", "Adin Hill"],
+    "Washington Capitals": ["Alex Ovechkin", "Dylan Strome", "John Carlson", "Tom Wilson", "Pierre-Luc Dubois", "Aliaksei Protas", "Connor McMichael", "Charlie Lindgren"],
+    "Winnipeg Jets": ["Kyle Connor", "Mark Scheifele", "Josh Morrissey", "Nikolaj Ehlers", "Gabriel Vilardi", "Cole Perfetti", "Nino Niederreiter", "Connor Hellebuyck"]
+}
+
+# =============================================================================
+# COMPLETE NFL ROSTERS (Top 12 players per team)
+# =============================================================================
+NFL_ROSTERS = {
+    "Arizona Cardinals": ["Kyler Murray", "James Conner", "Marvin Harrison Jr", "Trey McBride", "Michael Wilson", "Greg Dortch", "Zay Jones", "Trey Benson", "Budda Baker", "Jalen Thompson", "Zaven Collins", "Dennis Gardeck"],
+    "Atlanta Falcons": ["Kirk Cousins", "Bijan Robinson", "Drake London", "Kyle Pitts", "Darnell Mooney", "Ray-Ray McCloud", "Tyler Allgeier", "Jessie Bates III", "A.J. Terrell", "Kaden Elliss", "Matthew Judon", "Grady Jarrett"],
+    "Baltimore Ravens": ["Lamar Jackson", "Derrick Henry", "Zay Flowers", "Mark Andrews", "Isaiah Likely", "Rashod Bateman", "Justice Hill", "Roquan Smith", "Marlon Humphrey", "Kyle Hamilton", "Justin Madubuike", "Odafe Oweh"],
+    "Buffalo Bills": ["Josh Allen", "James Cook", "Stefon Diggs", "Dalton Kincaid", "Khalil Shakir", "Curtis Samuel", "Keon Coleman", "Matt Milano", "Terrel Bernard", "Greg Rousseau", "Ed Oliver", "Taron Johnson"],
+    "Carolina Panthers": ["Bryce Young", "Chuba Hubbard", "Diontae Johnson", "Adam Thielen", "Jonathan Mingo", "Xavier Legette", "Tommy Tremble", "Derrick Brown", "Jaycee Horn", "Shaq Thompson", "Jadeveon Clowney", "Brian Burns"],
+    "Chicago Bears": ["Caleb Williams", "D'Andre Swift", "DJ Moore", "Keenan Allen", "Rome Odunze", "Cole Kmet", "Khalil Herbert", "Montez Sweat", "Tremaine Edmunds", "Jaylon Johnson", "Jaquan Brisker", "Gervon Dexter"],
+    "Cincinnati Bengals": ["Joe Burrow", "Zack Moss", "Ja'Marr Chase", "Tee Higgins", "Mike Gesicki", "Andrei Iosivas", "Chase Brown", "Logan Wilson", "Germaine Pratt", "Trey Hendrickson", "Sam Hubbard", "Cam Taylor-Britt"],
+    "Cleveland Browns": ["Deshaun Watson", "Nick Chubb", "Amari Cooper", "Jerry Jeudy", "David Njoku", "Elijah Moore", "Jerome Ford", "Myles Garrett", "Denzel Ward", "Jeremiah Owusu-Koramoah", "Za'Darius Smith", "Grant Delpit"],
+    "Dallas Cowboys": ["Dak Prescott", "Ezekiel Elliott", "CeeDee Lamb", "Brandin Cooks", "Jake Ferguson", "Jalen Tolbert", "Rico Dowdle", "Micah Parsons", "Trevon Diggs", "DeMarcus Lawrence", "Leighton Vander Esch", "Malik Hooker"],
+    "Denver Broncos": ["Bo Nix", "Javonte Williams", "Courtland Sutton", "Tim Patrick", "Josh Reynolds", "Marvin Mims", "Greg Dulcich", "Patrick Surtain II", "Justin Simmons", "Alex Singleton", "Baron Browning", "Zach Allen"],
+    "Detroit Lions": ["Jared Goff", "Jahmyr Gibbs", "David Montgomery", "Amon-Ra St. Brown", "Sam LaPorta", "Jameson Williams", "Kalif Raymond", "Aidan Hutchinson", "Alex Anzalone", "Brian Branch", "Kerby Joseph", "Alim McNeill"],
+    "Green Bay Packers": ["Jordan Love", "Josh Jacobs", "Christian Watson", "Romeo Doubs", "Jayden Reed", "Luke Musgrave", "Tucker Kraft", "Rashan Gary", "Jaire Alexander", "Quay Walker", "Xavier McKinney", "Kenny Clark"],
+    "Houston Texans": ["C.J. Stroud", "Joe Mixon", "Nico Collins", "Tank Dell", "Stefon Diggs", "Dalton Schultz", "Robert Woods", "Will Anderson Jr.", "Danielle Hunter", "Derek Stingley Jr.", "Azeez Al-Shaair", "Jalen Pitre"],
+    "Indianapolis Colts": ["Anthony Richardson", "Jonathan Taylor", "Michael Pittman Jr.", "Adonai Mitchell", "Josh Downs", "Jelani Woods", "Mo Alie-Cox", "Zaire Franklin", "DeForest Buckner", "Kenny Moore II", "Julian Blackmon", "Kwity Paye"],
+    "Jacksonville Jaguars": ["Trevor Lawrence", "Travis Etienne", "Christian Kirk", "Gabe Davis", "Brian Thomas Jr.", "Evan Engram", "Tank Bigsby", "Josh Hines-Allen", "Foyesade Oluokun", "Tyson Campbell", "Andre Cisco", "Travon Walker"],
+    "Kansas City Chiefs": ["Patrick Mahomes", "Isiah Pacheco", "Rashee Rice", "Xavier Worthy", "Marquise Brown", "Travis Kelce", "Clyde Edwards-Helaire", "Chris Jones", "Nick Bolton", "Trent McDuffie", "Justin Reid", "George Karlaftis"],
+    "Las Vegas Raiders": ["Gardner Minshew", "Zamir White", "Davante Adams", "Jakobi Meyers", "Tre Tucker", "Brock Bowers", "Michael Mayer", "Maxx Crosby", "Robert Spillane", "Jack Jones", "Tre'von Moehrig", "Christian Wilkins"],
+    "Los Angeles Chargers": ["Justin Herbert", "Gus Edwards", "Quentin Johnston", "Josh Palmer", "Ladd McConkey", "Will Dissly", "Hayden Hurst", "Joey Bosa", "Khalil Mack", "Derwin James", "Asante Samuel Jr.", "Tuli Tuipulotu"],
+    "Los Angeles Rams": ["Matthew Stafford", "Kyren Williams", "Puka Nacua", "Cooper Kupp", "Demarcus Robinson", "Tutu Atwell", "Colby Parkinson", "Byron Young", "Ernest Jones", "Kobie Turner", "Jared Verse", "Quentin Lake"],
+    "Miami Dolphins": ["Tua Tagovailoa", "Raheem Mostert", "De'Von Achane", "Tyreek Hill", "Jaylen Waddle", "Odell Beckham Jr.", "Jonnu Smith", "Jaelan Phillips", "Jalen Ramsey", "Bradley Chubb", "David Long Jr.", "Zach Sieler"],
+    "Minnesota Vikings": ["Sam Darnold", "Aaron Jones", "Justin Jefferson", "Jordan Addison", "T.J. Hockenson", "Brandon Powell", "Ty Chandler", "Jonathan Greenard", "Blake Cashman", "Harrison Smith", "Byron Murphy", "Ivan Pace Jr."],
+    "New England Patriots": ["Jacoby Brissett", "Rhamondre Stevenson", "Kendrick Bourne", "DeMario Douglas", "K.J. Osborn", "Hunter Henry", "Austin Hooper", "Matthew Judon", "Christian Gonzalez", "Kyle Dugger", "Jabrill Peppers", "Davon Godchaux"],
+    "New Orleans Saints": ["Derek Carr", "Alvin Kamara", "Chris Olave", "Rashid Shaheed", "A.T. Perry", "Juwan Johnson", "Taysom Hill", "Demario Davis", "Marshon Lattimore", "Tyrann Mathieu", "Cameron Jordan", "Pete Werner"],
+    "New York Giants": ["Daniel Jones", "Devin Singletary", "Malik Nabers", "Darius Slayton", "Wan'Dale Robinson", "Darren Waller", "Daniel Bellinger", "Dexter Lawrence", "Brian Burns", "Bobby Okereke", "Kayvon Thibodeaux", "Jason Pinnock"],
+    "New York Jets": ["Aaron Rodgers", "Breece Hall", "Garrett Wilson", "Mike Williams", "Allen Lazard", "Tyler Conklin", "Jeremy Ruckert", "Quinnen Williams", "Sauce Gardner", "C.J. Mosley", "Haason Reddick", "Jermaine Johnson"],
+    "Philadelphia Eagles": ["Jalen Hurts", "Saquon Barkley", "A.J. Brown", "DeVonta Smith", "Jahan Dotson", "Dallas Goedert", "Kenneth Gainwell", "Jalen Carter", "Darius Slay", "Bryce Huff", "C.J. Gardner-Johnson", "Nolan Smith"],
+    "Pittsburgh Steelers": ["Russell Wilson", "Najee Harris", "George Pickens", "Van Jefferson", "Calvin Austin III", "Pat Freiermuth", "Darnell Washington", "T.J. Watt", "Minkah Fitzpatrick", "Alex Highsmith", "Patrick Queen", "Joey Porter Jr."],
+    "San Francisco 49ers": ["Brock Purdy", "Christian McCaffrey", "Brandon Aiyuk", "Deebo Samuel", "Ricky Pearsall", "George Kittle", "Elijah Mitchell", "Nick Bosa", "Fred Warner", "Charvarius Ward", "Talanoa Hufanga", "Javon Hargrave"],
+    "Seattle Seahawks": ["Geno Smith", "Kenneth Walker III", "DK Metcalf", "Tyler Lockett", "Jaxon Smith-Njigba", "Noah Fant", "Zach Charbonnet", "Devon Witherspoon", "Julian Love", "Boye Mafe", "Leonard Williams", "Dre'Mont Jones"],
+    "Tampa Bay Buccaneers": ["Baker Mayfield", "Rachaad White", "Mike Evans", "Chris Godwin", "Trey Palmer", "Cade Otton", "Bucky Irving", "Antoine Winfield Jr.", "Lavonte David", "Vita Vea", "Jamel Dean", "Yaya Diaby"],
+    "Tennessee Titans": ["Will Levis", "Tony Pollard", "DeAndre Hopkins", "Calvin Ridley", "Treylon Burks", "Tyler Boyd", "Chigoziem Okonkwo", "Jeffery Simmons", "Harold Landry", "L'Jarius Sneed", "Kenneth Murray", "Amani Hooker"],
+    "Washington Commanders": ["Jayden Daniels", "Brian Robinson Jr.", "Terry McLaurin", "Jahan Dotson", "Luke McCaffrey", "Zach Ertz", "Austin Ekeler", "Jonathan Allen", "Daron Payne", "Bobby Wagner", "Frankie Luvu", "Emmanuel Forbes"]
+}
 
 # =============================================================================
 # LIVE API CLIENTS
@@ -112,7 +287,7 @@ class OddsAPIClient:
         self.api_key = api_key
         self.base_url = ODDS_API_BASE
         self.last_request = 0
-        self.rate_limit = 1.0  # seconds between requests
+        self.rate_limit = 1.0
     
     def _rate_limit_wait(self):
         elapsed = time.time() - self.last_request
@@ -137,17 +312,14 @@ class OddsAPIClient:
             return {"error": str(e)}
     
     def extract_game_odds(self, sport: str, home_team: str, away_team: str) -> Dict:
-        """Extract moneyline, spread, total for a specific matchup"""
         odds_data = self.get_odds(sport)
         if "error" in odds_data:
             return odds_data
         games = odds_data.get("data", [])
-        # Find matching game by team names (fuzzy match)
         for game in games:
             if home_team.lower() in game["home_team"].lower() and away_team.lower() in game["away_team"].lower():
                 bookmakers = game.get("bookmakers", [])
                 if bookmakers:
-                    # Use first bookmaker (e.g., DraftKings)
                     bm = bookmakers[0]
                     markets = {m["key"]: m for m in bm.get("markets", [])}
                     result = {"home_team": game["home_team"], "away_team": game["away_team"]}
@@ -173,15 +345,13 @@ class StatsAPIClient:
         self.base_url = API_SPORTS_BASE
         self.headers = {"x-apisports-key": api_key}
         self.cache = {}
-        self.cache_ttl = 3600  # 1 hour
+        self.cache_ttl = 3600
     
     def _get_player_id(self, sport: str, player_name: str, team: str) -> Optional[int]:
-        """Search for player ID by name and team"""
         sport_key = API_SPORT_KEYS.get(sport)
         league_id = API_LEAGUE_IDS.get(sport)
         if not sport_key or not league_id:
             return None
-        # Check cache
         cache_key = f"pid_{sport}_{player_name}_{team}"
         if cache_key in self.cache and time.time() - self.cache[cache_key]["ts"] < self.cache_ttl:
             return self.cache[cache_key]["id"]
@@ -192,7 +362,6 @@ class StatsAPIClient:
             if r.status_code == 200:
                 data = r.json()
                 players = data.get("response", [])
-                # Match by team (simplified)
                 for p in players:
                     if team.lower() in p.get("team", {}).get("name", "").lower():
                         pid = p["player"]["id"]
@@ -203,7 +372,6 @@ class StatsAPIClient:
         return None
     
     def get_player_stats(self, sport: str, player_name: str, team: str, market: str) -> List[float]:
-        """Return last 5-10 game stats for a player in the given market"""
         sport_key = API_SPORT_KEYS.get(sport)
         league_id = API_LEAGUE_IDS.get(sport)
         if not sport_key or not league_id:
@@ -227,9 +395,8 @@ class StatsAPIClient:
             if r.status_code == 200:
                 data = r.json()
                 games = data.get("response", [])
-                # Extract last N games (sorted by date)
                 stats = []
-                for game in games[-10:]:  # last 10 games
+                for game in games[-10:]:
                     val = game.get("statistics", {}).get(stat_field, 0)
                     if val is not None:
                         stats.append(float(val))
@@ -262,7 +429,6 @@ class PerplexityClient:
                 timeout=15
             )
             content = r.choices[0].message.content
-            # Extract JSON from response (sometimes wrapped in markdown)
             json_match = re.search(r'\{.*\}', content, re.DOTALL)
             if json_match:
                 data = json.loads(json_match.group())
@@ -289,22 +455,15 @@ class SimulationEngine:
         w[-3:] *= 1.5
         w /= w.sum()
         lam = np.average(data, weights=w)
-        
-        # Correct overdispersion using Gamma-Poisson (Negative Binomial) for all sports
-        # We use a Gamma mixture to achieve desired variance factor
         var_factor = model["variance_factor"]
         if var_factor > 1.0:
-            # Gamma-Poisson: Poisson rate ~ Gamma(shape, scale) where mean = lam, variance = lam * var_factor
-            # shape = lam / (var_factor - 1), scale = var_factor - 1
             shape = lam / (var_factor - 1) if var_factor > 1.001 else 1000
             scale = var_factor - 1 if var_factor > 1.001 else 0.001
             rates = gamma.rvs(a=shape, scale=scale, size=self.sims)
-            # Avoid zero rates
             rates = np.maximum(rates, 0.1)
             sims = poisson.rvs(rates)
         else:
             sims = poisson.rvs(lam, size=self.sims)
-        
         proj = np.mean(sims)
         prob = np.mean(sims >= line) if pick == "OVER" else np.mean(sims <= line)
         dtm = (proj - line) / line if line != 0 else 0
@@ -312,10 +471,8 @@ class SimulationEngine:
     
     def simulate_total(self, home_team: str, away_team: str, total_line: float, sport: str) -> dict:
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
-        # Could incorporate team-specific offensive/defensive ratings here
         base_proj = model["avg_total"]
         var_factor = model["variance_factor"]
-        
         if var_factor > 1.0:
             shape = base_proj / (var_factor - 1) if var_factor > 1.001 else 1000
             scale = var_factor - 1 if var_factor > 1.001 else 0.001
@@ -324,7 +481,6 @@ class SimulationEngine:
             sims = poisson.rvs(rates)
         else:
             sims = poisson.rvs(base_proj, size=self.sims)
-        
         proj = np.mean(sims)
         prob_over = np.mean(sims > total_line)
         prob_under = np.mean(sims < total_line)
@@ -333,7 +489,7 @@ class SimulationEngine:
 
 
 # =============================================================================
-# BET EVALUATOR (with proper Kelly, etc.)
+# BET EVALUATOR
 # =============================================================================
 class BetEvaluator:
     def __init__(self, bankroll: float = 1000.0):
@@ -472,7 +628,7 @@ class BetEvaluator:
 
 
 # =============================================================================
-# MAIN APPLICATION (with dynamic roster fetching and error handling)
+# MAIN APPLICATION
 # =============================================================================
 class ClarityApp:
     def __init__(self):
@@ -481,20 +637,16 @@ class ClarityApp:
         self.odds_client = OddsAPIClient(ODDS_API_KEY)
         self.stats_client = StatsAPIClient(API_SPORTS_KEY)
         self.sport_models = SPORT_MODELS
-        # Initialize roster cache
         self.roster_cache = {}
     
     def get_teams(self, sport: str) -> List[str]:
-        # Could fetch from API-Sports but using hardcoded for reliability
         return HARDCODED_TEAMS.get(sport, ["Select a sport first"])
     
     def get_roster(self, sport: str, team: str) -> List[str]:
-        # Try to fetch live roster from API-Sports, fallback to hardcoded
         cache_key = f"{sport}_{team}"
         if cache_key in self.roster_cache:
             return self.roster_cache[cache_key]
-        
-        # Attempt API-Sports roster fetch
+        # Attempt live fetch
         sport_key = API_SPORT_KEYS.get(sport)
         league_id = API_LEAGUE_IDS.get(sport)
         if sport_key and league_id:
@@ -511,8 +663,7 @@ class ClarityApp:
                         return roster
             except:
                 pass
-        
-        # Fallback to hardcoded rosters
+        # Fallback to hardcoded
         if sport == "NBA":
             roster = NBA_ROSTERS.get(team, [])
         elif sport == "MLB":
@@ -535,19 +686,18 @@ class ClarityApp:
         
         with st.sidebar:
             st.header("🚀 SYSTEM STATUS")
-            # Check API connectivity (simple test)
             try:
-                test = requests.get("https://api.perplexity.ai", timeout=3)
+                requests.get("https://api.perplexity.ai", timeout=3)
                 st.success("✅ Perplexity API Reachable")
             except:
                 st.warning("⚠️ Perplexity API Unreachable")
             try:
-                test = requests.get(f"{API_SPORTS_BASE}/status", headers={"x-apisports-key": API_SPORTS_KEY}, timeout=3)
+                requests.get(f"{API_SPORTS_BASE}/status", headers={"x-apisports-key": API_SPORTS_KEY}, timeout=3)
                 st.success("✅ API-Sports Connected")
             except:
                 st.warning("⚠️ API-Sports Unreachable")
             try:
-                test = requests.get(f"{ODDS_API_BASE}/sports", params={"apiKey": ODDS_API_KEY}, timeout=3)
+                requests.get(f"{ODDS_API_BASE}/sports", params={"apiKey": ODDS_API_KEY}, timeout=3)
                 st.success("✅ Odds API Connected")
             except:
                 st.warning("⚠️ Odds API Unreachable")
@@ -559,7 +709,7 @@ class ClarityApp:
             "🎯 PLAYER PROPS", "💰 MONEYLINE", "📊 SPREAD", "📈 TOTALS", "🔄 ALT LINES"
         ])
         
-        # ------------------- TAB 1: PLAYER PROPS -------------------
+        # TAB 1: PLAYER PROPS
         with tab1:
             st.header("Player Prop Analyzer")
             c1, c2 = st.columns(2)
@@ -577,10 +727,9 @@ class ClarityApp:
             with c2:
                 if not use_live_stats:
                     data_str = st.text_area("Recent Games (comma separated)", "0,1,0,2,0,1", key="prop_data")
-                # Option to auto-fetch odds
                 auto_odds = st.checkbox("Auto-fetch odds", value=True)
                 if auto_odds:
-                    odds = -110  # placeholder, will be overwritten
+                    odds = -110
                 else:
                     odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
             
@@ -596,13 +745,9 @@ class ClarityApp:
                         st.info(f"Fetched {len(data)} recent games: {data}")
                     else:
                         data = [float(x.strip()) for x in data_str.split(",")]
-                    
-                    # Auto-fetch odds if enabled
                     if auto_odds:
-                        # For player props, odds aren't typically in standard Odds API; use placeholder
                         odds = -110
                         st.caption("Auto odds: Using standard -110 (player props not in Odds API)")
-                    
                     result = self.evaluator.evaluate_prop(
                         player, market, line, pick, data, sport, odds, injury_info["injury"]
                     )
@@ -619,7 +764,7 @@ class ClarityApp:
                     if injury_info["steam"]:
                         st.info("⚠️ STEAM detected - line may move quickly")
         
-        # ------------------- TAB 2: MONEYLINE -------------------
+        # TAB 2: MONEYLINE
         with tab2:
             st.header("Moneyline Analyzer")
             c1, c2 = st.columns(2)
@@ -657,7 +802,7 @@ class ClarityApp:
                     if result['units'] > 0:
                         st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
         
-        # ------------------- TAB 3: SPREAD -------------------
+        # TAB 3: SPREAD
         with tab3:
             st.header("Spread Analyzer")
             c1, c2 = st.columns(2)
@@ -688,7 +833,6 @@ class ClarityApp:
                         else:
                             st.warning("Could not fetch spread odds, using default -110")
                             odds_sp = -110
-                    
                     model = self.sport_models.get(sport_sp, self.sport_models["NBA"])
                     std_dev = model.get("spread_std", 12.0)
                     home_adv = model.get("home_advantage", 0)
@@ -717,7 +861,7 @@ class ClarityApp:
                     if units > 0:
                         st.success(f"RECOMMENDED UNITS: {units} (${kelly:.2f})")
         
-        # ------------------- TAB 4: TOTALS -------------------
+        # TAB 4: TOTALS
         with tab4:
             st.header("Totals (Over/Under) Analyzer")
             c1, c2 = st.columns(2)
@@ -746,7 +890,6 @@ class ClarityApp:
                             if total_fetched:
                                 total_line = total_fetched
                                 st.success(f"Fetched total line: {total_line}")
-                            # For totals, odds are typically -110 both sides
                             odds_tot = -110
                         else:
                             st.warning("Could not fetch total line, using default")
@@ -761,7 +904,7 @@ class ClarityApp:
                     if result['units'] > 0:
                         st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
         
-        # ------------------- TAB 5: ALT LINES -------------------
+        # TAB 5: ALT LINES
         with tab5:
             st.header("Alternate Line Analyzer")
             c1, c2 = st.columns(2)
@@ -777,7 +920,6 @@ class ClarityApp:
                 odds_alt = st.number_input("Odds", -500, 500, -110, key="alt_odds")
             
             if st.button("🔄 ANALYZE ALTERNATE", type="primary", key="alt_button"):
-                # Use team-specific simulation
                 sim = SimulationEngine().simulate_total(home_alt, away_alt, base_line, sport_alt)
                 if pick_alt == "OVER":
                     prob = np.mean(sim["proj"] > alt_line)
