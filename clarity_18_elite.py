@@ -123,14 +123,9 @@ STAT_CONFIG = {
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
 # =============================================================================
-# HARDCODED TEAMS - ALL SPORTS
-# (same as your current GitHub version – omitted here for brevity)
-# Paste your HARDCODED_TEAMS, NBA_ROSTERS, MLB_ROSTERS, NHL_ROSTERS, NFL_ROSTERS
-# exactly as they are in your repo above this comment.
+# HARDCODED TEAMS / ROSTERS
+# (paste your HARDCODED_TEAMS, NBA_ROSTERS, MLB_ROSTERS, NHL_ROSTERS, NFL_ROSTERS here)
 # =============================================================================
-
-# ... [PASTE YOUR FULL HARDCODED_TEAMS, NBA_ROSTERS, MLB_ROSTERS, MLB_ROSTERS,
-#      NHL_ROSTERS, NFL_ROSTERS BLOCKS HERE UNCHANGED] ...
 
 
 # =============================================================================
@@ -147,7 +142,12 @@ class OddsAPIClient:
         if now < self.rate_limit_reset:
             time.sleep(self.rate_limit_reset - now)
 
-    def get_odds(self, sport_key: str, regions: str = "us", markets: str = "h2h,spreads,totals") -> Optional[List[Dict[str, Any]]]:
+    def get_odds(
+        self,
+        sport_key: str,
+        regions: str = "us",
+        markets: str = "h2h,spreads,totals",
+    ) -> Optional[List[Dict[str, Any]]]:
         self._rate_limit_wait()
         try:
             params = {
@@ -271,7 +271,7 @@ class StatsAPIClient:
 
             stats_blocks = resp[0].get("statistics", [])
 
-            def flatten(d, parent_key="", sep="."):
+            def flatten(d, parent_key: str = "", sep: str = "."):
                 items = []
                 for k, v in d.items():
                     new_key = f"{parent_key}{sep}{k}" if parent_key else k
@@ -281,7 +281,7 @@ class StatsAPIClient:
                         items.append((new_key, v))
                 return dict(items)
 
-            flat = {}
+            flat: Dict[str, Any] = {}
             for block in stats_blocks:
                 flat.update(flatten(block))
 
@@ -307,6 +307,63 @@ class PerplexityClient:
         self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
 
     def get_injury_status(self, sport: str, team: str, player: str) -> Dict[str, Any]:
+        """
+        Ask Perplexity for a structured injury report.
+
+        Returns a dict like:
+        {
+            "status": "active" | "out" | "questionable" | "unknown",
+            "details": "...",
+            "last_updated": "ISO8601 string"
+        }
+        """
         try:
             prompt = (
-                "Return ONLY a JSON object with keys
+                "Return ONLY a JSON object with the following keys:\n"
+                '  "status": one of ["active", "out", "questionable", "unknown"],\n'
+                '  "details": a short human-readable summary string,\n'
+                '  "last_updated": an ISO8601 datetime string.\n\n'
+                "Context:\n"
+                f"Sport: {sport}\n"
+                f"Team: {team}\n"
+                f"Player: {player}\n\n"
+                "If you are not sure, set status to \"unknown\" and explain briefly in details.\n"
+                "Do not include any extra text, only valid JSON."
+            )
+
+            resp = self.client.chat.completions.create(
+                model="sonar-small-online",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+            )
+
+            content = resp.choices[0].message.content.strip()
+            # Sometimes models wrap JSON in code fences – strip them if present
+            if content.startswith("```"):
+                content = re.sub(r"^```(json)?", "", content).strip()
+                content = re.sub(r"```$", "", content).strip()
+
+            data = json.loads(content)
+            if not isinstance(data, dict):
+                raise ValueError("Non-dict JSON returned")
+
+            # Basic normalization / defaults
+            status = str(data.get("status", "unknown")).lower()
+            if status not in ["active", "out", "questionable", "unknown"]:
+                status = "unknown"
+
+            details = str(data.get("details", "")).strip()
+            last_updated = str(data.get("last_updated", datetime.utcnow().isoformat()))
+
+            return {
+                "status": status,
+                "details": details,
+                "last_updated": last_updated,
+            }
+        except Exception:
+            # Fallback if Perplexity is unreachable or returns bad JSON
+            return {
+                "status": "unknown",
+                "details": "Injury status could not be retrieved from Perplexity.",
+                "last_updated": datetime.utcnow().isoformat(),
+            }
