@@ -2379,5 +2379,3 @@ def main():
 if __name__ == "__main__":
     main()
 ```
-
-If you want next step (Option C) after trying this, tell me what still feels off—speed, structure, or modeling depth.
