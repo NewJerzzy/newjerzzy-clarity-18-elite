@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE - COMPLETE AUTO-SCAN VERSION
+CLARITY 18.0 ELITE - COMPLETE AUTO-SCAN VERSION (GAMMA FIX)
 NBA | MLB | NHL | NFL - FULL ROSTERS + AUTO BOARD SCANNER
 """
 
@@ -32,7 +32,7 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY   = "96241c1a5ba686f34a9e4c3463b61661"
 APIFY_API_TOKEN = "apify_api_bBECtVcVGcVPjbHjkw6g6TNBOE3w6Z2XL1Oy"
-VERSION = "18.0 Elite (Auto-Scan Full)"
+VERSION = "18.0 Elite (Gamma Fix)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -458,7 +458,7 @@ class PerplexityClient:
         return {"injury": "UNKNOWN", "steam": False, "note": "Unable to fetch"}
 
 # =============================================================================
-# SIMULATION ENGINE
+# SIMULATION ENGINE (WITH GAMMA FIX)
 # =============================================================================
 class SimulationEngine:
     def __init__(self, sims: int = 10000):
@@ -472,15 +472,26 @@ class SimulationEngine:
         w[-3:] *= 1.5
         w /= w.sum()
         lam = np.average(data, weights=w)
+        if lam <= 0:
+            lam = 0.1  # prevent invalid gamma parameters
         var_factor = model["variance_factor"]
-        if var_factor > 1.0:
-            shape = lam / (var_factor - 1) if var_factor > 1.001 else 1000
-            scale = var_factor - 1 if var_factor > 1.001 else 0.001
-            rates = gamma.rvs(a=shape, scale=scale, size=self.sims)
-            rates = np.maximum(rates, 0.1)
-            sims = poisson.rvs(rates)
+        if var_factor > 1.001:
+            shape = lam / (var_factor - 1)
+            scale = var_factor - 1
+            # Ensure shape and scale are positive
+            shape = max(shape, 0.01)
+            scale = max(scale, 0.01)
+            try:
+                rates = gamma.rvs(a=shape, scale=scale, size=self.sims)
+            except ValueError:
+                # Fallback to Poisson if gamma fails
+                sims = poisson.rvs(lam, size=self.sims)
+            else:
+                rates = np.maximum(rates, 0.1)
+                sims = poisson.rvs(rates)
         else:
             sims = poisson.rvs(lam, size=self.sims)
+
         bounds = model.get("prop_bounds", {}).get(market.upper(), (0, 1e6))
         sims = np.clip(sims, bounds[0], bounds[1])
         proj = np.mean(sims)
@@ -496,11 +507,18 @@ class SimulationEngine:
         if var_factor > 1.0:
             shape = base_proj / (var_factor - 1) if var_factor > 1.001 else 1000
             scale = var_factor - 1 if var_factor > 1.001 else 0.001
-            rates = gamma.rvs(a=shape, scale=scale, size=self.sims)
-            rates = np.maximum(rates, 0.1)
-            sims = poisson.rvs(rates)
+            shape = max(shape, 0.01)
+            scale = max(scale, 0.01)
+            try:
+                rates = gamma.rvs(a=shape, scale=scale, size=self.sims)
+            except ValueError:
+                sims = poisson.rvs(base_proj, size=self.sims)
+            else:
+                rates = np.maximum(rates, 0.1)
+                sims = poisson.rvs(rates)
         else:
             sims = poisson.rvs(base_proj, size=self.sims)
+
         sims = np.clip(sims, 0, model["max_total"] * 1.5)
         proj = np.mean(sims)
         prob_over = np.mean(sims > total_line)
