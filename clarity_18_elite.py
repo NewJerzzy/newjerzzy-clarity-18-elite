@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE - COMPLETE SYSTEM (FULL ROSTERS) - ALL FIXES APPLIED
+CLARITY 18.0 ELITE - COMPLETE SYSTEM (FULL ROSTERS) - ALL FIXES + VERDICTS
 Player Props | Moneylines | Spreads | Totals | Alternate Lines
 NBA | MLB | NHL | NFL - ALL TEAMS HAVE REAL PLAYERS
 API KEYS: Perplexity + API-Sports + The Odds API (valid)
@@ -26,7 +26,7 @@ warnings.filterwarnings('ignore')
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"      # Perplexity
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"      # API-Sports
 ODDS_API_KEY   = "96241c1a5ba686f34a9e4c3463b61661"      # The Odds API (valid)
-VERSION = "18.0 Elite (All Fixes Applied)"
+VERSION = "18.0 Elite (Verdicts + Fuzzy Match)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -307,7 +307,7 @@ NFL_ROSTERS = {
 }
 
 # =============================================================================
-# LIVE API CLIENTS (Odds, Stats, Perplexity)
+# LIVE API CLIENTS (Odds with fuzzy matching, Stats, Perplexity)
 # =============================================================================
 
 class OddsAPIClient:
@@ -345,8 +345,18 @@ class OddsAPIClient:
         if "error" in odds_data:
             return odds_data
         games = odds_data.get("data", [])
+
+        def normalize(name):
+            return re.sub(r'[^\w\s]', '', name.lower()).strip()
+
+        home_norm = normalize(home_team)
+        away_norm = normalize(away_team)
+
         for game in games:
-            if home_team.lower() in game["home_team"].lower() and away_team.lower() in game["away_team"].lower():
+            game_home = normalize(game["home_team"])
+            game_away = normalize(game["away_team"])
+            if (home_norm in game_home or game_home in home_norm) and \
+               (away_norm in game_away or game_away in away_norm):
                 bookmakers = game.get("bookmakers", [])
                 if bookmakers:
                     bm = bookmakers[0]
@@ -672,7 +682,7 @@ class BetEvaluator:
                 "win_prob": round(prob, 3), "tier": tier, "kelly_stake": round(kelly, 2)}
 
 # =============================================================================
-# MAIN APPLICATION (with bankroll state and full tabs)
+# MAIN APPLICATION (with bankroll state and clear verdicts)
 # =============================================================================
 class ClarityApp:
     def __init__(self):
@@ -711,7 +721,7 @@ class ClarityApp:
 
     def run(self):
         st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-        st.title("🔮 CLARITY 18.0 ELITE – ALL FIXES APPLIED")
+        st.title("🔮 CLARITY 18.0 ELITE – VERDICTS INCLUDED")
         st.markdown(f"**Player Props | Moneylines | Spreads | Totals | Alternate Lines | Version: {VERSION}**")
 
         with st.sidebar:
@@ -793,7 +803,7 @@ class ClarityApp:
                     if injury_info["injury"] != "HEALTHY":
                         st.warning(f"Injury: {injury_info['injury']} – {injury_info.get('note','')}")
 
-        # ----- MONEYLINE -----
+        # ----- MONEYLINE (with clear verdict) -----
         with tabs[1]:
             st.header("Moneyline Analyzer")
             c1, c2 = st.columns(2)
@@ -821,12 +831,15 @@ class ClarityApp:
                             st.warning(f"Using default odds: {odds_data['error']}")
                     result = self.evaluator.evaluate_moneyline(home, away, sport_ml, home_odds, away_odds)
                     st.markdown(f"### {result['signal']}")
+                    if result['pick'] != "PASS":
+                        st.markdown(f"**Verdict:** Bet on **{result['pick']}** to win outright.")
                     st.metric("Pick", result['pick'])
                     st.metric("Edge", f"{result['edge']:+.1%}")
+                    st.metric("Win Probability", f"{result['win_prob']:.1%}")
                     if result['units'] > 0:
                         st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
 
-        # ----- SPREAD (sport‑specific std dev) -----
+        # ----- SPREAD (with verdict) -----
         with tabs[2]:
             st.header("Spread Analyzer")
             c1, c2 = st.columns(2)
@@ -878,13 +891,19 @@ class ClarityApp:
                         tier, units, signal = "PASS", 0, "🔴 PASS"
                     kelly = self.evaluator.kelly_stake(prob, odds_sp)
                     st.markdown(f"### {signal}")
+                    if units > 0:
+                        if pick_sp == home_sp:
+                            bet_side = f"{home_sp} {spread:+.1f}"
+                        else:
+                            bet_side = f"{away_sp} {-spread:+.1f}"
+                        st.markdown(f"**Verdict:** Bet on **{bet_side}** to cover the spread.")
                     st.metric("Cover Probability", f"{prob:.1%}")
                     st.metric("Push Probability", f"{prob_push:.1%}")
                     st.metric("Edge", f"{edge:+.1%}")
                     if units > 0:
                         st.success(f"RECOMMENDED UNITS: {units} (${kelly:.2f})")
 
-        # ----- TOTALS -----
+        # ----- TOTALS (with verdict) -----
         with tabs[3]:
             st.header("Totals (Over/Under) Analyzer")
             c1, c2 = st.columns(2)
@@ -917,6 +936,8 @@ class ClarityApp:
                             st.warning("Could not fetch total line, using default")
                     result = self.evaluator.evaluate_total(home_tot, away_tot, total_line, pick_tot, sport_tot, odds_tot)
                     st.markdown(f"### {result['signal']}")
+                    if result['units'] > 0:
+                        st.markdown(f"**Verdict:** Bet the **{pick_tot} {total_line}**.")
                     c1, c2, c3 = st.columns(3)
                     c1.metric("Projection", f"{result['projection']:.1f}")
                     c2.metric("OVER Prob", f"{result['prob_over']:.1%}")
@@ -926,7 +947,7 @@ class ClarityApp:
                     if result['units'] > 0:
                         st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
 
-        # ----- ALT LINES -----
+        # ----- ALT LINES (with verdict) -----
         with tabs[4]:
             st.header("Alternate Line Analyzer")
             c1, c2 = st.columns(2)
@@ -955,6 +976,12 @@ class ClarityApp:
                 else:
                     value, action = "POOR VALUE", "AVOID"
                 st.markdown(f"### {action}")
+                if action == "BET":
+                    st.markdown(f"**Verdict:** Bet the **{pick_alt} {alt_line}** at these odds.")
+                elif action == "CONSIDER":
+                    st.markdown(f"**Verdict:** Consider betting the **{pick_alt} {alt_line}** (fair value).")
+                else:
+                    st.markdown(f"**Verdict:** Avoid this alternate line.")
                 st.metric("Probability", f"{prob:.1%}")
                 st.metric("Implied", f"{imp:.1%}")
                 st.metric("Edge", f"{edge:+.1%}")
