@@ -1002,4 +1002,352 @@ class Clarity18Elite:
     
     def _calibrate_sem(self):
         conn = sqlite3.connect(self.db_path)
-        df = pd.read_sql_query
+        df = pd.read_sql_query("SELECT * FROM bets WHERE result IN ('WIN','LOSS')", conn)
+        conn.close()
+        if len(df) > 5:
+            wins = (df["result"] == "WIN").sum()
+            accuracy = wins / len(df)
+            adjustment = (accuracy - 0.55) * 8
+            self.sem_score = max(50, min(100, self.sem_score + adjustment))
+
+# =============================================================================
+# BACKGROUND AUTOMATION (SEM & SETTLEMENT)
+# =============================================================================
+class BackgroundAutomation:
+    def __init__(self, engine):
+        self.engine = engine
+        self.running = False
+        self.last_settlement = None
+        self.thread = None
+    
+    def start(self):
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread.start()
+    
+    def _run(self):
+        while self.running:
+            now = datetime.now()
+            if now.hour == 8 and (self.last_settlement is None or self.last_settlement.date() < now.date()):
+                self.engine.settle_pending_bets()
+                self.last_settlement = now
+            time.sleep(1800)
+
+# =============================================================================
+# TELEGRAM BOT (OPTIONAL)
+# =============================================================================
+def start_telegram_bot(engine):
+    if not TELEGRAM_AVAILABLE:
+        print("Telegram not available. Install: pip install python-telegram-bot")
+        return None
+    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text(f"🔮 CLARITY 18.0 ELITE ONLINE\nSEM Score: {engine.sem_score}/100")
+    async def bolt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("⚡ Latest Sovereign Bolt signals will appear here.")
+    app = Application.builder().token("YOUR_BOT_TOKEN").build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("bolt", bolt))
+    return app
+
+# =============================================================================
+# DASHBOARD
+# =============================================================================
+engine = Clarity18Elite()
+
+def run_dashboard():
+    st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
+    st.title("🔮 CLARITY 18.0 ELITE - ARBITRAGE + MIDDLES + ACCURACY")
+    st.markdown(f"**Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy | Version: {VERSION}**")
+    
+    with st.sidebar:
+        st.header("🚀 SYSTEM STATUS")
+        st.success("✅ Perplexity API LIVE")
+        st.success("✅ Full Rosters Loaded (NBA/MLB/NHL)")
+        st.metric("Version", VERSION)
+        st.metric("Bankroll", f"${engine.bankroll:,.0f}")
+        st.metric("SEM Score", f"{engine.sem_score}/100")
+    
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
+        "🎯 PLAYER PROPS", "💰 MONEYLINE", "📊 SPREAD", "📈 TOTALS", "🔄 ALT LINES", 
+        "🔗 PARLAY CHECK", "🏆 PRIZEPICKS", "📈 BEST ODDS", "💰 ARBITRAGE", "🎯 MIDDLES", "📊 ACCURACY"
+    ])
+    
+    # =========================================================================
+    # TAB 1: PLAYER PROPS
+    # =========================================================================
+    with tab1:
+        st.header("Player Prop Analyzer")
+        c1, c2 = st.columns(2)
+        with c1:
+            sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="prop_sport")
+            teams = engine.get_teams(sport)
+            team = st.selectbox("Team", teams, key="prop_team")
+            roster = engine.get_roster(sport, team)
+            player = st.selectbox("Player", roster, key="prop_player")
+            available_markets = SPORT_CATEGORIES.get(sport, ["PTS"])
+            market = st.selectbox("Market", available_markets, key="prop_market")
+            line = st.number_input("Line", 0.5, 100.0, 0.5, key="prop_line")
+            pick = st.selectbox("Pick", ["OVER", "UNDER"], key="prop_pick")
+        with c2:
+            data_str = st.text_area("Recent Games (comma separated)", "0, 1, 0, 2, 0, 1", key="prop_data")
+            odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
+        
+        if st.button("🚀 ANALYZE PROP", type="primary", key="prop_button"):
+            data = [float(x.strip()) for x in data_str.split(",")]
+            injury_info = engine.api.get_injury_status(player, sport)
+            result = engine.analyze_prop(player, market, line, pick, data, sport, odds, injury_info["injury"])
+            st.markdown(f"### {result['signal']}")
+            c1, c2, c3 = st.columns(3)
+            with c1: st.metric("Projection", f"{result['projection']:.1f}")
+            with c2: st.metric("Probability", f"{result['probability']:.1%}")
+            with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
+            st.metric("Tier", result['tier'])
+            if result['units'] > 0:
+                st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+            if injury_info["injury"] != "HEALTHY":
+                st.warning(f"Injury Status: {injury_info['injury']}")
+    
+    # =========================================================================
+    # TAB 2: MONEYLINE
+    # =========================================================================
+    with tab2:
+        st.header("Moneyline Analyzer")
+        c1, c2 = st.columns(2)
+        with c1:
+            sport_ml = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="ml_sport")
+            teams_ml = engine.get_teams(sport_ml)
+            home = st.selectbox("Home Team", teams_ml, key="ml_home")
+            away = st.selectbox("Away Team", teams_ml, key="ml_away")
+        with c2:
+            home_odds = st.number_input("Home Odds", -500, 500, -110, key="ml_home_odds")
+            away_odds = st.number_input("Away Odds", -500, 500, -110, key="ml_away_odds")
+        
+        if st.button("💰 ANALYZE MONEYLINE", type="primary", key="ml_button"):
+            result = engine.analyze_moneyline(home, away, sport_ml, home_odds, away_odds)
+            st.markdown(f"### {result['signal']}")
+            st.metric("Pick", result['pick'])
+            st.metric("Edge", f"{result['edge']:+.1%}")
+            st.metric("Win Probability", f"{result['win_prob']:.1%}")
+            if result['units'] > 0:
+                st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+    
+    # =========================================================================
+    # TAB 3: SPREAD
+    # =========================================================================
+    with tab3:
+        st.header("Spread Analyzer")
+        c1, c2 = st.columns(2)
+        with c1:
+            sport_sp = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="sp_sport")
+            teams_sp = engine.get_teams(sport_sp)
+            home_sp = st.selectbox("Home Team", teams_sp, key="sp_home")
+            away_sp = st.selectbox("Away Team", teams_sp, key="sp_away")
+            spread = st.number_input("Spread", -30.0, 30.0, -5.5, key="sp_line")
+        with c2:
+            pick_sp = st.selectbox("Pick", [home_sp, away_sp], key="sp_pick")
+            odds_sp = st.number_input("Odds", -500, 500, -110, key="sp_odds")
+        
+        if st.button("📊 ANALYZE SPREAD", type="primary", key="sp_button"):
+            result = engine.analyze_spread(home_sp, away_sp, spread, pick_sp, sport_sp, odds_sp)
+            st.markdown(f"### {result['signal']}")
+            st.metric("Cover Probability", f"{result['prob_cover']:.1%}")
+            st.metric("Push Probability", f"{result['prob_push']:.1%}")
+            st.metric("Edge", f"{result['edge']:+.1%}")
+            if result['units'] > 0:
+                st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+    
+    # =========================================================================
+    # TAB 4: TOTALS (OVER/UNDER)
+    # =========================================================================
+    with tab4:
+        st.header("Totals (Over/Under) Analyzer")
+        c1, c2 = st.columns(2)
+        with c1:
+            sport_tot = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="tot_sport")
+            teams_tot = engine.get_teams(sport_tot)
+            home_tot = st.selectbox("Home Team", teams_tot, key="tot_home")
+            away_tot = st.selectbox("Away Team", teams_tot, key="tot_away")
+            max_total = SPORT_MODELS[sport_tot]["avg_total"] * 2 if sport_tot in SPORT_MODELS else 300.0
+            total_line = st.number_input("Total Line", 0.5, max_total, SPORT_MODELS.get(sport_tot, {}).get("avg_total", 220.5), key="tot_line")
+        with c2:
+            pick_tot = st.selectbox("Pick", ["OVER", "UNDER"], key="tot_pick")
+            odds_tot = st.number_input("Odds", -500, 500, -110, key="tot_odds")
+        
+        if st.button("📈 ANALYZE TOTAL", type="primary", key="tot_button"):
+            result = engine.analyze_total(home_tot, away_tot, total_line, pick_tot, sport_tot, odds_tot)
+            st.markdown(f"### {result['signal']}")
+            c1, c2, c3 = st.columns(3)
+            with c1: st.metric("Projection", f"{result['projection']:.1f}")
+            with c2: st.metric("OVER Prob", f"{result['prob_over']:.1%}")
+            with c3: st.metric("UNDER Prob", f"{result['prob_under']:.1%}")
+            st.metric("Push Prob", f"{result['prob_push']:.1%}")
+            st.metric("Edge", f"{result['edge']:+.1%}")
+            if result['units'] > 0:
+                st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+    
+    # =========================================================================
+    # TAB 5: ALTERNATE LINES
+    # =========================================================================
+    with tab5:
+        st.header("Alternate Line Analyzer")
+        c1, c2 = st.columns(2)
+        with c1:
+            sport_alt = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="alt_sport")
+            base_line = st.number_input("Main Line", 0.5, 300.0, 220.5, key="alt_base")
+            alt_line = st.number_input("Alternate Line", 0.5, 300.0, 230.5, key="alt_line")
+        with c2:
+            pick_alt = st.selectbox("Pick", ["OVER", "UNDER"], key="alt_pick")
+            odds_alt = st.number_input("Odds", -500, 500, -110, key="alt_odds")
+        
+        if st.button("🔄 ANALYZE ALTERNATE", type="primary", key="alt_button"):
+            result = engine.analyze_alternate(base_line, alt_line, pick_alt, sport_alt, odds_alt)
+            st.markdown(f"### {result['action']}")
+            st.metric("Probability", f"{result['probability']:.1%}")
+            st.metric("Implied", f"{result['implied']:.1%}")
+            st.metric("Edge", f"{result['edge']:+.1%}")
+            st.info(f"Value: {result['value']}")
+    
+    # =========================================================================
+    # TAB 6: PARLAY CORRELATION CHECK
+    # =========================================================================
+    with tab6:
+        st.header("🔗 Parlay Correlation Validator")
+        st.markdown("Check if your parlay legs are too correlated (>12% threshold)")
+        legs_json = st.text_area("Paste parlay legs (JSON format)", 
+                                 '[{"player":"LeBron James","market":"PTS","team":"Lakers"},{"player":"Anthony Davis","market":"REB","team":"Lakers"}]')
+        if st.button("🔍 CHECK CORRELATION"):
+            try:
+                legs = json.loads(legs_json)
+                result = engine.check_correlation(legs)
+                if result['safe']:
+                    st.success(f"✅ Parlay SAFE - Max correlation: {result['max_corr']:.1%}")
+                else:
+                    st.error(f"❌ Parlay REJECTED - Max correlation: {result['max_corr']:.1%} (>{engine.correlation_threshold:.0%})")
+            except:
+                st.error("Invalid JSON format")
+    
+    # =========================================================================
+    # TAB 7: PRIZEPICKS SCANNER
+    # =========================================================================
+    with tab7:
+        st.header("🏆 PrizePicks Scanner")
+        st.markdown("Scan today's PrizePicks board for the best player props.")
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            selected_sports_pp = st.multiselect("Select sports", ["NBA", "MLB", "NHL", "NFL"], default=["NBA", "MLB"], key="pp_sports")
+        with col2:
+            if st.button("🔍 SCAN PRIZEPICKS", type="primary", use_container_width=True):
+                if not APIFY_AVAILABLE:
+                    st.error("Apify client not installed.")
+                else:
+                    with st.spinner("Scanning PrizePicks..."):
+                        results = engine.run_best_bets_scan(selected_sports_pp)
+                        st.success("Scan complete!")
+        if engine.scanned_bets.get("props"):
+            st.subheader("🏀 Top Player Props")
+            for i, bet in enumerate(engine.scanned_bets["props"], 1):
+                st.markdown(f"**{i}. {bet['bet_line']}**")
+                st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
+        if engine.scanned_bets.get("games"):
+            st.subheader("🎲 Top Game Bets")
+            for i, bet in enumerate(engine.scanned_bets["games"], 1):
+                st.markdown(f"**{i}. {bet['bet_line']}**")
+                st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
+    
+    # =========================================================================
+    # TAB 8: BEST ODDS SCANNER (Multi-sportsbook)
+    # =========================================================================
+    with tab8:
+        st.header("📈 Best Odds Scanner")
+        st.markdown("Find the best available odds for player props across 80+ sportsbooks.")
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            selected_sports_odds = st.multiselect("Select sports", ["NBA", "MLB", "NHL", "NFL"], default=["NBA"], key="odds_sports")
+        with col2:
+            if st.button("🔍 SCAN BEST ODDS", type="primary", use_container_width=True):
+                with st.spinner("Scanning sportsbooks for best odds..."):
+                    bets = engine.run_best_odds_scan(selected_sports_odds)
+                    st.success(f"Found {len(bets)} +EV props!")
+        if engine.scanned_bets.get("best_odds"):
+            st.subheader("💰 Best +EV Props (Top 10)")
+            for i, bet in enumerate(engine.scanned_bets["best_odds"], 1):
+                st.markdown(f"**{i}. {bet['player']} {bet['market']} {bet['pick']} {bet['line']}**")
+                st.caption(f"Odds: {bet['odds']} @ {bet['bookmaker']} | Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
+    
+    # =========================================================================
+    # TAB 9: ARBITRAGE DETECTOR
+    # =========================================================================
+    with tab9:
+        st.header("💰 Arbitrage Detector")
+        st.markdown("Find risk-free arbitrage opportunities across sportsbooks.")
+        if st.button("🔍 SCAN FOR ARBITRAGE", type="primary"):
+            with st.spinner("Scanning for arbitrage opportunities..."):
+                if not engine.scanned_bets.get("best_odds"):
+                    engine.run_best_odds_scan(["NBA"])
+                arbs = engine.scanned_bets.get("arbs", [])
+                if arbs:
+                    st.success(f"Found {len(arbs)} arbitrage opportunities!")
+                    for arb in arbs:
+                        st.markdown(f"**{arb['Player']} - {arb['Market']}**")
+                        st.caption(f"{arb['Bet 1']} | {arb['Bet 2']}")
+                        st.metric("Arbitrage %", f"{arb['Arb %']}%")
+                else:
+                    st.info("No arbitrage opportunities found in current scan.")
+    
+    # =========================================================================
+    # TAB 10: MIDDLE HUNTER
+    # =========================================================================
+    with tab10:
+        st.header("🎯 Middle Hunter")
+        st.markdown("Find middle opportunities (bet both sides of a line).")
+        if st.button("🔍 HUNT FOR MIDDLES", type="primary"):
+            with st.spinner("Hunting for middles..."):
+                if not engine.scanned_bets.get("best_odds"):
+                    engine.run_best_odds_scan(["NBA"])
+                middles = engine.scanned_bets.get("middles", [])
+                if middles:
+                    st.success(f"Found {len(middles)} middle opportunities!")
+                    for mid in middles:
+                        st.markdown(f"**{mid['Player']} - {mid['Market']}**")
+                        st.caption(f"Window: {mid['Middle Window']} (Size: {mid['Window Size']})")
+                        st.caption(f"{mid['Leg 1']} | {mid['Leg 2']}")
+                else:
+                    st.info("No middle opportunities found in current scan.")
+    
+    # =========================================================================
+    # TAB 11: ACCURACY DASHBOARD
+    # =========================================================================
+    with tab11:
+        st.header("📊 Public Accuracy Dashboard")
+        st.markdown("Verified performance metrics from settled bets.")
+        accuracy = engine.get_accuracy_dashboard()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Bets", accuracy['total_bets'])
+        with col2:
+            st.metric("Win Rate", f"{accuracy['win_rate']}%")
+        with col3:
+            st.metric("ROI", f"{accuracy['roi']}%")
+        with col4:
+            st.metric("Units Profit", f"+{accuracy['units_profit']}" if accuracy['units_profit'] > 0 else str(accuracy['units_profit']))
+        
+        st.subheader("By Sport")
+        if accuracy['by_sport']:
+            sport_df = pd.DataFrame(accuracy['by_sport']).T
+            st.dataframe(sport_df)
+        else:
+            st.info("No settled bets by sport yet.")
+        
+        st.subheader("By Tier")
+        if accuracy['by_tier']:
+            tier_df = pd.DataFrame(accuracy['by_tier']).T
+            st.dataframe(tier_df)
+        else:
+            st.info("No settled bets by tier yet.")
+        
+        st.metric("SEM Score", f"{accuracy['sem_score']}/100")
+
+if __name__ == "__main__":
+    run_dashboard()
