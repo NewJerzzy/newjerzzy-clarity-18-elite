@@ -6,3 +6,4 @@ streamlit
 requests
 pybaseball
 websockets
+apify-client>=1.7.0
