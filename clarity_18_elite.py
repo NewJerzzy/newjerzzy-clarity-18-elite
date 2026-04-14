@@ -22,7 +22,7 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-VERSION = "18.0 Elite (Sport-Specific Dropdowns)"
+VERSION = "18.0 Elite (Auto-Populating Rosters)"
 BUILD_DATE = "2026-04-13"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -269,7 +269,7 @@ class SeasonContextEngine:
         return {"team": team, "fade": fade, "reasons": reasons}
 
 # =============================================================================
-# API-SPORTS CLIENT (Lineups)
+# API-SPORTS CLIENT (Lineups + Rosters)
 # =============================================================================
 class APISportsClient:
     def __init__(self, api_key: str):
@@ -277,6 +277,8 @@ class APISportsClient:
         self.headers = {"x-apisports-key": api_key}
         self.sport_map = {"NBA": "basketball", "MLB": "baseball", "NHL": "hockey", "NFL": "american-football"}
         self.league_map = {"NBA": 12, "NFL": 1, "MLB": 1, "NHL": 57}
+        self.teams_cache = {}
+        self.roster_cache = {}
     
     def _call(self, endpoint: str, params: dict = None) -> dict:
         url = f"{API_SPORTS_BASE}/{endpoint}"
@@ -286,17 +288,58 @@ class APISportsClient:
         except:
             return {}
     
-    def is_player_starting(self, sport: str, team: str, player: str) -> dict:
+    def get_teams(self, sport: str) -> List[str]:
+        """Get all teams for a sport"""
+        if sport in self.teams_cache:
+            return self.teams_cache[sport]
+        
         api_sport = self.sport_map.get(sport, "basketball")
         league_id = self.league_map.get(sport, 12)
         
         data = self._call(f"{api_sport}/teams", {"league": league_id})
-        team_id = None
+        teams = []
+        for team in data.get("response", []):
+            teams.append(team["name"])
+        
+        self.teams_cache[sport] = sorted(teams)
+        return self.teams_cache[sport]
+    
+    def get_team_id(self, sport: str, team: str) -> Optional[int]:
+        api_sport = self.sport_map.get(sport, "basketball")
+        league_id = self.league_map.get(sport, 12)
+        
+        data = self._call(f"{api_sport}/teams", {"league": league_id})
         for t in data.get("response", []):
             if team.lower() in t["name"].lower():
-                team_id = t["id"]
-                break
+                return t["id"]
+        return None
+    
+    def get_roster(self, sport: str, team: str) -> List[str]:
+        """Get full roster for a team"""
+        cache_key = f"{sport}_{team}"
+        if cache_key in self.roster_cache:
+            return self.roster_cache[cache_key]
         
+        team_id = self.get_team_id(sport, team)
+        if not team_id:
+            return []
+        
+        api_sport = self.sport_map.get(sport, "basketball")
+        data = self._call(f"{api_sport}/players/squads", {"team": team_id})
+        
+        players = []
+        for squad in data.get("response", []):
+            for player in squad.get("players", []):
+                players.append(player["name"])
+        
+        self.roster_cache[cache_key] = sorted(players)
+        return self.roster_cache[cache_key]
+    
+    def is_player_starting(self, sport: str, team: str, player: str) -> dict:
+        api_sport = self.sport_map.get(sport, "basketball")
+        league_id = self.league_map.get(sport, 12)
+        
+        team_id = self.get_team_id(sport, team)
         if not team_id:
             return {"starting": False, "status": "TEAM_NOT_FOUND", "confidence": "LOW"}
         
@@ -564,16 +607,22 @@ class Clarity18Elite:
         return {"player": player, "market": market, "line": line, "pick": pick, "signal": bolt["signal"], "units": bolt["units"],
                 "projection": sim["proj"], "probability": sim["prob"], "raw_edge": round(raw_edge, 4), "tier": tier,
                 "injury": api_status["injury"], "l42_msg": l42_msg, "kelly_stake": round(min(kelly, 50), 2), "lineup": lineup_check, "bet_id": bet_id}
+    
+    def get_teams(self, sport: str) -> List[str]:
+        return self.api_sports.get_teams(sport)
+    
+    def get_roster(self, sport: str, team: str) -> List[str]:
+        return self.api_sports.get_roster(sport, team)
 
 # =============================================================================
-# DASHBOARD (SPORT-SPECIFIC DROPDOWNS)
+# DASHBOARD (AUTO-POPULATING TEAMS & PLAYERS)
 # =============================================================================
 engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("🔮 CLARITY 18.0 ELITE - ALL SPORTS")
-    st.markdown(f"**80+ Categories | NBA • MLB • NHL • Soccer • Tennis | Version: {VERSION}**")
+    st.title("🔮 CLARITY 18.0 ELITE - AUTO ROSTERS")
+    st.markdown(f"**Zero Typing | Auto-Populating Teams & Players | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
@@ -588,10 +637,23 @@ def run_dashboard():
     
     with tab1:
         st.header("Player Prop Analyzer")
+        st.markdown("*Select from dropdowns - no typing needed*")
+        
         c1, c2 = st.columns(2)
         with c1:
-            player = st.text_input("Player", "Aaron Judge", key="tab1_player")
             sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "SOCCER", "TENNIS", "NFL"], key="tab1_sport")
+            
+            # Auto-populate teams
+            teams = engine.get_teams(sport)
+            team = st.selectbox("Team", teams if teams else ["Loading..."], key="tab1_team")
+            
+            # Auto-populate players based on selected team
+            if team and team != "Loading...":
+                roster = engine.get_roster(sport, team)
+                player = st.selectbox("Player", roster if roster else ["Loading..."], key="tab1_player")
+            else:
+                player = st.selectbox("Player", ["Select a team first"], key="tab1_player")
+            
             available_markets = SPORT_CATEGORIES.get(sport, [])
             market = st.selectbox("Market", available_markets, key="tab1_market")
             line = st.number_input("Line", 0.5, 100.0, 0.5, key="tab1_line")
@@ -599,29 +661,31 @@ def run_dashboard():
         with c2:
             data_str = st.text_area("Recent Games (comma separated)", "0, 1, 0, 2, 0, 1", key="tab1_data")
             odds = st.number_input("Odds (American)", -500, 500, -110, key="tab1_odds")
-            team = st.text_input("Team (Optional)", "Yankees", key="tab1_team")
             log_bet = st.checkbox("📝 Log this bet for auto-settlement", value=True, key="tab1_log")
         
         if st.button("🚀 RUN ANALYSIS", type="primary", key="tab1_button"):
-            data = [float(x.strip()) for x in data_str.split(",")]
-            result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team, log_bet)
-            st.markdown(f"### {result['signal']}")
-            c1, c2, c3 = st.columns(3)
-            with c1: st.metric("Projection", f"{result['projection']:.1f}")
-            with c2: st.metric("Probability", f"{result['probability']:.1%}")
-            with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
-            st.metric("Tier", result['tier'])
-            st.info(f"Injury: {result['injury']} | L42: {result['l42_msg']}")
-            if result.get('lineup'):
-                lu = result['lineup']
-                if lu['starting']:
-                    st.success(f"✅ Lineup: {lu['status']} ({lu['confidence']} confidence)")
-                else:
-                    st.warning(f"⚠️ Lineup: {lu['status']}")
-            if result['units'] > 0:
-                st.success(f"RECOMMENDED UNITS: {result['units']} (Kelly: ${result['kelly_stake']:.2f})")
-            if result.get('bet_id'):
-                st.info(f"📝 Bet logged! ID: {result['bet_id']}")
+            if player == "Select a team first" or player == "Loading...":
+                st.error("Please select a valid team and player")
+            else:
+                data = [float(x.strip()) for x in data_str.split(",")]
+                result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team, log_bet)
+                st.markdown(f"### {result['signal']}")
+                c1, c2, c3 = st.columns(3)
+                with c1: st.metric("Projection", f"{result['projection']:.1f}")
+                with c2: st.metric("Probability", f"{result['probability']:.1%}")
+                with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
+                st.metric("Tier", result['tier'])
+                st.info(f"Injury: {result['injury']} | L42: {result['l42_msg']}")
+                if result.get('lineup'):
+                    lu = result['lineup']
+                    if lu['starting']:
+                        st.success(f"✅ Lineup: {lu['status']} ({lu['confidence']} confidence)")
+                    else:
+                        st.warning(f"⚠️ Lineup: {lu['status']}")
+                if result['units'] > 0:
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (Kelly: ${result['kelly_stake']:.2f})")
+                if result.get('bet_id'):
+                    st.info(f"📝 Bet logged! ID: {result['bet_id']}")
     
     with tab2:
         st.header("📊 Auto-Settlement Dashboard")
@@ -680,18 +744,27 @@ def run_dashboard():
         c1, c2 = st.columns(2)
         with c1:
             sport_lu = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="tab4_sport")
-            team_lu = st.text_input("Team", "Yankees", key="tab4_team")
+            teams_lu = engine.get_teams(sport_lu)
+            team_lu = st.selectbox("Team", teams_lu if teams_lu else ["Loading..."], key="tab4_team")
         with c2:
-            player_lu = st.text_input("Player", "Aaron Judge", key="tab4_player")
+            if team_lu and team_lu != "Loading...":
+                roster_lu = engine.get_roster(sport_lu, team_lu)
+                player_lu = st.selectbox("Player", roster_lu if roster_lu else ["Loading..."], key="tab4_player")
+            else:
+                player_lu = st.selectbox("Player", ["Select a team first"], key="tab4_player")
+        
         if st.button("🔍 CHECK LINEUP", key="tab4_button"):
-            with st.spinner("Checking lineup..."):
-                result = engine.api_sports.is_player_starting(sport_lu, team_lu, player_lu)
-                if result['starting']:
-                    st.success(f"✅ {player_lu} is STARTING for {team_lu}")
-                elif result['status'] == 'BENCH':
-                    st.warning(f"⚠️ {player_lu} is on the BENCH")
-                else:
-                    st.error(f"❌ {player_lu} is NOT IN LINEUP")
+            if player_lu == "Select a team first" or player_lu == "Loading...":
+                st.error("Please select a valid team and player")
+            else:
+                with st.spinner("Checking lineup..."):
+                    result = engine.api_sports.is_player_starting(sport_lu, team_lu, player_lu)
+                    if result['starting']:
+                        st.success(f"✅ {player_lu} is STARTING for {team_lu}")
+                    elif result['status'] == 'BENCH':
+                        st.warning(f"⚠️ {player_lu} is on the BENCH")
+                    else:
+                        st.error(f"❌ {player_lu} is NOT IN LINEUP")
 
 if __name__ == "__main__":
     run_dashboard()
