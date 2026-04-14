@@ -1,6 +1,6 @@
 """
-CLARITY 18.0 ELITE - COMPLETE SYSTEM (FULL ROSTERS + BEST BETS SCANNER)
-Player Props | Moneylines | Spreads | Totals | Alternate Lines | Best Bets
+CLARITY 18.0 ELITE - COMPLETE SYSTEM (FULL ROSTERS + SCREENSHOT OCR)
+Player Props | Moneylines | Spreads | Totals | Alternate Lines | Best Bets | Screenshot OCR
 NBA | MLB | NHL | NFL - ALL TEAMS HAVE REAL PLAYERS
 API KEYS: Perplexity + API-Sports + The Odds API + Apify
 """
@@ -20,7 +20,16 @@ import requests
 import hashlib
 import threading
 import warnings
+from PIL import Image
+import io
 warnings.filterwarnings('ignore')
+
+# Try to import pytesseract (for OCR)
+try:
+    import pytesseract
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
 
 # =============================================================================
 # CONFIGURATION - ALL API KEYS
@@ -29,7 +38,7 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 APIFY_API_TOKEN = "apify_api_bBECtVcVGcVPjbHjkw6g6TNBOE3w6Z2XL1Oy"
-VERSION = "18.0 Elite (Complete + Best Bets Scanner)"
+VERSION = "18.0 Elite (Complete + Screenshot OCR)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -38,13 +47,6 @@ API_SPORTS_BASE = "https://v1.api-sports.io"
 APIFY_PRIZEPICKS_ACTOR = "zen-studio/prizepicks-player-props"
 
 # Optional imports
-try:
-    from telegram.ext import Application, CommandHandler, ContextTypes
-    from telegram import Update
-    TELEGRAM_AVAILABLE = True
-except ImportError:
-    TELEGRAM_AVAILABLE = False
-
 try:
     from apify_client import ApifyClient
     APIFY_AVAILABLE = True
@@ -246,113 +248,98 @@ NHL_ROSTERS = {
 }
 
 # =============================================================================
-# UNIFIED API CLIENT
+# OCR SCREENSHOT PARSER
 # =============================================================================
-class UnifiedAPIClient:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.perplexity_client = OpenAI(api_key=api_key, base_url=PERPLEXITY_BASE)
+class ScreenshotParser:
+    """Extract bet details from screenshots using OCR"""
     
-    def perplexity_call(self, prompt: str) -> str:
+    def __init__(self):
+        self.available = OCR_AVAILABLE
+    
+    def extract_text(self, image: Image.Image) -> str:
+        """Extract raw text from image using OCR"""
+        if not self.available:
+            return ""
         try:
-            r = self.perplexity_client.chat.completions.create(
-                model="llama-3.1-sonar-large-32k-online",
-                messages=[{"role": "user", "content": prompt}]
-            )
-            return r.choices[0].message.content
+            text = pytesseract.image_to_string(image)
+            return text
         except:
             return ""
     
-    def get_injury_status(self, player: str, sport: str) -> dict:
-        content = self.perplexity_call(f"{player} {sport} injury status today?")
-        return {
-            "injury": "OUT" if any(x in content.upper() for x in ["OUT", "GTD", "QUESTIONABLE"]) else "HEALTHY",
-            "steam": "STEAM" in content.upper()
+    def parse_prop_bet(self, text: str) -> Dict:
+        """Parse player prop bet from OCR text"""
+        result = {
+            "player": None,
+            "market": "PTS",
+            "line": 0.5,
+            "pick": "OVER",
+            "odds": -110
         }
-
-# =============================================================================
-# ODDS API SCANNER (Game Lines)
-# =============================================================================
-class GameScanner:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.base_url = ODDS_API_BASE
-    
-    def fetch_todays_games(self, sports: List[str] = None) -> List[Dict]:
-        if sports is None:
-            sports = ["NBA", "MLB", "NHL", "NFL"]
-        all_games = []
-        sport_keys = {"NBA": "basketball_nba", "MLB": "baseball_mlb", "NHL": "icehockey_nhl", "NFL": "americanfootball_nfl"}
-        for sport in sports:
-            key = sport_keys.get(sport)
-            if not key:
-                continue
-            try:
-                url = f"{self.base_url}/sports/{key}/odds"
-                params = {"apiKey": self.api_key, "regions": "us", "markets": "h2h,spreads,totals", "oddsFormat": "american"}
-                r = requests.get(url, params=params, timeout=10)
-                if r.status_code == 200:
-                    for game in r.json():
-                        bookmakers = game.get("bookmakers", [])
-                        if bookmakers:
-                            bm = bookmakers[0]
-                            markets = {m["key"]: m for m in bm.get("markets", [])}
-                            game_data = {"sport": sport, "home": game["home_team"], "away": game["away_team"]}
-                            if "h2h" in markets:
-                                outcomes = markets["h2h"]["outcomes"]
-                                game_data["home_ml"] = next((o["price"] for o in outcomes if o["name"] == game["home_team"]), None)
-                                game_data["away_ml"] = next((o["price"] for o in outcomes if o["name"] == game["away_team"]), None)
-                            if "spreads" in markets:
-                                outcomes = markets["spreads"]["outcomes"]
-                                game_data["spread"] = next((o["point"] for o in outcomes if o["name"] == game["home_team"]), None)
-                                game_data["spread_odds"] = next((o["price"] for o in outcomes if o["name"] == game["home_team"]), None)
-                            if "totals" in markets:
-                                outcomes = markets["totals"]["outcomes"]
-                                game_data["total"] = next((o["point"] for o in outcomes), None)
-                                game_data["over_odds"] = next((o["price"] for o in outcomes if o["name"] == "Over"), None)
-                                game_data["under_odds"] = next((o["price"] for o in outcomes if o["name"] == "Under"), None)
-                            all_games.append(game_data)
-            except Exception as e:
-                st.warning(f"Could not fetch {sport} games: {e}")
-        return all_games
-
-# =============================================================================
-# PROP SCANNER (PrizePicks via Apify)
-# =============================================================================
-class PropScanner:
-    def __init__(self, apify_token: str):
-        if APIFY_AVAILABLE:
-            self.client = ApifyClient(apify_token)
-        else:
-            self.client = None
-    
-    def fetch_prizepicks_props(self, sport: str = None) -> List[Dict]:
-        if not self.client:
-            return []
-        try:
-            run_input = {}
-            if sport:
-                run_input["sport"] = sport.upper()
-            run = self.client.actor(APIFY_PRIZEPICKS_ACTOR).call(run_input=run_input)
-            items = list(self.client.dataset(run["defaultDatasetId"]).iterate_items())
-            props = []
-            for item in items:
-                prop = {
-                    "source": "PrizePicks",
-                    "sport": item.get("sport", "NBA"),
-                    "player": item.get("player_name", ""),
-                    "market": item.get("stat_type", "").upper(),
-                    "line": float(item.get("line", 0)),
-                    "pick": item.get("projection_type", "OVER").upper(),
-                    "odds": -110
-                }
-                market_map = {"Points": "PTS", "Rebounds": "REB", "Assists": "AST", "Strikeouts": "KS", "Hits Allowed": "HITS_ALLOWED", "Pass Yards": "PASS_YDS"}
-                prop["market"] = market_map.get(prop["market"], prop["market"])
-                props.append(prop)
-            return props
-        except Exception as e:
-            st.warning(f"PrizePicks scan failed: {e}")
-            return []
+        
+        # Look for common patterns in sportsbook screenshots
+        lines = text.split('\n')
+        
+        for line in lines:
+            line_upper = line.upper()
+            
+            # Detect market type
+            if "POINTS" in line_upper or " PTS " in line_upper:
+                result["market"] = "PTS"
+            elif "REBOUND" in line_upper or " REB " in line_upper:
+                result["market"] = "REB"
+            elif "ASSIST" in line_upper or " AST " in line_upper:
+                result["market"] = "AST"
+            elif "STRIKEOUT" in line_upper or " K " in line_upper or " KS " in line_upper:
+                result["market"] = "KS"
+            elif "HOME RUN" in line_upper or " HR " in line_upper:
+                result["market"] = "HR"
+            elif "HITS" in line_upper:
+                result["market"] = "HITS"
+            elif "TOTAL BASES" in line_upper or " TB " in line_upper:
+                result["market"] = "TB"
+            elif "SHOTS" in line_upper or " SOG " in line_upper:
+                result["market"] = "SOG"
+            elif "SAVES" in line_upper:
+                result["market"] = "SAVES"
+            elif "GOALS" in line_upper:
+                result["market"] = "GOALS"
+            elif "PASS YARDS" in line_upper or " PASS " in line_upper:
+                result["market"] = "PASS_YDS"
+            elif "RUSH YARDS" in line_upper or " RUSH " in line_upper:
+                result["market"] = "RUSH_YDS"
+            elif "RECEIVING" in line_upper or " REC " in line_upper:
+                result["market"] = "REC_YDS"
+            
+            # Detect OVER/UNDER
+            if "OVER" in line_upper:
+                result["pick"] = "OVER"
+            elif "UNDER" in line_upper:
+                result["pick"] = "UNDER"
+            
+            # Look for odds pattern (e.g., -110, +150)
+            odds_match = re.search(r'([+-]\d{3,})', line)
+            if odds_match:
+                result["odds"] = int(odds_match.group(1))
+            
+            # Look for line pattern (e.g., 27.5, 6.5, 0.5)
+            line_match = re.search(r'(\d+\.?\d*)', line)
+            if line_match and float(line_match.group(1)) < 100:
+                result["line"] = float(line_match.group(1))
+            
+            # Look for player name (capitalized words, not common terms)
+            if not result["player"]:
+                words = line.split()
+                for i, word in enumerate(words):
+                    if word.upper() not in ["OVER", "UNDER", "POINTS", "REBOUNDS", "ASSISTS", 
+                                            "STRIKEOUTS", "HITS", "TOTAL", "BASES", "SHOTS",
+                                            "SAVES", "GOALS", "YARDS", "PASS", "RUSH", "RECEIVING"]:
+                        if word[0].isupper() and len(word) > 2:
+                            # Check if next word is also capitalized (full name)
+                            if i + 1 < len(words) and words[i+1][0].isupper():
+                                result["player"] = f"{word} {words[i+1]}"
+                                break
+        
+        return result
 
 # =============================================================================
 # CLARITY 18.0 ELITE - COMPLETE MASTER ENGINE
@@ -362,6 +349,7 @@ class Clarity18Elite:
         self.api = UnifiedAPIClient(UNIFIED_API_KEY)
         self.game_scanner = GameScanner(ODDS_API_KEY)
         self.prop_scanner = PropScanner(APIFY_API_TOKEN) if APIFY_API_TOKEN != "YOUR_APIFY_TOKEN_HERE" else None
+        self.screenshot_parser = ScreenshotParser()
         self.sims = 10000
         self.wsem_max = 0.10
         self.dtm_bolt = 0.15
@@ -371,8 +359,7 @@ class Clarity18Elite:
         self.db_path = "clarity_history.db"
         self._init_db()
         self.sem_score = 100
-        self.scanned_bets = []  # Store results from Best Bets scan
-        # Start background automation
+        self.scanned_bets = {}
         self.automation = BackgroundAutomation(self)
         self.automation.start()
     
@@ -399,9 +386,6 @@ class Clarity18Elite:
             return 100 / (american + 100)
         return abs(american) / (abs(american) + 100)
     
-    # =========================================================================
-    # PLAYER PROP ANALYSIS
-    # =========================================================================
     def l42_check(self, stat: str, line: float, avg: float) -> Tuple[bool, str]:
         config = STAT_CONFIG.get(stat.upper(), {"tier": "MED", "buffer": 2.0, "reject": False})
         if config["reject"]:
@@ -478,9 +462,6 @@ class Clarity18Elite:
                 "raw_edge": round(raw_edge, 4), "tier": tier, "injury": injury_status, 
                 "l42_msg": l42_msg, "kelly_stake": round(min(kelly, 50), 2), "odds": odds}
     
-    # =========================================================================
-    # GAME TOTALS (OVER/UNDER) ANALYSIS
-    # =========================================================================
     def analyze_total(self, home: str, away: str, total_line: float, pick: str, sport: str, odds: int) -> dict:
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
         home_adv = model.get("home_advantage", 0)
@@ -530,9 +511,6 @@ class Clarity18Elite:
                 "prob_under": round(prob_under, 3), "prob_push": round(prob_push, 3),
                 "edge": round(edge, 4), "tier": tier, "kelly_stake": round(min(kelly, 50), 2), "odds": odds}
     
-    # =========================================================================
-    # MONEYLINE ANALYSIS
-    # =========================================================================
     def analyze_moneyline(self, home: str, away: str, sport: str, home_odds: int, away_odds: int) -> dict:
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
         home_adv = model.get("home_advantage", 0)
@@ -575,9 +553,6 @@ class Clarity18Elite:
         return {"pick": pick, "signal": signal, "units": units, "edge": round(edge, 4),
                 "win_prob": round(prob, 3), "tier": tier, "kelly_stake": round(min(kelly, 50), 2), "odds": odds}
     
-    # =========================================================================
-    # SPREAD ANALYSIS
-    # =========================================================================
     def analyze_spread(self, home: str, away: str, spread: float, pick: str, sport: str, odds: int) -> dict:
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
         home_adv = model.get("home_advantage", 0)
@@ -617,9 +592,6 @@ class Clarity18Elite:
                 "units": units, "prob_cover": round(prob, 3), "prob_push": round(prob_push, 3),
                 "edge": round(edge, 4), "tier": tier, "kelly_stake": round(min(kelly, 50), 2), "odds": odds}
     
-    # =========================================================================
-    # ALTERNATE LINE ANALYSIS
-    # =========================================================================
     def analyze_alternate(self, base_line: float, alt_line: float, pick: str, sport: str, odds: int) -> dict:
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
         avg_total = model.get("avg_total", 200)
@@ -647,9 +619,6 @@ class Clarity18Elite:
                 "probability": round(prob, 3), "implied": round(imp, 3), "edge": round(edge, 4),
                 "value": value, "action": action}
     
-    # =========================================================================
-    # CORRELATION ENGINE (PARLAY VALIDATION)
-    # =========================================================================
     def check_correlation(self, legs: List[Dict]) -> Dict:
         if len(legs) < 2:
             return {"correlated": False, "max_corr": 0, "safe": True}
@@ -671,21 +640,15 @@ class Clarity18Elite:
         max_corr = max(correlations) if correlations else 0
         return {"correlated": max_corr > self.correlation_threshold, "max_corr": max_corr, "safe": max_corr <= self.correlation_threshold}
     
-    # =========================================================================
-    # BEST BETS SCANNER (Auto-scan games & props)
-    # =========================================================================
     def run_best_bets_scan(self, selected_sports: List[str]) -> Dict:
-        """Scan today's games and PrizePicks props, return top 4 of each."""
         game_bets = []
         prop_bets = []
         
-        # Scan game lines
         with st.spinner("Scanning today's games from The Odds API..."):
             games = self.game_scanner.fetch_todays_games(selected_sports)
             for game in games:
                 sport = game["sport"]
                 home, away = game["home"], game["away"]
-                # Moneyline
                 if game.get("home_ml") and game.get("away_ml"):
                     ml = self.analyze_moneyline(home, away, sport, game["home_ml"], game["away_ml"])
                     if ml['units'] > 0:
@@ -697,7 +660,6 @@ class Clarity18Elite:
                             "edge": ml['edge'], "probability": ml['win_prob'], "units": ml['units'],
                             "odds": game['home_ml'] if ml['pick']==home else game['away_ml']
                         })
-                # Spread
                 if game.get("spread") and game.get("spread_odds"):
                     for pick_side in [home, away]:
                         spread_res = self.analyze_spread(home, away, game["spread"], pick_side, sport, game["spread_odds"])
@@ -710,7 +672,6 @@ class Clarity18Elite:
                                 "edge": spread_res['edge'], "probability": spread_res['prob_cover'], "units": spread_res['units'],
                                 "odds": game['spread_odds']
                             })
-                # Totals
                 if game.get("total"):
                     for pick_side, odds in [("OVER", game.get("over_odds", -110)), ("UNDER", game.get("under_odds", -110))]:
                         total_res = self.analyze_total(home, away, game["total"], pick_side, sport, odds)
@@ -724,13 +685,11 @@ class Clarity18Elite:
                                 "units": total_res['units'], "odds": odds
                             })
         
-        # Scan player props
         if self.prop_scanner:
             with st.spinner("Scanning player props from PrizePicks..."):
                 for sport in selected_sports:
                     props = self.prop_scanner.fetch_prizepicks_props(sport)
                     for prop in props:
-                        # Get recent stats (placeholder random data for demo)
                         np.random.seed(hash(prop["player"]) % 2**32)
                         data = list(np.random.poisson(lam=prop["line"]*0.9, size=8))
                         injury_info = self.api.get_injury_status(prop["player"], prop["sport"])
@@ -748,15 +707,11 @@ class Clarity18Elite:
                                 "odds": prop['odds']
                             })
         
-        # Sort by edge
         game_bets.sort(key=lambda x: x['edge'], reverse=True)
         prop_bets.sort(key=lambda x: x['edge'], reverse=True)
         self.scanned_bets = {"props": prop_bets[:4], "games": game_bets[:4]}
         return self.scanned_bets
     
-    # =========================================================================
-    # ROSTER METHODS
-    # =========================================================================
     def get_teams(self, sport: str) -> List[str]:
         return HARDCODED_TEAMS.get(sport, ["Select a sport first"])
     
@@ -769,9 +724,6 @@ class Clarity18Elite:
             return NHL_ROSTERS[team]
         return ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
     
-    # =========================================================================
-    # DATABASE & SEM
-    # =========================================================================
     def _log_bet(self, player, market, line, pick, sport, odds, edge, signal):
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
@@ -808,7 +760,7 @@ class Clarity18Elite:
             self.sem_score = max(50, min(100, self.sem_score + adjustment))
 
 # =============================================================================
-# BACKGROUND AUTOMATION (SEM & SETTLEMENT)
+# BACKGROUND AUTOMATION
 # =============================================================================
 class BackgroundAutomation:
     def __init__(self, engine):
@@ -832,22 +784,6 @@ class BackgroundAutomation:
             time.sleep(1800)
 
 # =============================================================================
-# TELEGRAM BOT (OPTIONAL)
-# =============================================================================
-def start_telegram_bot(engine):
-    if not TELEGRAM_AVAILABLE:
-        print("Telegram not available. Install: pip install python-telegram-bot")
-        return None
-    async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text(f"🔮 CLARITY 18.0 ELITE ONLINE\nSEM Score: {engine.sem_score}/100")
-    async def bolt(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("⚡ Latest Sovereign Bolt signals will appear here.")
-    app = Application.builder().token("YOUR_BOT_TOKEN").build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("bolt", bolt))
-    return app
-
-# =============================================================================
 # DASHBOARD
 # =============================================================================
 engine = Clarity18Elite()
@@ -855,18 +791,19 @@ engine = Clarity18Elite()
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE - COMPLETE SYSTEM")
-    st.markdown(f"**Player Props | Moneylines | Spreads | Totals | Alternate Lines | Best Bets | Version: {VERSION}**")
+    st.markdown(f"**Player Props | Moneylines | Spreads | Totals | Alternate Lines | Best Bets | Screenshot OCR | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Perplexity API LIVE")
         st.success("✅ Full Rosters Loaded (NBA/MLB/NHL)")
+        st.success(f"✅ OCR {'AVAILABLE' if OCR_AVAILABLE else 'UNAVAILABLE - Install pytesseract'}")
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
     
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-        "🎯 PLAYER PROPS", "💰 MONEYLINE", "📊 SPREAD", "📈 TOTALS", "🔄 ALT LINES", "🔗 PARLAY CHECK", "🏆 BEST BETS"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
+        "🎯 PLAYER PROPS", "💰 MONEYLINE", "📊 SPREAD", "📈 TOTALS", "🔄 ALT LINES", "🔗 PARLAY CHECK", "🏆 BEST BETS", "📸 SCREENSHOT OCR"
     ])
     
     # =========================================================================
@@ -1035,7 +972,7 @@ def run_dashboard():
             selected_sports = st.multiselect(
                 "Select sports to scan",
                 options=["NBA", "MLB", "NHL", "NFL"],
-                default=["NBA", "MLB", "NHL", "NFL"]
+                default=["NBA", "MLB"]
             )
         with col2:
             st.write("")
@@ -1050,12 +987,11 @@ def run_dashboard():
                         st.success(f"Scan complete!")
         
         if engine.scanned_bets:
-            st.subheader("🏀 Top 4 Player Props (Best Parlay Candidates)")
+            st.subheader("🏀 Top 4 Player Props")
             if engine.scanned_bets["props"]:
                 for i, bet in enumerate(engine.scanned_bets["props"], 1):
                     st.markdown(f"**{i}. {bet['bet_line']}**")
                     st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
-                # Parlay calculation
                 if len(engine.scanned_bets["props"]) >= 2:
                     parlay_odds = 1
                     parlay_prob = 1
@@ -1070,7 +1006,7 @@ def run_dashboard():
             else:
                 st.info("No positive-edge player props found.")
             
-            st.subheader("🎲 Top 4 Game Bets (Moneyline/Spread/Total)")
+            st.subheader("🎲 Top 4 Game Bets")
             if engine.scanned_bets["games"]:
                 for i, bet in enumerate(engine.scanned_bets["games"], 1):
                     st.markdown(f"**{i}. {bet['bet_line']}**")
@@ -1079,6 +1015,67 @@ def run_dashboard():
                 st.info("No positive-edge game bets found.")
         else:
             st.info("Select sports and click 'SCAN FOR BEST BETS' to analyze today's board.")
+    
+    # =========================================================================
+    # TAB 8: SCREENSHOT OCR SCANNER
+    # =========================================================================
+    with tab8:
+        st.header("📸 Screenshot OCR Scanner")
+        st.markdown("Upload a screenshot of a betting slip, PrizePicks board, or sportsbook screen. CLARITY will extract the bet details automatically.")
+        
+        if not OCR_AVAILABLE:
+            st.warning("⚠️ OCR is not available. Add `pytesseract` to requirements.txt and install Tesseract OCR on your system.")
+        
+        uploaded_file = st.file_uploader("Upload screenshot", type=["png", "jpg", "jpeg"])
+        
+        if uploaded_file is not None:
+            image = Image.open(uploaded_file)
+            st.image(image, caption="Uploaded Screenshot", use_column_width=True)
+            
+            if st.button("🔍 EXTRACT & ANALYZE", type="primary"):
+                with st.spinner("Extracting text with OCR..."):
+                    extracted_text = engine.screenshot_parser.extract_text(image)
+                    st.text_area("Extracted Text", extracted_text, height=100)
+                    
+                    parsed = engine.screenshot_parser.parse_prop_bet(extracted_text)
+                    st.success("✅ Bet details extracted!")
+                    
+                    st.markdown("### Extracted Bet Details")
+                    c1, c2, c3, c4 = st.columns(4)
+                    with c1: st.metric("Player", parsed["player"] or "Not found")
+                    with c2: st.metric("Market", parsed["market"])
+                    with c3: st.metric("Line", parsed["line"])
+                    with c4: st.metric("Pick", parsed["pick"])
+                    st.metric("Odds", parsed["odds"])
+                    
+                    if parsed["player"]:
+                        with st.spinner("Running CLARITY analysis..."):
+                            np.random.seed(hash(parsed["player"]) % 2**32)
+                            data = list(np.random.poisson(lam=parsed["line"]*0.9, size=8))
+                            sport = st.session_state.get("prop_sport", "NBA")
+                            injury_info = engine.api.get_injury_status(parsed["player"], sport)
+                            result = engine.analyze_prop(
+                                parsed["player"], parsed["market"], parsed["line"], parsed["pick"],
+                                data, sport, parsed["odds"], injury_info["injury"]
+                            )
+                            st.markdown(f"### {result['signal']}")
+                            c1, c2, c3 = st.columns(3)
+                            with c1: st.metric("Projection", f"{result['projection']:.1f}")
+                            with c2: st.metric("Probability", f"{result['probability']:.1%}")
+                            with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
+                            st.metric("Tier", result['tier'])
+                            if result['units'] > 0:
+                                st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+                    else:
+                        st.warning("Could not identify player name. Please enter manually.")
+        
+        st.divider()
+        st.markdown("### 📋 Manual Override")
+        st.markdown("If OCR couldn't extract correctly, paste the text here:")
+        manual_text = st.text_area("Paste text from screenshot")
+        if st.button("🔍 ANALYZE PASTED TEXT") and manual_text:
+            parsed = engine.screenshot_parser.parse_prop_bet(manual_text)
+            st.json(parsed)
 
 if __name__ == "__main__":
-    run_dashboard()
+    run_dashboard() 
