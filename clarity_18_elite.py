@@ -82,7 +82,12 @@ SPORT_CATEGORIES = {
     "NFL": ["PASS_YDS", "PASS_TD", "RUSH_YDS", "RUSH_TD", "REC_YDS", "REC", "TD"],
 }
 
-API_SPORT_KEYS = {"NBA": "basketball", "MLB": "baseball", "NHL": "hockey", "NFL": "american-football"}
+API_SPORT_KEYS = {
+    "NBA": "basketball",
+    "MLB": "baseball",
+    "NHL": "hockey",
+    "NFL": "american-football",
+}
 API_LEAGUE_IDS = {"NBA": 12, "MLB": 1, "NHL": 57, "NFL": 1}
 
 STAT_MAPPING = {
@@ -123,10 +128,15 @@ STAT_CONFIG = {
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
 # =============================================================================
-# HARDCODED TEAMS / ROSTERS
-# (paste your HARDCODED_TEAMS, NBA_ROSTERS, MLB_ROSTERS, NHL_ROSTERS, NFL_ROSTERS here)
+# HARDCODED TEAMS & ROSTERS
 # =============================================================================
-
+# Paste your existing blocks from GitHub here, unchanged:
+#
+# HARDCODED_TEAMS = { ... }
+# NBA_ROSTERS = { ... }
+# MLB_ROSTERS = { ... }
+# NHL_ROSTERS = { ... }
+# NFL_ROSTERS = { ... }
 
 # =============================================================================
 # ODDS API CLIENT
@@ -157,7 +167,11 @@ class OddsAPIClient:
                 "markets": markets,
                 "oddsFormat": "american",
             }
-            resp = requests.get(f"{self.base_url}/sports/{sport_key}/odds", params=params, timeout=20)
+            resp = requests.get(
+                f"{self.base_url}/sports/{sport_key}/odds",
+                params=params,
+                timeout=20,
+            )
             if resp.status_code == 429:
                 reset = resp.headers.get("x-requests-resets")
                 if reset:
@@ -219,7 +233,7 @@ class OddsAPIClient:
 
 
 # =============================================================================
-# STATS API CLIENT
+# STATS API CLIENT (API-SPORTS) – WITH UNREACHABLE HANDLING
 # =============================================================================
 class StatsAPIClient:
     def __init__(self, api_key: str):
@@ -227,143 +241,14 @@ class StatsAPIClient:
         self.base_url = API_SPORTS_BASE
         self.session = requests.Session()
         self.session.headers.update({"x-apisports-key": self.api_key})
+        self.unreachable = False  # flag so we don't keep hammering if it's down
 
-    def _get_player_id(self, sport: str, league_id: int, team_id: int, player_name: str) -> Optional[int]:
-        try:
-            url = f"{self.base_url}/{API_SPORT_KEYS[sport]}/players"
-            params = {"league": league_id, "team": team_id, "search": player_name}
-            r = self.session.get(url, params=params, timeout=15)
-            r.raise_for_status()
-            data = r.json()
-            for item in data.get("response", []):
-                name = item.get("player", {}).get("name", "")
-                if player_name.lower() in name.lower():
-                    return item["player"]["id"]
-        except Exception:
-            pass
-        return None
-
-    def get_player_stats(
-        self,
-        sport: str,
-        league_id: int,
-        team_id: int,
-        player_name: str,
-        stat_field: str,
-        season: Optional[int] = None,
-    ) -> Optional[float]:
-        if season is None:
-            season = datetime.now().year
-
-        pid = self._get_player_id(sport, league_id, team_id, player_name)
-        if pid is None:
-            return None
-
-        try:
-            url = f"{self.base_url}/{API_SPORT_KEYS[sport]}/players/statistics"
-            params = {"league": league_id, "team": team_id, "id": pid, "season": season}
-            r = self.session.get(url, params=params, timeout=15)
-            r.raise_for_status()
-            data = r.json()
-            resp = data.get("response", [])
-            if not resp:
-                return None
-
-            stats_blocks = resp[0].get("statistics", [])
-
-            def flatten(d, parent_key: str = "", sep: str = "."):
-                items = []
-                for k, v in d.items():
-                    new_key = f"{parent_key}{sep}{k}" if parent_key else k
-                    if isinstance(v, dict):
-                        items.extend(flatten(v, new_key, sep=sep).items())
-                    else:
-                        items.append((new_key, v))
-                return dict(items)
-
-            flat: Dict[str, Any] = {}
-            for block in stats_blocks:
-                flat.update(flatten(block))
-
-            if stat_field in flat and isinstance(flat[stat_field], (int, float)):
-                return float(flat[stat_field])
-
-            for k, v in flat.items():
-                if k.lower().endswith(stat_field.lower()) and isinstance(v, (int, float)):
-                    return float(v)
-
-            return None
-        except Exception:
-            return None
-
-
-# =============================================================================
-# PERPLEXITY CLIENT
-# =============================================================================
-class PerplexityClient:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.base_url = PERPLEXITY_BASE
-        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-
-    def get_injury_status(self, sport: str, team: str, player: str) -> Dict[str, Any]:
+    def _check_unreachable(self, resp: Optional[requests.Response]) -> None:
         """
-        Ask Perplexity for a structured injury report.
-
-        Returns a dict like:
-        {
-            "status": "active" | "out" | "questionable" | "unknown",
-            "details": "...",
-            "last_updated": "ISO8601 string"
-        }
+        Mark API as unreachable if we get network errors or 5xx/401/403.
         """
-        try:
-            prompt = (
-                "Return ONLY a JSON object with the following keys:\n"
-                '  "status": one of ["active", "out", "questionable", "unknown"],\n'
-                '  "details": a short human-readable summary string,\n'
-                '  "last_updated": an ISO8601 datetime string.\n\n'
-                "Context:\n"
-                f"Sport: {sport}\n"
-                f"Team: {team}\n"
-                f"Player: {player}\n\n"
-                "If you are not sure, set status to \"unknown\" and explain briefly in details.\n"
-                "Do not include any extra text, only valid JSON."
-            )
-
-            resp = self.client.chat.completions.create(
-                model="sonar-small-online",
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-            )
-
-            content = resp.choices[0].message.content.strip()
-            # Sometimes models wrap JSON in code fences – strip them if present
-            if content.startswith("```"):
-                content = re.sub(r"^```(json)?", "", content).strip()
-                content = re.sub(r"```$", "", content).strip()
-
-            data = json.loads(content)
-            if not isinstance(data, dict):
-                raise ValueError("Non-dict JSON returned")
-
-            # Basic normalization / defaults
-            status = str(data.get("status", "unknown")).lower()
-            if status not in ["active", "out", "questionable", "unknown"]:
-                status = "unknown"
-
-            details = str(data.get("details", "")).strip()
-            last_updated = str(data.get("last_updated", datetime.utcnow().isoformat()))
-
-            return {
-                "status": status,
-                "details": details,
-                "last_updated": last_updated,
-            }
-        except Exception:
-            # Fallback if Perplexity is unreachable or returns bad JSON
-            return {
-                "status": "unknown",
-                "details": "Injury status could not be retrieved from Perplexity.",
-                "last_updated": datetime.utcnow().isoformat(),
-            }
+        if resp is None:
+            self.unreachable = True
+            return
+        if resp.status_code >= 500 or resp.status_code in (401, 403):
+            self.unreachable = True
