@@ -1,8 +1,8 @@
 """
-CLARITY 18.0 ELITE - COMPLETE SYSTEM (SCRAPINGBEE FIXED)
+CLARITY 18.0 ELITE - COMPLETE SYSTEM (DUAL PRIZEPICKS SCANNER)
 Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy
 NBA | MLB | NHL | NFL - ALL TEAMS HAVE REAL PLAYERS
-API KEYS: Perplexity + API-Sports + The Odds API + ScrapingBee
+API KEYS: Perplexity + API-Sports + The Odds API + ScrapingBee (optional fallback)
 """
 
 import numpy as np
@@ -28,8 +28,8 @@ warnings.filterwarnings('ignore')
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
-SCRAPINGBEE_API_KEY = "22FBDXHY4KXIBBSIZCA8ZN7HS7RF3D8CI2J8HI6DVP94KTMSTVDVCEEXG0D0XT1TOKPPHJT43258Q4RG"
-VERSION = "18.0 Elite (ScrapingBee Fixed)"
+SCRAPINGBEE_API_KEY = "22FBDXHY4KXIBBSIZCA8ZN7HS7RF3D8CI2J8HI6DVP94KTMSTVDVCEEXG0D0XT1TOKPPHJT43258Q4RG"  # optional fallback
+VERSION = "18.0 Elite (Dual PrizePicks Scanner)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -265,6 +265,74 @@ class UnifiedAPIClient:
         }
 
 # =============================================================================
+# SEASON CONTEXT ENGINE (TANKING / ELIMINATION / PLAYOFFS)
+# =============================================================================
+class SeasonContextEngine:
+    def __init__(self, api_client):
+        self.api = api_client
+        self.cache = {}
+        self.cache_ttl = 3600
+        self.season_calendars = {
+            "NBA": {"regular_season_end": "2026-04-13", "playoffs_start": "2026-04-19"},
+            "MLB": {"regular_season_end": "2026-09-28", "playoffs_start": "2026-10-03"},
+            "NHL": {"regular_season_end": "2026-04-17", "playoffs_start": "2026-04-20"},
+            "NFL": {"regular_season_end": "2026-01-04", "playoffs_start": "2026-01-10"}
+        }
+        self.motivation_multipliers = {
+            "MUST_WIN": 1.12, "PLAYOFF_SEEDING": 1.08, "NEUTRAL": 1.00,
+            "LOCKED_SEED": 0.92, "ELIMINATED": 0.85, "TANKING": 0.78, "PLAYOFFS": 1.05
+        }
+    
+    def get_season_phase(self, sport: str) -> dict:
+        date_obj = datetime.now()
+        calendar = self.season_calendars.get(sport, {})
+        if not calendar:
+            return {"phase": "UNKNOWN", "is_playoffs": False}
+        if "playoffs_start" in calendar:
+            playoffs_start = datetime.strptime(calendar["playoffs_start"], "%Y-%m-%d")
+            if date_obj >= playoffs_start:
+                return {"phase": "PLAYOFFS", "is_playoffs": True}
+        season_end = datetime.strptime(calendar.get("regular_season_end", "2026-12-31"), "%Y-%m-%d")
+        days_remaining = (season_end - date_obj).days
+        if days_remaining <= 0:
+            phase = "FINAL_DAY"
+        elif days_remaining <= 7:
+            phase = "FINAL_WEEK"
+        else:
+            phase = "REGULAR_SEASON"
+        return {"phase": phase, "is_playoffs": False, "days_remaining": days_remaining,
+                "is_final_week": days_remaining <= 7, "is_final_day": days_remaining == 0}
+    
+    def should_fade_team(self, sport: str, team: str) -> dict:
+        cache_key = f"{sport}_{team}_{datetime.now().strftime('%Y%m%d')}"
+        if cache_key in self.cache:
+            return self.cache[cache_key]
+        phase = self.get_season_phase(sport)
+        prompt = f"Is {team} eliminated from {sport} playoffs or locked into their seed? Answer briefly."
+        response = self.api.perplexity_call(prompt)
+        eliminated = "eliminated" in response.lower()
+        locked = "locked" in response.lower()
+        tanking = "tanking" in response.lower()
+        fade = False
+        reasons = []
+        multiplier = 1.0
+        if tanking:
+            fade = True
+            reasons.append("Team tanking")
+            multiplier = self.motivation_multipliers["TANKING"]
+        elif eliminated and not phase["is_playoffs"]:
+            fade = True
+            reasons.append("Team eliminated")
+            multiplier = self.motivation_multipliers["ELIMINATED"]
+        elif locked and phase["is_final_week"]:
+            fade = True
+            reasons.append("Seed locked - resting starters")
+            multiplier = self.motivation_multipliers["LOCKED_SEED"]
+        result = {"team": team, "fade": fade, "reasons": reasons, "multiplier": multiplier, "phase": phase}
+        self.cache[cache_key] = result
+        return result
+
+# =============================================================================
 # ODDS API SCANNER (Game Lines + Player Props)
 # =============================================================================
 class GameScanner:
@@ -339,123 +407,128 @@ class GameScanner:
             return []
 
 # =============================================================================
-# PROP SCANNER (PrizePicks via ScrapingBee) - FIXED WITH API CALL & FALLBACK
+# PROP SCANNER (PrizePicks Direct API + ScrapingBee Fallback)
 # =============================================================================
 class PropScanner:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.base_url = SCRAPINGBEE_BASE
+    """Fetches PrizePicks props using direct API (primary) or ScrapingBee (secondary)."""
+    
+    BASE_URL = "https://api.prizepicks.com/projections"
+    DEFAULT_HEADERS = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/plain, */*',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Referer': 'https://app.prizepicks.com/',
+        'Sec-Fetch-Site': 'same-origin',
+        'Sec-Fetch-Mode': 'cors',
+        'Connection': 'keep-alive',
+    }
+    LEAGUE_IDS = {"NBA": 7, "MLB": 8, "NHL": 9, "NFL": 6, "SOCCER": 10, "TENNIS": 12}
+    MARKET_MAP = {
+        "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
+        "Strikeouts": "KS", "Hits Allowed": "HITS_ALLOWED",
+        "Pass Yards": "PASS_YDS", "Rushing Yards": "RUSH_YDS",
+        "Receiving Yards": "REC_YDS", "Hits": "HITS",
+        "Total Bases": "TB", "Home Runs": "HR", "Runs": "RUNS",
+        "RBI": "RBI", "Walks": "BB", "Stolen Bases": "SB",
+        "Pitcher Strikeouts": "KS", "Pitching Outs": "OUTS",
+        "Earned Runs": "ER", "Hitter Fantasy Score": "HITTER_FS",
+        "Pitcher Fantasy Score": "PITCHER_FS", "Fantasy Score": "HITTER_FS",
+        "Pts+Rebs+Asts": "PRA", "Pts+Rebs": "PR", "Pts+Asts": "PA",
+        "Rebs+Asts": "RA", "Blks+Stls": "BLK_STL"
+    }
+    
+    def __init__(self, scrapingbee_key: str = None):
+        self.scrapingbee_key = scrapingbee_key
+        self.scrapingbee_base = SCRAPINGBEE_BASE if scrapingbee_key else None
+        self.session = requests.Session()
+        self.session.headers.update(self.DEFAULT_HEADERS)
     
     def fetch_prizepicks_props(self, sport: str = None) -> List[Dict]:
-        """Fetch PrizePicks props using ScrapingBee to call the internal API"""
+        """Primary: direct API. Fallback: ScrapingBee. Final: sample data."""
+        # Try direct API first
         try:
-            # PrizePicks internal API endpoint
-            url = "https://api.prizepicks.com/projections"
-            
-            params = {
-                "api_key": self.api_key,
-                "url": url,
-                "render_js": "false",  # API returns JSON, no JS needed
-                "premium_proxy": "true",
-                "country_code": "us"
-            }
-            
-            headers = {
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-            }
-            
-            params["forward_headers"] = "true"
-            params["headers"] = json.dumps(headers)
-            
-            response = requests.get(self.base_url, params=params, timeout=45)
-            
-            if response.status_code != 200:
-                st.warning(f"ScrapingBee error: {response.status_code}. Using fallback.")
-                return self._fallback_prizepicks_props(sport)
-            
-            data = response.json()
-            props = self._parse_prizepicks_api(data, sport)
+            props = self._fetch_via_direct_api(sport)
             if props:
+                st.success(f"✅ Direct API: {len(props)} props fetched")
                 return props
-            else:
-                return self._fallback_prizepicks_props(sport)
-                
         except Exception as e:
-            st.warning(f"PrizePicks scan failed: {str(e)[:100]}. Using fallback.")
-            return self._fallback_prizepicks_props(sport)
+            st.warning(f"Direct API failed: {str(e)[:100]}")
+        
+        # Fallback to ScrapingBee
+        if self.scrapingbee_key:
+            try:
+                props = self._fetch_via_scrapingbee(sport)
+                if props:
+                    st.info(f"🔄 ScrapingBee fallback: {len(props)} props fetched")
+                    return props
+            except Exception as e:
+                st.warning(f"ScrapingBee failed: {str(e)[:100]}")
+        
+        # Final fallback
+        st.warning("All sources failed. Using sample data.")
+        return self._fallback_prizepicks_props(sport)
     
-    def _parse_prizepicks_api(self, data: dict, sport_filter: str = None) -> List[Dict]:
-        """Parse PrizePicks API response"""
+    def _fetch_via_direct_api(self, sport: str = None) -> List[Dict]:
+        all_props = []
+        sports_to_fetch = [sport] if sport else ["NBA", "MLB", "NHL", "NFL"]
+        for s in sports_to_fetch:
+            league_id = self.LEAGUE_IDS.get(s)
+            if not league_id:
+                continue
+            params = {'league_id': league_id, 'per_page': 500, 'single_stat': 'true', 'game_mode': 'pickem'}
+            response = self.session.get(self.BASE_URL, params=params, timeout=15)
+            if response.status_code != 200:
+                continue
+            data = response.json()
+            props = self._parse_direct_api_response(data, s)
+            all_props.extend(props)
+            time.sleep(0.5)
+        return all_props
+    
+    def _parse_direct_api_response(self, data: dict, sport: str) -> List[Dict]:
         props = []
-        market_map = {
-            "Points": "PTS", "Rebounds": "REB", "Assists": "AST",
-            "Strikeouts": "KS", "Hits Allowed": "HITS_ALLOWED",
-            "Pass Yards": "PASS_YDS", "Rushing Yards": "RUSH_YDS",
-            "Receiving Yards": "REC_YDS", "Hits": "HITS",
-            "Total Bases": "TB", "Home Runs": "HR", "Runs": "RUNS",
-            "RBI": "RBI", "Walks": "BB", "Stolen Bases": "SB",
-            "Pitcher Strikeouts": "KS", "Pitching Outs": "OUTS",
-            "Earned Runs": "ER", "Hitter Fantasy Score": "HITTER_FS",
-            "Pitcher Fantasy Score": "PITCHER_FS"
-        }
-        sport_map = {"NBA": "basketball", "MLB": "baseball", "NHL": "hockey", "NFL": "american-football"}
-        
-        included = data.get("included", [])
-        projections = data.get("data", [])
-        
-        players = {}
-        for item in included:
-            if item.get("type") == "new_player":
-                players[item["id"]] = item["attributes"]["name"]
-        
-        for proj in projections:
-            if proj.get("type") != "projection":
+        records = data.get('data', []) or [item for item in data.get('included', []) if item.get('type') == 'projection']
+        players = {item['id']: item['attributes']['name'] for item in data.get('included', []) if item.get('type') == 'new_player'}
+        for item in records:
+            attrs = item.get('attributes', {})
+            line = attrs.get('line_score')
+            if not line:
                 continue
-            attrs = proj.get("attributes", {})
-            stat_type = attrs.get("stat_type", "")
-            line = attrs.get("line_score")
-            player_id = attrs.get("player_id")
-            player_name = players.get(player_id, "Unknown")
-            if not line or not player_name:
-                continue
-            if sport_filter:
-                proj_sport = attrs.get("sport", "").lower()
-                target_sport = sport_map.get(sport_filter, "").lower()
-                if target_sport and proj_sport != target_sport:
-                    continue
-            market = market_map.get(stat_type, stat_type.upper().replace(" ", "_"))
-            props.append({
-                "source": "PrizePicks",
-                "sport": sport_filter or attrs.get("sport", "UNKNOWN").upper(),
-                "player": player_name,
-                "market": market,
-                "line": float(line),
-                "pick": "OVER",
-                "odds": -110
-            })
+            player_id = attrs.get('player_id')
+            player_name = players.get(player_id, 'Unknown')
+            market = self.MARKET_MAP.get(attrs.get('stat_type', ''), attrs.get('stat_type', '').upper().replace(' ', '_'))
+            props.append({"source": "PrizePicks", "sport": sport, "player": player_name, "market": market,
+                          "line": float(line), "pick": "OVER", "odds": -110})
         return props
     
+    def _fetch_via_scrapingbee(self, sport: str = None) -> List[Dict]:
+        all_props = []
+        sports_to_fetch = [sport] if sport else ["NBA", "MLB", "NHL", "NFL"]
+        for s in sports_to_fetch:
+            league_id = self.LEAGUE_IDS.get(s)
+            if not league_id:
+                continue
+            url = f"{self.BASE_URL}?league_id={league_id}&per_page=500&single_stat=true&game_mode=pickem"
+            params = {"api_key": self.scrapingbee_key, "url": url, "render_js": "false", "premium_proxy": "true"}
+            response = requests.get(self.scrapingbee_base, params=params, timeout=45)
+            if response.status_code != 200:
+                continue
+            data = response.json()
+            props = self._parse_direct_api_response(data, s)
+            all_props.extend(props)
+            time.sleep(1)
+        return all_props
+    
     def _fallback_prizepicks_props(self, sport: str = None) -> List[Dict]:
-        """Generate sample props when API fails"""
         props = []
-        if sport == "NBA" or sport is None:
-            nba_players = ["LeBron James", "Stephen Curry", "Kevin Durant", "Luka Doncic", 
-                          "Giannis Antetokounmpo", "Jayson Tatum", "Nikola Jokic", "Anthony Edwards"]
-            for player in nba_players[:4]:
-                props.append({"source": "PrizePicks (Fallback)", "sport": "NBA", "player": player,
-                              "market": "PTS", "line": round(np.random.uniform(20, 35), 1), "pick": "OVER", "odds": -110})
-                props.append({"source": "PrizePicks (Fallback)", "sport": "NBA", "player": player,
-                              "market": "REB", "line": round(np.random.uniform(5, 12), 1), "pick": "OVER", "odds": -110})
-        if sport == "MLB" or sport is None:
-            mlb_players = ["Shohei Ohtani", "Aaron Judge", "Ronald Acuna Jr", "Mookie Betts"]
-            for player in mlb_players[:3]:
-                props.append({"source": "PrizePicks (Fallback)", "sport": "MLB", "player": player,
-                              "market": "HR", "line": 0.5, "pick": "OVER", "odds": -110})
-                props.append({"source": "PrizePicks (Fallback)", "sport": "MLB", "player": player,
-                              "market": "HITS", "line": round(np.random.uniform(0.5, 1.5), 1), "pick": "OVER", "odds": -110})
-        st.info(f"Using fallback data: {len(props)} sample props generated.")
+        if sport in ["NBA", None]:
+            for p in ["LeBron James", "Stephen Curry", "Kevin Durant", "Luka Doncic"]:
+                props.append({"source": "Fallback", "sport": "NBA", "player": p, "market": "PTS",
+                              "line": round(np.random.uniform(20, 35), 1), "pick": "OVER", "odds": -110})
+        if sport in ["MLB", None]:
+            for p in ["Shohei Ohtani", "Aaron Judge", "Ronald Acuna Jr", "Mookie Betts"]:
+                props.append({"source": "Fallback", "sport": "MLB", "player": p, "market": "HR",
+                              "line": 0.5, "pick": "OVER", "odds": -110})
         return props
 
 # =============================================================================
@@ -465,7 +538,8 @@ class Clarity18Elite:
     def __init__(self):
         self.api = UnifiedAPIClient(UNIFIED_API_KEY)
         self.game_scanner = GameScanner(ODDS_API_KEY)
-        self.prop_scanner = PropScanner(SCRAPINGBEE_API_KEY)
+        self.prop_scanner = PropScanner(scrapingbee_key=SCRAPINGBEE_API_KEY)
+        self.season_context = SeasonContextEngine(self.api)
         self.sims = 10000
         self.wsem_max = 0.10
         self.dtm_bolt = 0.15
@@ -502,9 +576,6 @@ class Clarity18Elite:
             return 100 / (american + 100)
         return abs(american) / (abs(american) + 100)
     
-    # =========================================================================
-    # PLAYER PROP ANALYSIS
-    # =========================================================================
     def l42_check(self, stat: str, line: float, avg: float) -> Tuple[bool, str]:
         config = STAT_CONFIG.get(stat.upper(), {"tier": "MED", "buffer": 2.0, "reject": False})
         if config["reject"]:
@@ -557,7 +628,7 @@ class Clarity18Elite:
         return {"signal": "🔴 PASS", "units": 0}
     
     def analyze_prop(self, player: str, market: str, line: float, pick: str,
-                     data: List[float], sport: str, odds: int, injury_status: str = "HEALTHY") -> dict:
+                     data: List[float], sport: str, odds: int, team: str = None, injury_status: str = "HEALTHY") -> dict:
         l42_pass, l42_msg = self.l42_check(market, line, np.mean(data))
         sim = self.simulate_prop(data, line, pick, sport)
         wsem_ok, wsem = self.wsem_check(data)
@@ -575,20 +646,35 @@ class Clarity18Elite:
         else:
             tier = "PASS"
         
+        season_warning = None
+        if team:
+            fade_check = self.season_context.should_fade_team(sport, team)
+            if fade_check["fade"]:
+                sim["proj"] *= fade_check["multiplier"]
+                season_warning = f"⚠️ {team}: {', '.join(fade_check['reasons'])} (proj adjusted -{int((1-fade_check['multiplier'])*100)}%)"
+        
         kelly = raw_edge * self.bankroll * 0.25 if raw_edge > 0 else 0
         return {"player": player, "market": market, "line": line, "pick": pick, "signal": bolt["signal"], 
                 "units": bolt["units"], "projection": sim["proj"], "probability": sim["prob"], 
                 "raw_edge": round(raw_edge, 4), "tier": tier, "injury": injury_status, 
-                "l42_msg": l42_msg, "kelly_stake": round(min(kelly, 50), 2), "odds": odds}
+                "l42_msg": l42_msg, "kelly_stake": round(min(kelly, 50), 2), "odds": odds,
+                "season_warning": season_warning}
     
-    # =========================================================================
-    # GAME TOTALS (OVER/UNDER) ANALYSIS
-    # =========================================================================
     def analyze_total(self, home: str, away: str, total_line: float, pick: str, sport: str, odds: int) -> dict:
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
         home_adv = model.get("home_advantage", 0)
         avg_total = model.get("avg_total", 200)
         base_proj = avg_total + (home_adv / 2)
+        
+        home_fade = self.season_context.should_fade_team(sport, home)
+        away_fade = self.season_context.should_fade_team(sport, away)
+        season_warnings = []
+        if home_fade["fade"]:
+            base_proj *= home_fade["multiplier"]
+            season_warnings.append(f"{home}: {', '.join(home_fade['reasons'])}")
+        if away_fade["fade"]:
+            base_proj *= away_fade["multiplier"]
+            season_warnings.append(f"{away}: {', '.join(away_fade['reasons'])}")
         
         if model["distribution"] == "nbinom":
             n = max(1, int(base_proj / 2))
@@ -631,20 +717,29 @@ class Clarity18Elite:
         return {"home": home, "away": away, "total_line": total_line, "pick": pick, "signal": signal,
                 "units": units, "projection": round(proj, 1), "prob_over": round(prob_over, 3),
                 "prob_under": round(prob_under, 3), "prob_push": round(prob_push, 3),
-                "edge": round(edge, 4), "tier": tier, "kelly_stake": round(min(kelly, 50), 2), "odds": odds}
+                "edge": round(edge, 4), "tier": tier, "kelly_stake": round(min(kelly, 50), 2), "odds": odds,
+                "season_warnings": season_warnings}
     
-    # =========================================================================
-    # MONEYLINE ANALYSIS
-    # =========================================================================
     def analyze_moneyline(self, home: str, away: str, sport: str, home_odds: int, away_odds: int) -> dict:
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
         home_adv = model.get("home_advantage", 0)
         home_win_prob = 0.55 + (home_adv / 100)
         away_win_prob = 1 - home_win_prob
         
+        home_fade = self.season_context.should_fade_team(sport, home)
+        away_fade = self.season_context.should_fade_team(sport, away)
+        season_warnings = []
+        if home_fade["fade"]:
+            home_win_prob *= home_fade["multiplier"]
+            away_win_prob = 1 - home_win_prob
+            season_warnings.append(f"{home}: {', '.join(home_fade['reasons'])}")
+        if away_fade["fade"]:
+            away_win_prob *= away_fade["multiplier"]
+            home_win_prob = 1 - away_win_prob
+            season_warnings.append(f"{away}: {', '.join(away_fade['reasons'])}")
+        
         home_imp = self.implied_prob(home_odds)
         away_imp = self.implied_prob(away_odds)
-        
         home_edge = home_win_prob - home_imp
         away_edge = away_win_prob - away_imp
         
@@ -676,22 +771,30 @@ class Clarity18Elite:
         
         kelly = edge * self.bankroll * 0.25 if edge > 0 else 0
         return {"pick": pick, "signal": signal, "units": units, "edge": round(edge, 4),
-                "win_prob": round(prob, 3), "tier": tier, "kelly_stake": round(min(kelly, 50), 2), "odds": odds}
+                "win_prob": round(prob, 3), "tier": tier, "kelly_stake": round(min(kelly, 50), 2), "odds": odds,
+                "season_warnings": season_warnings}
     
-    # =========================================================================
-    # SPREAD ANALYSIS
-    # =========================================================================
     def analyze_spread(self, home: str, away: str, spread: float, pick: str, sport: str, odds: int) -> dict:
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
         home_adv = model.get("home_advantage", 0)
         base_margin = home_adv
+        
+        home_fade = self.season_context.should_fade_team(sport, home)
+        away_fade = self.season_context.should_fade_team(sport, away)
+        season_warnings = []
+        if home_fade["fade"]:
+            base_margin *= home_fade["multiplier"]
+            season_warnings.append(f"{home}: {', '.join(home_fade['reasons'])}")
+        if away_fade["fade"]:
+            base_margin /= away_fade["multiplier"]
+            season_warnings.append(f"{away}: {', '.join(away_fade['reasons'])}")
+        
         sims = norm.rvs(loc=base_margin, scale=12, size=self.sims)
         
         if pick == home:
             prob_cover = np.mean(sims > -spread)
         else:
             prob_cover = np.mean(sims < -spread)
-        
         prob_push = np.mean(np.abs(sims + spread) < 0.5)
         prob = prob_cover / (1 - prob_push) if prob_push < 1 else prob_cover
         
@@ -718,11 +821,9 @@ class Clarity18Elite:
         kelly = edge * self.bankroll * 0.25 if edge > 0 else 0
         return {"home": home, "away": away, "spread": spread, "pick": pick, "signal": signal,
                 "units": units, "prob_cover": round(prob, 3), "prob_push": round(prob_push, 3),
-                "edge": round(edge, 4), "tier": tier, "kelly_stake": round(min(kelly, 50), 2), "odds": odds}
+                "edge": round(edge, 4), "tier": tier, "kelly_stake": round(min(kelly, 50), 2), "odds": odds,
+                "season_warnings": season_warnings}
     
-    # =========================================================================
-    # ALTERNATE LINE ANALYSIS
-    # =========================================================================
     def analyze_alternate(self, base_line: float, alt_line: float, pick: str, sport: str, odds: int) -> dict:
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
         avg_total = model.get("avg_total", 200)
@@ -750,9 +851,6 @@ class Clarity18Elite:
                 "probability": round(prob, 3), "implied": round(imp, 3), "edge": round(edge, 4),
                 "value": value, "action": action}
     
-    # =========================================================================
-    # CORRELATION ENGINE (PARLAY VALIDATION)
-    # =========================================================================
     def check_correlation(self, legs: List[Dict]) -> Dict:
         if len(legs) < 2:
             return {"correlated": False, "max_corr": 0, "safe": True}
@@ -774,9 +872,6 @@ class Clarity18Elite:
         max_corr = max(correlations) if correlations else 0
         return {"correlated": max_corr > self.correlation_threshold, "max_corr": max_corr, "safe": max_corr <= self.correlation_threshold}
     
-    # =========================================================================
-    # ARBITRAGE DETECTOR
-    # =========================================================================
     def detect_arbitrage(self, props: List[Dict]) -> List[Dict]:
         arbs = []
         grouped = {}
@@ -785,7 +880,6 @@ class Clarity18Elite:
             if key not in grouped:
                 grouped[key] = []
             grouped[key].append(prop)
-        
         for key, bets in grouped.items():
             if len(bets) < 2:
                 continue
@@ -806,9 +900,6 @@ class Clarity18Elite:
                     })
         return arbs
     
-    # =========================================================================
-    # MIDDLE HUNTER
-    # =========================================================================
     def hunt_middles(self, props: List[Dict]) -> List[Dict]:
         middles = []
         grouped = {}
@@ -817,7 +908,6 @@ class Clarity18Elite:
             if key not in grouped:
                 grouped[key] = []
             grouped[key].append(prop)
-        
         for key, bets in grouped.items():
             overs = [b for b in bets if b['pick'] == 'OVER']
             unders = [b for b in bets if b['pick'] == 'UNDER']
@@ -836,26 +926,20 @@ class Clarity18Elite:
                             })
         return sorted(middles, key=lambda x: x['Window Size'], reverse=True)
     
-    # =========================================================================
-    # ACCURACY DASHBOARD DATA
-    # =========================================================================
     def get_accuracy_dashboard(self) -> Dict:
         conn = sqlite3.connect(self.db_path)
         df = pd.read_sql_query("SELECT * FROM bets WHERE result IN ('WIN','LOSS')", conn)
         conn.close()
-        
         if df.empty:
             return {
                 'total_bets': 0, 'wins': 0, 'losses': 0, 'win_rate': 0, 'roi': 0,
                 'units_profit': 0, 'by_sport': {}, 'by_tier': {}, 'sem_score': self.sem_score
             }
-        
         wins = (df['result'] == 'WIN').sum()
         total = len(df)
         total_stake = df['odds'].apply(lambda x: 100).sum()
         total_profit = df.apply(lambda r: 90.9 if r['result'] == 'WIN' else -100, axis=1).sum()
         roi = (total_profit / total_stake) * 100 if total_stake > 0 else 0
-        
         by_sport = {}
         for sport in df['sport'].unique():
             sport_df = df[df['sport'] == sport]
@@ -864,7 +948,6 @@ class Clarity18Elite:
                 'bets': len(sport_df),
                 'win_rate': round(sport_wins / len(sport_df) * 100, 1) if len(sport_df) > 0 else 0
             }
-        
         by_tier = {}
         for _, row in df.iterrows():
             signal = row.get('bolt_signal', 'PASS')
@@ -881,10 +964,8 @@ class Clarity18Elite:
             by_tier[tier]['bets'] += 1
             if row['result'] == 'WIN':
                 by_tier[tier]['wins'] += 1
-        
         for tier in by_tier:
             by_tier[tier]['win_rate'] = round(by_tier[tier]['wins'] / by_tier[tier]['bets'] * 100, 1) if by_tier[tier]['bets'] > 0 else 0
-        
         return {
             'total_bets': total, 'wins': wins, 'losses': total - wins,
             'win_rate': round(wins / total * 100, 1) if total > 0 else 0,
@@ -892,13 +973,9 @@ class Clarity18Elite:
             'by_sport': by_sport, 'by_tier': by_tier, 'sem_score': self.sem_score
         }
     
-    # =========================================================================
-    # BEST BETS SCANNER (Auto-scan games & PrizePicks props)
-    # =========================================================================
     def run_best_bets_scan(self, selected_sports: List[str]) -> Dict:
         game_bets = []
         prop_bets = []
-        
         with st.spinner("Scanning today's games from The Odds API..."):
             games = self.game_scanner.fetch_todays_games(selected_sports)
             for game in games:
@@ -912,7 +989,8 @@ class Clarity18Elite:
                             "description": f"{ml['pick']} ML vs {away if ml['pick']==home else home}",
                             "bet_line": f"{ml['pick']} ML ({game['home_ml'] if ml['pick']==home else game['away_ml']}) vs {away if ml['pick']==home else home}",
                             "edge": ml['edge'], "probability": ml['win_prob'], "units": ml['units'],
-                            "odds": game['home_ml'] if ml['pick']==home else game['away_ml']
+                            "odds": game['home_ml'] if ml['pick']==home else game['away_ml'],
+                            "season_warnings": ml.get('season_warnings', [])
                         })
                 if game.get("spread") and game.get("spread_odds"):
                     for pick_side in [home, away]:
@@ -923,7 +1001,8 @@ class Clarity18Elite:
                                 "description": f"{pick_side} {game['spread']:+.1f} vs {away if pick_side==home else home}",
                                 "bet_line": f"{pick_side} {game['spread']:+.1f} ({game['spread_odds']}) vs {away if pick_side==home else home}",
                                 "edge": spread_res['edge'], "probability": spread_res['prob_cover'], "units": spread_res['units'],
-                                "odds": game['spread_odds']
+                                "odds": game['spread_odds'],
+                                "season_warnings": spread_res.get('season_warnings', [])
                             })
                 if game.get("total"):
                     for pick_side, odds in [("OVER", game.get("over_odds", -110)), ("UNDER", game.get("under_odds", -110))]:
@@ -934,10 +1013,10 @@ class Clarity18Elite:
                                 "description": f"{home} vs {away}: {pick_side} {game['total']}",
                                 "bet_line": f"{home} vs {away} — {pick_side} {game['total']} ({odds})",
                                 "edge": total_res['edge'], "probability": total_res['prob_over'] if pick_side=="OVER" else total_res['prob_under'],
-                                "units": total_res['units'], "odds": odds
+                                "units": total_res['units'], "odds": odds,
+                                "season_warnings": total_res.get('season_warnings', [])
                             })
-        
-        with st.spinner("Scanning player props from PrizePicks via ScrapingBee..."):
+        with st.spinner("Scanning player props from PrizePicks..."):
             for sport in selected_sports:
                 props = self.prop_scanner.fetch_prizepicks_props(sport)
                 for prop in props:
@@ -946,7 +1025,7 @@ class Clarity18Elite:
                     injury_info = self.api.get_injury_status(prop["player"], prop["sport"])
                     result = self.analyze_prop(
                         prop["player"], prop["market"], prop["line"], prop["pick"],
-                        data, prop["sport"], prop["odds"], injury_info["injury"]
+                        data, prop["sport"], prop["odds"], None, injury_info["injury"]
                     )
                     if result['units'] > 0:
                         prop_bets.append({
@@ -954,18 +1033,15 @@ class Clarity18Elite:
                             "description": f"{prop['player']} {prop['pick']} {prop['line']} {prop['market']}",
                             "bet_line": f"{prop['player']} {prop['pick']} {prop['line']} ({prop['odds']})",
                             "edge": result['raw_edge'], "probability": result['probability'], "units": result['units'],
-                            "odds": prop['odds']
+                            "odds": prop['odds'],
+                            "season_warning": result.get('season_warning')
                         })
-        
         game_bets.sort(key=lambda x: x['edge'], reverse=True)
         prop_bets.sort(key=lambda x: x['edge'], reverse=True)
         self.scanned_bets["props"] = prop_bets[:4]
         self.scanned_bets["games"] = game_bets[:4]
         return self.scanned_bets
     
-    # =========================================================================
-    # BEST ODDS SCANNER (Multi-sportsbook comparison)
-    # =========================================================================
     def run_best_odds_scan(self, selected_sports: List[str]) -> List[Dict]:
         all_bets = []
         sport_keys = {"NBA": "basketball_nba", "MLB": "baseball_mlb", "NHL": "icehockey_nhl", "NFL": "americanfootball_nfl"}
@@ -981,7 +1057,7 @@ class Clarity18Elite:
                 injury_info = self.api.get_injury_status(prop["player"], sport)
                 result = self.analyze_prop(
                     prop["player"], prop["market"], prop["line"], prop["pick"],
-                    data, sport, prop["odds"], injury_info["injury"]
+                    data, sport, prop["odds"], None, injury_info["injury"]
                 )
                 if result['units'] > 0:
                     all_bets.append({
@@ -997,7 +1073,6 @@ class Clarity18Elite:
                 best_bets[key] = bet
         sorted_bets = sorted(best_bets.values(), key=lambda x: x['edge'], reverse=True)
         self.scanned_bets["best_odds"] = sorted_bets[:10]
-        
         props_for_arb = []
         for bet in all_bets:
             props_for_arb.append({
@@ -1006,12 +1081,8 @@ class Clarity18Elite:
             })
         self.scanned_bets["arbs"] = self.detect_arbitrage(props_for_arb)
         self.scanned_bets["middles"] = self.hunt_middles(props_for_arb)
-        
         return sorted_bets[:10]
     
-    # =========================================================================
-    # ROSTER METHODS
-    # =========================================================================
     def get_teams(self, sport: str) -> List[str]:
         return HARDCODED_TEAMS.get(sport, ["Select a sport first"])
     
@@ -1024,9 +1095,6 @@ class Clarity18Elite:
             return NHL_ROSTERS[team]
         return ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
     
-    # =========================================================================
-    # DATABASE & SEM
-    # =========================================================================
     def _log_bet(self, player, market, line, pick, sport, odds, edge, signal):
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
@@ -1109,13 +1177,14 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("🔮 CLARITY 18.0 ELITE - SCRAPINGBEE FIXED")
-    st.markdown(f"**Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy | Version: {VERSION}**")
+    st.title("🔮 CLARITY 18.0 ELITE - DUAL PRIZEPICKS SCANNER")
+    st.markdown(f"**Direct API + ScrapingBee Fallback | Season Context Active | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Perplexity API LIVE")
-        st.success("✅ ScrapingBee LIVE")
+        st.success("✅ PrizePicks Direct API")
+        st.success("✅ Season Context ACTIVE")
         st.success("✅ Full Rosters Loaded (NBA/MLB/NHL)")
         st.metric("Version", VERSION)
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
@@ -1126,18 +1195,15 @@ def run_dashboard():
         "🔗 PARLAY CHECK", "🏆 PRIZEPICKS", "📈 BEST ODDS", "💰 ARBITRAGE", "🎯 MIDDLES", "📊 ACCURACY"
     ])
     
-    # =========================================================================
-    # TAB 1: PLAYER PROPS
-    # =========================================================================
     with tab1:
         st.header("Player Prop Analyzer")
         c1, c2 = st.columns(2)
         with c1:
             sport = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="prop_sport")
             teams = engine.get_teams(sport)
-            team = st.selectbox("Team", teams, key="prop_team")
-            roster = engine.get_roster(sport, team)
-            player = st.selectbox("Player", roster, key="prop_player")
+            team = st.selectbox("Team (for tanking check)", [""] + teams, key="prop_team")
+            roster = engine.get_roster(sport, team) if team else []
+            player = st.selectbox("Player", roster if roster else ["Select team first"], key="prop_player")
             available_markets = SPORT_CATEGORIES.get(sport, ["PTS"])
             market = st.selectbox("Market", available_markets, key="prop_market")
             line = st.number_input("Line", 0.5, 100.0, 0.5, key="prop_line")
@@ -1147,23 +1213,25 @@ def run_dashboard():
             odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
         
         if st.button("🚀 ANALYZE PROP", type="primary", key="prop_button"):
-            data = [float(x.strip()) for x in data_str.split(",")]
-            injury_info = engine.api.get_injury_status(player, sport)
-            result = engine.analyze_prop(player, market, line, pick, data, sport, odds, injury_info["injury"])
-            st.markdown(f"### {result['signal']}")
-            c1, c2, c3 = st.columns(3)
-            with c1: st.metric("Projection", f"{result['projection']:.1f}")
-            with c2: st.metric("Probability", f"{result['probability']:.1%}")
-            with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
-            st.metric("Tier", result['tier'])
-            if result['units'] > 0:
-                st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
-            if injury_info["injury"] != "HEALTHY":
-                st.warning(f"Injury Status: {injury_info['injury']}")
+            if not player or player == "Select team first":
+                st.error("Please select a player.")
+            else:
+                data = [float(x.strip()) for x in data_str.split(",")]
+                injury_info = engine.api.get_injury_status(player, sport)
+                result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team if team else None, injury_info["injury"])
+                st.markdown(f"### {result['signal']}")
+                if result.get('season_warning'):
+                    st.warning(result['season_warning'])
+                c1, c2, c3 = st.columns(3)
+                with c1: st.metric("Projection", f"{result['projection']:.1f}")
+                with c2: st.metric("Probability", f"{result['probability']:.1%}")
+                with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
+                st.metric("Tier", result['tier'])
+                if result['units'] > 0:
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+                if injury_info["injury"] != "HEALTHY":
+                    st.warning(f"Injury Status: {injury_info['injury']}")
     
-    # =========================================================================
-    # TAB 2: MONEYLINE
-    # =========================================================================
     with tab2:
         st.header("Moneyline Analyzer")
         c1, c2 = st.columns(2)
@@ -1179,15 +1247,15 @@ def run_dashboard():
         if st.button("💰 ANALYZE MONEYLINE", type="primary", key="ml_button"):
             result = engine.analyze_moneyline(home, away, sport_ml, home_odds, away_odds)
             st.markdown(f"### {result['signal']}")
+            if result.get('season_warnings'):
+                for w in result['season_warnings']:
+                    st.warning(w)
             st.metric("Pick", result['pick'])
             st.metric("Edge", f"{result['edge']:+.1%}")
             st.metric("Win Probability", f"{result['win_prob']:.1%}")
             if result['units'] > 0:
                 st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
     
-    # =========================================================================
-    # TAB 3: SPREAD
-    # =========================================================================
     with tab3:
         st.header("Spread Analyzer")
         c1, c2 = st.columns(2)
@@ -1204,15 +1272,15 @@ def run_dashboard():
         if st.button("📊 ANALYZE SPREAD", type="primary", key="sp_button"):
             result = engine.analyze_spread(home_sp, away_sp, spread, pick_sp, sport_sp, odds_sp)
             st.markdown(f"### {result['signal']}")
+            if result.get('season_warnings'):
+                for w in result['season_warnings']:
+                    st.warning(w)
             st.metric("Cover Probability", f"{result['prob_cover']:.1%}")
             st.metric("Push Probability", f"{result['prob_push']:.1%}")
             st.metric("Edge", f"{result['edge']:+.1%}")
             if result['units'] > 0:
                 st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
     
-    # =========================================================================
-    # TAB 4: TOTALS (OVER/UNDER)
-    # =========================================================================
     with tab4:
         st.header("Totals (Over/Under) Analyzer")
         c1, c2 = st.columns(2)
@@ -1230,6 +1298,9 @@ def run_dashboard():
         if st.button("📈 ANALYZE TOTAL", type="primary", key="tot_button"):
             result = engine.analyze_total(home_tot, away_tot, total_line, pick_tot, sport_tot, odds_tot)
             st.markdown(f"### {result['signal']}")
+            if result.get('season_warnings'):
+                for w in result['season_warnings']:
+                    st.warning(w)
             c1, c2, c3 = st.columns(3)
             with c1: st.metric("Projection", f"{result['projection']:.1f}")
             with c2: st.metric("OVER Prob", f"{result['prob_over']:.1%}")
@@ -1239,9 +1310,6 @@ def run_dashboard():
             if result['units'] > 0:
                 st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
     
-    # =========================================================================
-    # TAB 5: ALTERNATE LINES
-    # =========================================================================
     with tab5:
         st.header("Alternate Line Analyzer")
         c1, c2 = st.columns(2)
@@ -1261,12 +1329,8 @@ def run_dashboard():
             st.metric("Edge", f"{result['edge']:+.1%}")
             st.info(f"Value: {result['value']}")
     
-    # =========================================================================
-    # TAB 6: PARLAY CORRELATION CHECK
-    # =========================================================================
     with tab6:
         st.header("🔗 Parlay Correlation Validator")
-        st.markdown("Check if your parlay legs are too correlated (>12% threshold)")
         legs_json = st.text_area("Paste parlay legs (JSON format)", 
                                  '[{"player":"LeBron James","market":"PTS","team":"Lakers"},{"player":"Anthony Davis","market":"REB","team":"Lakers"}]')
         if st.button("🔍 CHECK CORRELATION"):
@@ -1280,18 +1344,14 @@ def run_dashboard():
             except:
                 st.error("Invalid JSON format")
     
-    # =========================================================================
-    # TAB 7: PRIZEPICKS SCANNER (ScrapingBee Fixed)
-    # =========================================================================
     with tab7:
-        st.header("🏆 PrizePicks Scanner (ScrapingBee)")
-        st.markdown("Scan today's PrizePicks board for the best player props.")
+        st.header("🏆 PrizePicks Scanner (Direct API + Fallback)")
         col1, col2 = st.columns([2, 1])
         with col1:
             selected_sports_pp = st.multiselect("Select sports", ["NBA", "MLB", "NHL", "NFL"], default=["NBA", "MLB"], key="pp_sports")
         with col2:
             if st.button("🔍 SCAN PRIZEPICKS", type="primary", use_container_width=True):
-                with st.spinner("Scanning PrizePicks via ScrapingBee..."):
+                with st.spinner("Scanning PrizePicks..."):
                     results = engine.run_best_bets_scan(selected_sports_pp)
                     st.success("Scan complete!")
         if engine.scanned_bets.get("props"):
@@ -1299,24 +1359,25 @@ def run_dashboard():
             for i, bet in enumerate(engine.scanned_bets["props"], 1):
                 st.markdown(f"**{i}. {bet['bet_line']}**")
                 st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
+                if bet.get('season_warning'):
+                    st.warning(bet['season_warning'])
         if engine.scanned_bets.get("games"):
             st.subheader("🎲 Top Game Bets")
             for i, bet in enumerate(engine.scanned_bets["games"], 1):
                 st.markdown(f"**{i}. {bet['bet_line']}**")
                 st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
+                if bet.get('season_warnings'):
+                    for w in bet['season_warnings']:
+                        st.warning(w)
     
-    # =========================================================================
-    # TAB 8: BEST ODDS SCANNER (Multi-sportsbook)
-    # =========================================================================
     with tab8:
         st.header("📈 Best Odds Scanner")
-        st.markdown("Find the best available odds for player props across 80+ sportsbooks.")
         col1, col2 = st.columns([2, 1])
         with col1:
             selected_sports_odds = st.multiselect("Select sports", ["NBA", "MLB", "NHL", "NFL"], default=["NBA"], key="odds_sports")
         with col2:
             if st.button("🔍 SCAN BEST ODDS", type="primary", use_container_width=True):
-                with st.spinner("Scanning sportsbooks for best odds..."):
+                with st.spinner("Scanning sportsbooks..."):
                     bets = engine.run_best_odds_scan(selected_sports_odds)
                     st.success(f"Found {len(bets)} +EV props!")
         if engine.scanned_bets.get("best_odds"):
@@ -1325,14 +1386,10 @@ def run_dashboard():
                 st.markdown(f"**{i}. {bet['player']} {bet['market']} {bet['pick']} {bet['line']}**")
                 st.caption(f"Odds: {bet['odds']} @ {bet['bookmaker']} | Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
     
-    # =========================================================================
-    # TAB 9: ARBITRAGE DETECTOR
-    # =========================================================================
     with tab9:
         st.header("💰 Arbitrage Detector")
-        st.markdown("Find risk-free arbitrage opportunities across sportsbooks.")
         if st.button("🔍 SCAN FOR ARBITRAGE", type="primary"):
-            with st.spinner("Scanning for arbitrage opportunities..."):
+            with st.spinner("Scanning..."):
                 if not engine.scanned_bets.get("best_odds"):
                     engine.run_best_odds_scan(["NBA"])
                 arbs = engine.scanned_bets.get("arbs", [])
@@ -1343,16 +1400,12 @@ def run_dashboard():
                         st.caption(f"{arb['Bet 1']} | {arb['Bet 2']}")
                         st.metric("Arbitrage %", f"{arb['Arb %']}%")
                 else:
-                    st.info("No arbitrage opportunities found in current scan.")
+                    st.info("No arbitrage opportunities found.")
     
-    # =========================================================================
-    # TAB 10: MIDDLE HUNTER
-    # =========================================================================
     with tab10:
         st.header("🎯 Middle Hunter")
-        st.markdown("Find middle opportunities (bet both sides of a line).")
         if st.button("🔍 HUNT FOR MIDDLES", type="primary"):
-            with st.spinner("Hunting for middles..."):
+            with st.spinner("Hunting..."):
                 if not engine.scanned_bets.get("best_odds"):
                     engine.run_best_odds_scan(["NBA"])
                 middles = engine.scanned_bets.get("middles", [])
@@ -1363,40 +1416,28 @@ def run_dashboard():
                         st.caption(f"Window: {mid['Middle Window']} (Size: {mid['Window Size']})")
                         st.caption(f"{mid['Leg 1']} | {mid['Leg 2']}")
                 else:
-                    st.info("No middle opportunities found in current scan.")
+                    st.info("No middle opportunities found.")
     
-    # =========================================================================
-    # TAB 11: ACCURACY DASHBOARD
-    # =========================================================================
     with tab11:
         st.header("📊 Public Accuracy Dashboard")
-        st.markdown("Verified performance metrics from settled bets.")
         accuracy = engine.get_accuracy_dashboard()
-        
         col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Bets", accuracy['total_bets'])
-        with col2:
-            st.metric("Win Rate", f"{accuracy['win_rate']}%")
-        with col3:
-            st.metric("ROI", f"{accuracy['roi']}%")
-        with col4:
-            st.metric("Units Profit", f"+{accuracy['units_profit']}" if accuracy['units_profit'] > 0 else str(accuracy['units_profit']))
-        
+        with col1: st.metric("Total Bets", accuracy['total_bets'])
+        with col2: st.metric("Win Rate", f"{accuracy['win_rate']}%")
+        with col3: st.metric("ROI", f"{accuracy['roi']}%")
+        with col4: st.metric("Units Profit", f"+{accuracy['units_profit']}" if accuracy['units_profit'] > 0 else str(accuracy['units_profit']))
         st.subheader("By Sport")
         if accuracy['by_sport']:
             sport_df = pd.DataFrame(accuracy['by_sport']).T
             st.dataframe(sport_df)
         else:
             st.info("No settled bets by sport yet.")
-        
         st.subheader("By Tier")
         if accuracy['by_tier']:
             tier_df = pd.DataFrame(accuracy['by_tier']).T
             st.dataframe(tier_df)
         else:
             st.info("No settled bets by tier yet.")
-        
         st.metric("SEM Score", f"{accuracy['sem_score']}/100")
 
 if __name__ == "__main__":
