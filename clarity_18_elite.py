@@ -1,6 +1,6 @@
 """
-CLARITY 18.0 ELITE - COMPLETE SYSTEM (FULL ROSTERS + DUAL SCANNERS)
-Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks Scanner | Best Odds Scanner
+CLARITY 18.0 ELITE - COMPLETE SYSTEM (FULL ROSTERS + DUAL SCANNERS + ARBITRAGE + MIDDLES + ACCURACY DASHBOARD)
+Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks Scanner | Best Odds Scanner | Arbitrage | Middles | Accuracy
 NBA | MLB | NHL | NFL - ALL TEAMS HAVE REAL PLAYERS
 API KEYS: Perplexity + API-Sports + The Odds API + Apify
 """
@@ -29,7 +29,7 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 APIFY_API_TOKEN = "apify_api_bBECtVcVGcVPjbHjkw6g6TNBOE3w6Z2XL1Oy"
-VERSION = "18.0 Elite (Dual Scanners)"
+VERSION = "18.0 Elite (Arbitrage + Middles + Accuracy Dashboard)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -317,7 +317,6 @@ class GameScanner:
         return all_games
     
     def fetch_player_props_odds(self, sport: str = "basketball_nba", markets: str = "player_points,player_assists,player_rebounds") -> List[Dict]:
-        """NEW: Fetch player props from The Odds API across multiple sportsbooks."""
         all_props = []
         try:
             url = f"{self.base_url}/sports/{sport}/odds"
@@ -337,7 +336,7 @@ class GameScanner:
                                         "line": outcome["point"],
                                         "odds": outcome["price"],
                                         "bookmaker": bookmaker["key"],
-                                        "pick": "OVER"  # Default; can be extended
+                                        "pick": "OVER"
                                     }
                                     all_props.append(prop)
             return all_props
@@ -400,8 +399,7 @@ class Clarity18Elite:
         self.db_path = "clarity_history.db"
         self._init_db()
         self.sem_score = 100
-        self.scanned_bets = {"props": [], "games": [], "best_odds": []}  # Store results
-        # Start background automation
+        self.scanned_bets = {"props": [], "games": [], "best_odds": [], "arbs": [], "middles": []}
         self.automation = BackgroundAutomation(self)
         self.automation.start()
     
@@ -701,6 +699,139 @@ class Clarity18Elite:
         return {"correlated": max_corr > self.correlation_threshold, "max_corr": max_corr, "safe": max_corr <= self.correlation_threshold}
     
     # =========================================================================
+    # ARBITRAGE DETECTOR (NEW)
+    # =========================================================================
+    def detect_arbitrage(self, props: List[Dict]) -> List[Dict]:
+        arbs = []
+        # Group by player+market
+        grouped = {}
+        for prop in props:
+            key = f"{prop['player']}|{prop['market']}"
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(prop)
+        
+        for key, bets in grouped.items():
+            if len(bets) < 2:
+                continue
+            # Find best over and under odds
+            best_over = max([b for b in bets if b['pick'] == 'OVER'], key=lambda x: x['odds'], default=None)
+            best_under = max([b for b in bets if b['pick'] == 'UNDER'], key=lambda x: x['odds'], default=None)
+            if best_over and best_under:
+                # Calculate arbitrage percentage
+                over_dec = self.convert_odds(best_over['odds'])
+                under_dec = self.convert_odds(best_under['odds'])
+                arb_pct = (1/over_dec + 1/under_dec - 1) * 100
+                if arb_pct > 0:
+                    arbs.append({
+                        'Player': best_over['player'],
+                        'Market': best_over['market'],
+                        'Line': best_over['line'],
+                        'Bet 1': f"OVER {best_over['odds']} @ {best_over['bookmaker']}",
+                        'Bet 2': f"UNDER {best_under['odds']} @ {best_under['bookmaker']}",
+                        'Arb %': round(arb_pct, 2)
+                    })
+        return arbs
+    
+    # =========================================================================
+    # MIDDLE HUNTER (NEW)
+    # =========================================================================
+    def hunt_middles(self, props: List[Dict]) -> List[Dict]:
+        middles = []
+        grouped = {}
+        for prop in props:
+            key = f"{prop['player']}|{prop['market']}"
+            if key not in grouped:
+                grouped[key] = []
+            grouped[key].append(prop)
+        
+        for key, bets in grouped.items():
+            overs = [b for b in bets if b['pick'] == 'OVER']
+            unders = [b for b in bets if b['pick'] == 'UNDER']
+            for over in overs:
+                for under in unders:
+                    if over['line'] < under['line']:
+                        middle_window = under['line'] - over['line']
+                        if middle_window >= 0.5:
+                            middles.append({
+                                'Player': over['player'],
+                                'Market': over['market'],
+                                'Middle Window': f"{over['line']} – {under['line']}",
+                                'Leg 1': f"OVER {over['line']} ({over['odds']}) @ {over['bookmaker']}",
+                                'Leg 2': f"UNDER {under['line']} ({under['odds']}) @ {under['bookmaker']}",
+                                'Window Size': round(middle_window, 1)
+                            })
+        return sorted(middles, key=lambda x: x['Window Size'], reverse=True)
+    
+    # =========================================================================
+    # ACCURACY DASHBOARD DATA (NEW)
+    # =========================================================================
+    def get_accuracy_dashboard(self) -> Dict:
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query("SELECT * FROM bets WHERE result IN ('WIN','LOSS')", conn)
+        conn.close()
+        
+        if df.empty:
+            return {
+                'total_bets': 0,
+                'wins': 0,
+                'losses': 0,
+                'win_rate': 0,
+                'roi': 0,
+                'units_profit': 0,
+                'by_sport': {},
+                'by_tier': {}
+            }
+        
+        wins = (df['result'] == 'WIN').sum()
+        total = len(df)
+        total_stake = df['odds'].apply(lambda x: 100).sum()
+        total_profit = df.apply(lambda r: 90.9 if r['result'] == 'WIN' else -100, axis=1).sum()
+        roi = (total_profit / total_stake) * 100 if total_stake > 0 else 0
+        
+        by_sport = {}
+        for sport in df['sport'].unique():
+            sport_df = df[df['sport'] == sport]
+            sport_wins = (sport_df['result'] == 'WIN').sum()
+            by_sport[sport] = {
+                'bets': len(sport_df),
+                'win_rate': round(sport_wins / len(sport_df) * 100, 1) if len(sport_df) > 0 else 0
+            }
+        
+        by_tier = {}
+        # Extract tier from bolt_signal or use default
+        for _, row in df.iterrows():
+            signal = row.get('bolt_signal', 'PASS')
+            if 'SAFE' in signal:
+                tier = 'SAFE'
+            elif 'BALANCED' in signal:
+                tier = 'BALANCED+'
+            elif 'RISKY' in signal:
+                tier = 'RISKY'
+            else:
+                tier = 'PASS'
+            if tier not in by_tier:
+                by_tier[tier] = {'bets': 0, 'wins': 0}
+            by_tier[tier]['bets'] += 1
+            if row['result'] == 'WIN':
+                by_tier[tier]['wins'] += 1
+        
+        for tier in by_tier:
+            by_tier[tier]['win_rate'] = round(by_tier[tier]['wins'] / by_tier[tier]['bets'] * 100, 1) if by_tier[tier]['bets'] > 0 else 0
+        
+        return {
+            'total_bets': total,
+            'wins': wins,
+            'losses': total - wins,
+            'win_rate': round(wins / total * 100, 1) if total > 0 else 0,
+            'roi': round(roi, 1),
+            'units_profit': round(total_profit / 100, 1),
+            'by_sport': by_sport,
+            'by_tier': by_tier,
+            'sem_score': self.sem_score
+        }
+    
+    # =========================================================================
     # BEST BETS SCANNER (Auto-scan games & PrizePicks props)
     # =========================================================================
     def run_best_bets_scan(self, selected_sports: List[str]) -> Dict:
@@ -776,7 +907,6 @@ class Clarity18Elite:
     # BEST ODDS SCANNER (Multi-sportsbook comparison)
     # =========================================================================
     def run_best_odds_scan(self, selected_sports: List[str]) -> List[Dict]:
-        """Scan The Odds API for player props and find best odds/edges."""
         all_bets = []
         sport_keys = {"NBA": "basketball_nba", "MLB": "baseball_mlb", "NHL": "icehockey_nhl", "NFL": "americanfootball_nfl"}
         markets = "player_points,player_assists,player_rebounds,player_threes,player_blocks,player_steals"
@@ -786,7 +916,6 @@ class Clarity18Elite:
                 continue
             props = self.game_scanner.fetch_player_props_odds(key, markets)
             for prop in props:
-                # Use fallback data for simulation (can be improved with real stats)
                 np.random.seed(hash(prop["player"]) % 2**32)
                 data = list(np.random.poisson(lam=prop["line"]*0.9, size=8))
                 injury_info = self.api.get_injury_status(prop["player"], sport)
@@ -807,7 +936,6 @@ class Clarity18Elite:
                         "units": result['units'],
                         "sport": sport
                     })
-        # Group by player+market to find best odds
         best_bets = {}
         for bet in all_bets:
             key = f"{bet['player']}|{bet['market']}|{bet['line']}"
@@ -815,6 +943,21 @@ class Clarity18Elite:
                 best_bets[key] = bet
         sorted_bets = sorted(best_bets.values(), key=lambda x: x['edge'], reverse=True)
         self.scanned_bets["best_odds"] = sorted_bets[:10]
+        
+        # Detect arbs and middles from the same data
+        props_for_arb = []
+        for bet in all_bets:
+            props_for_arb.append({
+                'player': bet['player'],
+                'market': bet['market'],
+                'line': bet['line'],
+                'pick': bet['pick'],
+                'odds': bet['odds'],
+                'bookmaker': bet['bookmaker']
+            })
+        self.scanned_bets["arbs"] = self.detect_arbitrage(props_for_arb)
+        self.scanned_bets["middles"] = self.hunt_middles(props_for_arb)
+        
         return sorted_bets[:10]
     
     # =========================================================================
@@ -917,8 +1060,8 @@ engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
-    st.title("🔮 CLARITY 18.0 ELITE - DUAL SCANNERS")
-    st.markdown(f"**Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks Scanner | Best Odds Scanner | Version: {VERSION}**")
+    st.title("🔮 CLARITY 18.0 ELITE - ARBITRAGE + MIDDLES + ACCURACY")
+    st.markdown(f"**Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
@@ -928,8 +1071,9 @@ def run_dashboard():
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
     
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-        "🎯 PLAYER PROPS", "💰 MONEYLINE", "📊 SPREAD", "📈 TOTALS", "🔄 ALT LINES", "🔗 PARLAY CHECK", "🏆 PRIZEPICKS SCAN", "📈 BEST ODDS"
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9, tab10, tab11 = st.tabs([
+        "🎯 PLAYER PROPS", "💰 MONEYLINE", "📊 SPREAD", "📈 TOTALS", "🔄 ALT LINES", 
+        "🔗 PARLAY CHECK", "🏆 PRIZEPICKS", "📈 BEST ODDS", "💰 ARBITRAGE", "🎯 MIDDLES", "📊 ACCURACY"
     ])
     
     # =========================================================================
@@ -1133,6 +1277,81 @@ def run_dashboard():
             for i, bet in enumerate(engine.scanned_bets["best_odds"], 1):
                 st.markdown(f"**{i}. {bet['player']} {bet['market']} {bet['pick']} {bet['line']}**")
                 st.caption(f"Odds: {bet['odds']} @ {bet['bookmaker']} | Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
+    
+    # =========================================================================
+    # TAB 9: ARBITRAGE DETECTOR (NEW)
+    # =========================================================================
+    with tab9:
+        st.header("💰 Arbitrage Detector")
+        st.markdown("Find risk-free arbitrage opportunities across sportsbooks.")
+        if st.button("🔍 SCAN FOR ARBITRAGE", type="primary"):
+            with st.spinner("Scanning for arbitrage opportunities..."):
+                # Reuse the Best Odds scan data or run fresh
+                if not engine.scanned_bets.get("best_odds"):
+                    engine.run_best_odds_scan(["NBA"])
+                arbs = engine.scanned_bets.get("arbs", [])
+                if arbs:
+                    st.success(f"Found {len(arbs)} arbitrage opportunities!")
+                    for arb in arbs:
+                        st.markdown(f"**{arb['Player']} - {arb['Market']}**")
+                        st.caption(f"{arb['Bet 1']} | {arb['Bet 2']}")
+                        st.metric("Arbitrage %", f"{arb['Arb %']}%")
+                else:
+                    st.info("No arbitrage opportunities found in current scan.")
+    
+    # =========================================================================
+    # TAB 10: MIDDLE HUNTER (NEW)
+    # =========================================================================
+    with tab10:
+        st.header("🎯 Middle Hunter")
+        st.markdown("Find middle opportunities (bet both sides of a line).")
+        if st.button("🔍 HUNT FOR MIDDLES", type="primary"):
+            with st.spinner("Hunting for middles..."):
+                if not engine.scanned_bets.get("best_odds"):
+                    engine.run_best_odds_scan(["NBA"])
+                middles = engine.scanned_bets.get("middles", [])
+                if middles:
+                    st.success(f"Found {len(middles)} middle opportunities!")
+                    for mid in middles:
+                        st.markdown(f"**{mid['Player']} - {mid['Market']}**")
+                        st.caption(f"Window: {mid['Middle Window']} (Size: {mid['Window Size']})")
+                        st.caption(f"{mid['Leg 1']} | {mid['Leg 2']}")
+                else:
+                    st.info("No middle opportunities found in current scan.")
+    
+    # =========================================================================
+    # TAB 11: ACCURACY DASHBOARD (NEW)
+    # =========================================================================
+    with tab11:
+        st.header("📊 Public Accuracy Dashboard")
+        st.markdown("Verified performance metrics from settled bets.")
+        accuracy = engine.get_accuracy_dashboard()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Bets", accuracy['total_bets'])
+        with col2:
+            st.metric("Win Rate", f"{accuracy['win_rate']}%")
+        with col3:
+            st.metric("ROI", f"{accuracy['roi']}%")
+        with col4:
+            st.metric("Units Profit", f"+{accuracy['units_profit']}" if accuracy['units_profit'] > 0 else str(accuracy['units_profit']))
+        
+        st.subheader("By Sport")
+        if accuracy['by_sport']:
+            sport_df = pd.DataFrame(accuracy['by_sport']).T
+            st.dataframe(sport_df)
+        else:
+            st.info("No settled bets by sport yet.")
+        
+        st.subheader("By Tier")
+        if accuracy['by_tier']:
+            tier_df = pd.DataFrame(accuracy['by_tier']).T
+            st.dataframe(tier_df)
+        else:
+            st.info("No settled bets by tier yet.")
+        
+        st.metric("SEM Score", f"{accuracy['sem_score']}/100")
 
 if __name__ == "__main__":
     run_dashboard()
