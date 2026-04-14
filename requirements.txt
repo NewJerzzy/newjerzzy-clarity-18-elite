@@ -7,3 +7,5 @@ requests
 pybaseball
 websockets
 apify-client>=1.7.0
+pytesseract
+pillow
