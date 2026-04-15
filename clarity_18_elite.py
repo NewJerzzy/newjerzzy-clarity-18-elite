@@ -1,7 +1,9 @@
 """
-CLARITY 18.0 ELITE – COMPLETE FIXED VERSION (PrizePicks Scanner Working)
-All original tabs restored. PrizePicks scanner now shows real player names.
-LightGBM optional (fallback to weighted average). Auto arbitrage scanner included.
+CLARITY 18.0 ELITE – FINAL (Auto‑load Games + Better Messages + Tennis/PGA)
+- Game Markets: auto‑load today's games from The Odds API
+- PrizePicks scanner: shows "No approved slips" when empty
+- Best Odds scanner: includes Tennis and PGA
+- Arbitrage scanner: added Stop button
 """
 
 import numpy as np
@@ -37,14 +39,14 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
-VERSION = "18.0 Elite (PrizePicks Fixed)"
+VERSION = "18.0 Elite (Auto‑Load + Tennis/PGA)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
 
 # =============================================================================
-# SPORT MODELS, CATEGORIES, STAT CONFIG
+# SPORT MODELS, CATEGORIES, STAT CONFIG (unchanged)
 # =============================================================================
 SPORT_MODELS = {
     "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "avg_total": 228.5, "home_advantage": 3.0},
@@ -95,7 +97,7 @@ STAT_CONFIG = {
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
 # =============================================================================
-# HARDCODED TEAMS
+# HARDCODED TEAMS (for fallback when API fails)
 # =============================================================================
 HARDCODED_TEAMS = {
     "NBA": ["Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets", "Chicago Bulls",
@@ -1027,11 +1029,13 @@ class Clarity18Elite:
         return self.scanned_bets
     def run_best_odds_scan(self, selected_sports: List[str]) -> List[Dict]:
         all_bets = []
-        sport_keys = {"NBA":"basketball_nba","MLB":"baseball_mlb","NHL":"icehockey_nhl","NFL":"americanfootball_nfl"}
+        sport_keys = {"NBA":"basketball_nba","MLB":"baseball_mlb","NHL":"icehockey_nhl","NFL":"americanfootball_nfl",
+                      "TENNIS":"tennis_atp","PGA":"golf_pga"}
         markets = "player_points,player_assists,player_rebounds,player_threes,player_blocks,player_steals"
         for sport in selected_sports:
             key = sport_keys.get(sport)
-            if not key: continue
+            if not key:
+                continue
             props = self.game_scanner.fetch_player_props_odds(key, markets)
             for prop in props:
                 result = self.analyze_prop(prop["player"], prop["market"], prop["line"], prop["pick"],
@@ -1178,12 +1182,12 @@ engine = Clarity18Elite()
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**PrizePicks Scanner Fixed | Version: {VERSION}**")
+    st.markdown(f"**Auto‑Load Games | Tennis/PGA Added | Version: {VERSION}**")
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Real player stats (API-Sports)")
         st.success("✅ Live injury feed")
-        st.success("✅ PrizePicks Scanner Fixed")
+        st.success("✅ Auto‑Load Games Available")
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("Daily Loss Left", f"${max(0, engine.daily_loss_limit - engine.daily_loss_today):.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
@@ -1194,9 +1198,42 @@ def run_dashboard():
         "🎮 GAME MARKETS", "🎯 PLAYER PROPS", "🏆 PRIZEPICKS SCANNER", "📊 ANALYTICS", "📸 IMAGE ANALYSIS", "🔧 AUTO-TUNE", "💰 ARBITRAGE & MIDDLES"
     ])
 
-    # TAB 1: GAME MARKETS
+    # =========================================================================
+    # TAB 1: GAME MARKETS (with Auto‑Load Today's Games)
+    # =========================================================================
     with tab1:
         st.header("Game Markets")
+        st.subheader("Auto‑Load Today's Games")
+        col1, col2 = st.columns([2,1])
+        with col1:
+            auto_sport = st.selectbox("Select Sport", ["NBA", "MLB", "NHL", "NFL"], key="auto_sport")
+        with col2:
+            if st.button("📅 LOAD TODAY'S GAMES", type="primary"):
+                with st.spinner("Fetching today's games..."):
+                    games = engine.game_scanner.fetch_todays_games([auto_sport])
+                    if games:
+                        st.session_state["auto_games"] = games
+                        st.success(f"Loaded {len(games)} games")
+                    else:
+                        st.warning("No games found today.")
+        if "auto_games" in st.session_state and st.session_state["auto_games"]:
+            game_options = [f"{g['home']} vs {g['away']}" for g in st.session_state["auto_games"]]
+            selected_game = st.selectbox("Select a game", game_options)
+            if selected_game:
+                idx = game_options.index(selected_game)
+                game = st.session_state["auto_games"][idx]
+                st.info(f"**{game['home']}** vs **{game['away']}**")
+                # Display odds if available
+                if game.get("home_ml"):
+                    st.write(f"Home ML: {game['home_ml']}")
+                if game.get("away_ml"):
+                    st.write(f"Away ML: {game['away_ml']}")
+                if game.get("spread"):
+                    st.write(f"Spread: {game['spread']} ({game.get('spread_odds','N/A')})")
+                if game.get("total"):
+                    st.write(f"Total: {game['total']} (O: {game.get('over_odds','N/A')} / U: {game.get('under_odds','N/A')})")
+        st.markdown("---")
+        st.subheader("Manual Entry")
         game_tab1, game_tab2, game_tab3, game_tab4 = st.tabs(["💰 Moneyline", "📊 Spread", "📈 Totals", "🔄 Alt Lines"])
         with game_tab1:
             c1, c2 = st.columns(2)
@@ -1290,7 +1327,9 @@ def run_dashboard():
                 st.metric("Edge", f"{result['edge']:+.1%}")
                 st.info(f"Value: {result['value']}")
 
-    # TAB 2: PLAYER PROPS
+    # =========================================================================
+    # TAB 2: PLAYER PROPS (unchanged)
+    # =========================================================================
     with tab2:
         st.header("Manual Player Prop Analyzer (with Real Stats & Injuries)")
         c1, c2 = st.columns(2)
@@ -1341,7 +1380,9 @@ def run_dashboard():
                     if result.get('reject_reason'):
                         st.warning(f"Reason: {result['reject_reason']}")
 
-    # TAB 3: PRIZEPICKS SCANNER (FIXED)
+    # =========================================================================
+    # TAB 3: PRIZEPICKS SCANNER (with "No approved slips" message)
+    # =========================================================================
     with tab3:
         st.header("🏆 PrizePicks Scanner (CLARITY Approved Only)")
         col1, col2 = st.columns([2,1])
@@ -1398,7 +1439,7 @@ def run_dashboard():
                     st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
                     if bet.get('season_warning'):
                         st.warning(bet['season_warning'])
-            if games:
+            elif games:
                 st.subheader("✅ CLARITY APPROVED GAME BETS")
                 for i, bet in enumerate(games[:10],1):
                     st.markdown(f"**{i}. {bet['bet_line']}**")
@@ -1406,6 +1447,8 @@ def run_dashboard():
                     if bet.get('season_warnings'):
                         for w in bet['season_warnings']:
                             st.warning(w)
+            else:
+                st.info("📭 No CLARITY approved slips available for the selected sports.")
             if rejected:
                 with st.expander(f"❌ REJECTED BETS ({len(rejected)})"):
                     for bet in rejected:
@@ -1415,14 +1458,16 @@ def run_dashboard():
                         else:
                             st.caption("Reason: Insufficient edge")
 
-    # TAB 4: ANALYTICS
+    # =========================================================================
+    # TAB 4: ANALYTICS (Best Odds now includes Tennis & PGA)
+    # =========================================================================
     with tab4:
         analytics_tab1, analytics_tab2, analytics_tab3, analytics_tab4 = st.tabs(["📈 Best Odds","💰 Arbitrage","🎯 Middles","📊 Accuracy"])
         with analytics_tab1:
             st.header("Best Odds Scanner")
             col1, col2 = st.columns([2,1])
             with col1:
-                selected_sports_odds = st.multiselect("Select sports", ["NBA","MLB","NHL","NFL"], default=["NBA"], key="odds_sports")
+                selected_sports_odds = st.multiselect("Select sports", ["NBA","MLB","NHL","NFL","TENNIS","PGA"], default=["NBA"], key="odds_sports")
             with col2:
                 if st.button("🔍 SCAN BEST ODDS", type="primary", use_container_width=True):
                     with st.spinner("Scanning sportsbooks..."):
@@ -1485,7 +1530,9 @@ def run_dashboard():
                 st.info("No settled bets by tier yet.")
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
 
-    # TAB 5: IMAGE ANALYSIS (OCR)
+    # =========================================================================
+    # TAB 5: IMAGE ANALYSIS (OCR) – unchanged
+    # =========================================================================
     with tab5:
         st.header("📸 Screenshot Analyzer")
         uploaded_file = st.file_uploader("Choose an image...", type=["png","jpg","jpeg"])
@@ -1541,7 +1588,9 @@ def run_dashboard():
                                             if res.get('reject_reason'):
                                                 st.caption(f"Reason: {res['reject_reason']}")
 
-    # TAB 6: AUTO-TUNE HISTORY
+    # =========================================================================
+    # TAB 6: AUTO-TUNE HISTORY (unchanged)
+    # =========================================================================
     with tab6:
         st.header("Auto-Tune History (ROI-based)")
         conn = sqlite3.connect(engine.db_path)
@@ -1552,20 +1601,46 @@ def run_dashboard():
         else:
             st.dataframe(df)
 
-    # TAB 7: ARBITRAGE & MIDDLES
+    # =========================================================================
+    # TAB 7: ARBITRAGE & MIDDLES (with Stop button)
+    # =========================================================================
     with tab7:
         st.header("💰 Live Arbitrage & Middle Scanner")
         st.markdown("This tool scans The Odds API for risk‑free arbitrage and middle opportunities across multiple sportsbooks.")
-        if st.button("🔍 SCAN FOR ARBITRAGE & MIDDLES", type="primary"):
+        
+        if "arb_scan_running" not in st.session_state:
+            st.session_state.arb_scan_running = False
+            st.session_state.arb_stop_event = threading.Event()
+        
+        col1, col2 = st.columns([2,1])
+        with col1:
+            if st.button("🔍 SCAN FOR ARBITRAGE & MIDDLES", type="primary"):
+                st.session_state.arb_scan_running = True
+                st.session_state.arb_stop_event.clear()
+                st.rerun()
+        with col2:
+            if st.button("⏹️ STOP SCAN", use_container_width=True):
+                st.session_state.arb_stop_event.set()
+                st.session_state.arb_scan_running = False
+                st.rerun()
+        
+        if st.session_state.arb_scan_running:
             with st.spinner("Fetching games and scanning for arbitrage..."):
                 games = engine.game_scanner.fetch_todays_games(["NBA", "MLB", "NHL", "NFL"])
-                if not games:
+                if st.session_state.arb_stop_event.is_set():
+                    st.warning("Scan stopped by user.")
+                    st.session_state.arb_scan_running = False
+                elif not games:
                     st.warning("No games found today.")
+                    st.session_state.arb_scan_running = False
                 else:
                     st.success(f"Found {len(games)} games. Scanning for arbs and middles...")
                     arb_opportunities = []
                     middle_opportunities = []
                     for game in games:
+                        if st.session_state.arb_stop_event.is_set():
+                            st.warning("Scan interrupted by user.")
+                            break
                         bookmakers = game.get("bookmakers", [])
                         if len(bookmakers) < 2:
                             continue
@@ -1643,25 +1718,27 @@ def run_dashboard():
                                                 "middle_prob": f"{mid['middle_prob']*100:.1f}%",
                                                 "ev_pct": mid["ev_pct"]
                                             })
-                    if arb_opportunities:
-                        st.subheader("✅ Arbitrage Opportunities")
-                        for arb in arb_opportunities:
-                            with st.expander(f"💰 {arb['game']}"):
-                                st.write(f"**Best Home:** {arb['best_home']}")
-                                st.write(f"**Best Away:** {arb['best_away']}")
-                                st.write(f"**Profit:** {arb['profit']} ({arb['profit_pct']}% ROI)")
-                    else:
-                        st.info("No arbitrage opportunities found.")
-                    if middle_opportunities:
-                        st.subheader("🎯 Middle Opportunities")
-                        for mid in middle_opportunities:
-                            with st.expander(f"🎲 {mid['game']} – {mid['market']}"):
-                                st.write(f"**Lines:** {mid['lines']}")
-                                st.write(f"**Gap:** {mid['gap']} points")
-                                st.write(f"**Middle Probability:** {mid['middle_prob']}")
-                                st.write(f"**Expected Value:** {mid['ev_pct']}%")
-                    else:
-                        st.info("No middle opportunities found.")
+                    if not st.session_state.arb_stop_event.is_set():
+                        if arb_opportunities:
+                            st.subheader("✅ Arbitrage Opportunities")
+                            for arb in arb_opportunities:
+                                with st.expander(f"💰 {arb['game']}"):
+                                    st.write(f"**Best Home:** {arb['best_home']}")
+                                    st.write(f"**Best Away:** {arb['best_away']}")
+                                    st.write(f"**Profit:** {arb['profit']} ({arb['profit_pct']}% ROI)")
+                        else:
+                            st.info("No arbitrage opportunities found.")
+                        if middle_opportunities:
+                            st.subheader("🎯 Middle Opportunities")
+                            for mid in middle_opportunities:
+                                with st.expander(f"🎲 {mid['game']} – {mid['market']}"):
+                                    st.write(f"**Lines:** {mid['lines']}")
+                                    st.write(f"**Gap:** {mid['gap']} points")
+                                    st.write(f"**Middle Probability:** {mid['middle_prob']}")
+                                    st.write(f"**Expected Value:** {mid['ev_pct']}%")
+                        else:
+                            st.info("No middle opportunities found.")
+                        st.session_state.arb_scan_running = False
         st.markdown("---")
         st.subheader("Manual Testers (for any sport)")
         with st.expander("Manual 2‑Way Arbitrage Tester"):
