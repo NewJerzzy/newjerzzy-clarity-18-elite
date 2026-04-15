@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE - FIXED KEYERROR + OPTIMIZED LAYOUT + OCR SCREENSHOT
+CLARITY 18.0 ELITE - FIXED KEYERROR + OPTIMIZED LAYOUT + OCR SCREENSHOT (FILE TYPE FIX)
 Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy
 NBA | MLB | NHL | NFL | PGA | TENNIS | UFC
 API KEYS: Perplexity + API-Sports + The Odds API + OCR.space
@@ -29,7 +29,7 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"   # <-- Your injected key
-VERSION = "18.0 Elite (Fixed KeyError + OCR)"
+VERSION = "18.0 Elite (OCR File Type Fixed)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -1330,7 +1330,7 @@ def parse_bets_from_text(text: str) -> List[Dict]:
     return bets
 
 # =============================================================================
-# DASHBOARD (OPTIMIZED LAYOUT + OCR TAB)
+# DASHBOARD (OPTIMIZED LAYOUT + OCR TAB WITH FILE TYPE FIX)
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -1669,7 +1669,7 @@ def run_dashboard():
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
     
     # -------------------------------------------------------------------------
-    # TAB 5: IMAGE ANALYSIS (OCR)
+    # TAB 5: IMAGE ANALYSIS (OCR) - FIXED FILE TYPE
     # -------------------------------------------------------------------------
     with tab5:
         st.header("📸 Screenshot Analyzer")
@@ -1682,10 +1682,19 @@ def run_dashboard():
             
             if st.button("🔍 ANALYZE SCREENSHOT", type="primary"):
                 with st.spinner("Extracting text via OCR..."):
+                    # Prepare file with proper filename and content type
+                    file_name = uploaded_file.name if uploaded_file.name else "screenshot.png"
+                    files = {"file": (file_name, uploaded_file.getvalue(), uploaded_file.type)}
+                    data = {
+                        "apikey": OCR_SPACE_API_KEY,
+                        "language": "eng",
+                        "isOverlayRequired": False,
+                        "filetype": uploaded_file.type.split("/")[-1] if uploaded_file.type else "PNG"
+                    }
                     response = requests.post(
                         "https://api.ocr.space/parse/image",
-                        files={"file": uploaded_file.getvalue()},
-                        data={"apikey": OCR_SPACE_API_KEY, "language": "eng", "isOverlayRequired": False},
+                        files=files,
+                        data=data,
                         timeout=30
                     )
                     if response.status_code != 200:
@@ -1711,12 +1720,10 @@ def run_dashboard():
                                     if bet.get("type") == "moneyline":
                                         res = engine.analyze_moneyline(bet["home"], bet["away"], sport, bet["home_odds"], bet["away_odds"])
                                     elif bet.get("type") == "spread":
-                                        # For spread we need both teams; here we assume the other team is "Opponent"
                                         res = engine.analyze_spread(bet["team"], "Opponent", bet["spread"], bet["team"], sport, bet["odds"])
                                     elif bet.get("type") == "total":
                                         res = engine.analyze_total("Home", "Away", bet["total"], bet["pick"], sport, bet["odds"])
                                     else:  # player prop
-                                        # Use dummy data (recent games) – in practice you could fetch real data
                                         data = [float(bet["line"]) * 0.9] * 5
                                         res = engine.analyze_prop(
                                             bet["player"], bet["market"], bet["line"], bet["pick"],
