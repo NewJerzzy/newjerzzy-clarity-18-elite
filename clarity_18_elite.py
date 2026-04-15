@@ -1,7 +1,6 @@
 """
-CLARITY 18.0 ELITE – FINAL with Edge Scanner (Full Original UI Restored)
-Real stats, injuries, arbitrage, middles, +EV detection – all automatic.
-All original tabs (Game Markets, Player Props, PrizePicks Scanner, Analytics, Image Analysis, Auto-Tune) are fully restored.
+CLARITY 18.0 ELITE – FINAL with Full Automatic Arbitrage & Middle Scanner
+Real stats, injuries, full multi‑book arbitrage detection – all automatic.
 """
 
 import numpy as np
@@ -23,11 +22,10 @@ import statistics
 
 # Import the edge scanner module
 try:
-    from edge_scanner import find_arbitrage_2way, find_middle, find_plus_ev, scan_all_games
+    from edge_scanner import find_arbitrage_2way, find_middle, find_plus_ev
     EDGE_SCANNER_AVAILABLE = True
 except ImportError:
     EDGE_SCANNER_AVAILABLE = False
-    st.warning("Edge scanner module not found – arbitrage features disabled.")
 
 warnings.filterwarnings('ignore')
 
@@ -38,7 +36,7 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
-VERSION = "18.0 Elite (Full UI + Edge Scanner)"
+VERSION = "18.0 Elite (Auto Arbitrage Scanner)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -136,10 +134,9 @@ HARDCODED_TEAMS = {
     "UFC": ["UFC"]
 }
 
-# Placeholders – replace with your actual NBA_ROSTERS, MLB_ROSTERS, NHL_ROSTERS
-NBA_ROSTERS = {}
-MLB_ROSTERS = {}
-NHL_ROSTERS = {}
+NBA_ROSTERS = {}   # Replace with your actual rosters
+MLB_ROSTERS = {}   # Replace with your actual rosters
+NHL_ROSTERS = {}   # Replace with your actual rosters
 
 # =============================================================================
 # REAL-TIME DATA FETCHERS (with caching)
@@ -253,11 +250,16 @@ class GameScanner:
                 r = requests.get(url, params=params, timeout=10)
                 if r.status_code == 200:
                     for game in r.json():
-                        bookmakers = game.get("bookmakers", [])
-                        if bookmakers:
-                            bm = bookmakers[0]
-                            markets = {m["key"]:m for m in bm.get("markets", [])}
-                            game_data = {"sport":sport,"home":game["home_team"],"away":game["away_team"]}
+                        game_data = {
+                            "sport": sport,
+                            "home": game["home_team"],
+                            "away": game["away_team"],
+                            "bookmakers": game.get("bookmakers", [])  # store all books
+                        }
+                        # Also extract first book for backward compatibility
+                        if game_data["bookmakers"]:
+                            bm = game_data["bookmakers"][0]
+                            markets = {m["key"]: m for m in bm.get("markets", [])}
                             if "h2h" in markets:
                                 outcomes = markets["h2h"]["outcomes"]
                                 game_data["home_ml"] = next((o["price"] for o in outcomes if o["name"]==game["home_team"]), None)
@@ -271,7 +273,7 @@ class GameScanner:
                                 game_data["total"] = next((o["point"] for o in outcomes), None)
                                 game_data["over_odds"] = next((o["price"] for o in outcomes if o["name"]=="Over"), None)
                                 game_data["under_odds"] = next((o["price"] for o in outcomes if o["name"]=="Under"), None)
-                            all_games.append(game_data)
+                        all_games.append(game_data)
             except Exception as e:
                 st.warning(f"Could not fetch {sport} games: {e}")
         return all_games
@@ -957,19 +959,19 @@ def auto_parse_bets(text: str) -> List[Dict]:
     return unique
 
 # =============================================================================
-# STREAMLIT DASHBOARD (Full original UI + new Arbitrage tab)
+# STREAMLIT DASHBOARD (Full original UI + new Automatic Arbitrage Scanner)
 # =============================================================================
 engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Upgraded: Real Stats + Injuries + Arbitrage Scanner | Version: {VERSION}**")
+    st.markdown(f"**Upgraded: Real Stats + Injuries + Automatic Arbitrage Scanner | Version: {VERSION}**")
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Real player stats (API-Sports)")
         st.success("✅ Live injury feed")
-        st.success("✅ Edge Scanner ready")
+        st.success("✅ Auto Arbitrage Scanner")
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("Daily Loss Left", f"${max(0, engine.daily_loss_limit - engine.daily_loss_today):.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
@@ -1351,71 +1353,207 @@ def run_dashboard():
             st.dataframe(df)
 
     # =========================================================================
-    # TAB 7: ARBITRAGE & MIDDLES (New)
+    # TAB 7: ARBITRAGE & MIDDLES (Fully Automatic Scanner)
     # =========================================================================
     with tab7:
         st.header("💰 Live Arbitrage & Middle Scanner")
-        st.markdown("This tool scans for risk‑free arbitrage and middle opportunities using The Odds API.")
+        st.markdown("This tool scans The Odds API for risk‑free arbitrage and middle opportunities across multiple sportsbooks.")
         if not EDGE_SCANNER_AVAILABLE:
             st.warning("Edge scanner module not found. Please ensure `edge_scanner.py` is in the same directory.")
         else:
             if st.button("🔍 SCAN FOR ARBITRAGE & MIDDLES", type="primary"):
-                with st.spinner("Fetching games and scanning..."):
+                with st.spinner("Fetching games and scanning for arbitrage..."):
                     games = engine.game_scanner.fetch_todays_games(["NBA", "MLB", "NHL", "NFL"])
                     if not games:
                         st.warning("No games found today.")
                     else:
                         st.success(f"Found {len(games)} games. Scanning for arbs and middles...")
-                        # Full multi‑book scanning would require more complex logic.
-                        # For now, we provide manual testers below.
-                        st.info("Full automatic scan requires multi‑book odds. Use the manual testers to check specific opportunities.")
+                        arb_opportunities = []
+                        middle_opportunities = []
+                        # Loop through each game and its bookmakers
+                        for game in games:
+                            bookmakers = game.get("bookmakers", [])
+                            if len(bookmakers) < 2:
+                                continue
+                            # Build dict of home and away moneyline odds per book
+                            home_ml_by_book = {}
+                            away_ml_by_book = {}
+                            # Also collect spreads and totals for middles
+                            spreads_by_book = []
+                            totals_by_book = []
+                            for book in bookmakers:
+                                book_key = book["key"]
+                                for market in book.get("markets", []):
+                                    if market["key"] == "h2h":
+                                        for outcome in market["outcomes"]:
+                                            if outcome["name"] == game["home"]:
+                                                home_ml_by_book[book_key] = outcome["price"]
+                                            elif outcome["name"] == game["away"]:
+                                                away_ml_by_book[book_key] = outcome["price"]
+                                    elif market["key"] == "spreads":
+                                        # For middles: store line and odds for each book
+                                        for outcome in market["outcomes"]:
+                                            if outcome["name"] == game["home"]:
+                                                spreads_by_book.append({
+                                                    "book": book_key,
+                                                    "line": outcome["point"],
+                                                    "odds": outcome["price"],
+                                                    "side": "home"
+                                                })
+                                            elif outcome["name"] == game["away"]:
+                                                spreads_by_book.append({
+                                                    "book": book_key,
+                                                    "line": outcome["point"],
+                                                    "odds": outcome["price"],
+                                                    "side": "away"
+                                                })
+                                    elif market["key"] == "totals":
+                                        for outcome in market["outcomes"]:
+                                            if outcome["name"] == "Over":
+                                                totals_by_book.append({
+                                                    "book": book_key,
+                                                    "line": outcome["point"],
+                                                    "odds": outcome["price"],
+                                                    "side": "over"
+                                                })
+                                            elif outcome["name"] == "Under":
+                                                totals_by_book.append({
+                                                    "book": book_key,
+                                                    "line": outcome["point"],
+                                                    "odds": outcome["price"],
+                                                    "side": "under"
+                                                })
+                            # Check for arbitrage on moneyline
+                            if len(home_ml_by_book) >= 2 and len(away_ml_by_book) >= 2:
+                                # Find best home and best away odds
+                                best_home_book = max(home_ml_by_book, key=lambda b: home_ml_by_book[b])
+                                best_away_book = max(away_ml_by_book, key=lambda b: away_ml_by_book[b])
+                                # Create two dictionaries with a single entry each for the arb function
+                                arb_result = find_arbitrage_2way(
+                                    {best_home_book: home_ml_by_book[best_home_book]},
+                                    {best_away_book: away_ml_by_book[best_away_book]},
+                                    bankroll=100.0
+                                )
+                                if arb_result["is_arb"]:
+                                    arb_opportunities.append({
+                                        "game": f"{game['home']} vs {game['away']}",
+                                        "type": "Moneyline",
+                                        "best_home": f"{best_home_book} ({home_ml_by_book[best_home_book]})",
+                                        "best_away": f"{best_away_book} ({away_ml_by_book[best_away_book]})",
+                                        "profit_pct": arb_result["profit_pct"],
+                                        "stakes": f"Home: ${arb_result['stake_a']:.2f}, Away: ${arb_result['stake_b']:.2f}",
+                                        "profit": f"${arb_result['profit']:.2f}"
+                                    })
+                            # Check for middle opportunities on spreads
+                            if len(spreads_by_book) >= 2:
+                                # Look for two different lines
+                                for i in range(len(spreads_by_book)):
+                                    for j in range(i+1, len(spreads_by_book)):
+                                        s1 = spreads_by_book[i]
+                                        s2 = spreads_by_book[j]
+                                        # Only consider if they are for the same side? Actually middle can be between home lines or away lines
+                                        if s1["side"] == s2["side"]:
+                                            # Same side – look for gap
+                                            if abs(s1["line"] - s2["line"]) >= 0.5:
+                                                mid = find_middle(s1["line"], s1["odds"], s2["line"], s2["odds"])
+                                                if mid["is_middle"] and mid["recommended"]:
+                                                    middle_opportunities.append({
+                                                        "game": f"{game['home']} vs {game['away']}",
+                                                        "market": f"Spread ({s1['side']})",
+                                                        "lines": f"{s1['book']} {s1['line']:+.1f} ({s1['odds']}) vs {s2['book']} {s2['line']:+.1f} ({s2['odds']})",
+                                                        "gap": mid["gap"],
+                                                        "middle_prob": f"{mid['middle_prob']*100:.1f}%",
+                                                        "ev_pct": mid["ev_pct"]
+                                                    })
+                            # Check totals middles
+                            if len(totals_by_book) >= 2:
+                                for i in range(len(totals_by_book)):
+                                    for j in range(i+1, len(totals_by_book)):
+                                        t1 = totals_by_book[i]
+                                        t2 = totals_by_book[j]
+                                        if t1["side"] != t2["side"]:
+                                            # One over, one under – we can use find_middle with lines
+                                            if t1["side"] == "over":
+                                                over_line, over_odds = t1["line"], t1["odds"]
+                                                under_line, under_odds = t2["line"], t2["odds"]
+                                            else:
+                                                over_line, over_odds = t2["line"], t2["odds"]
+                                                under_line, under_odds = t1["line"], t1["odds"]
+                                            if under_line - over_line >= 0.5:
+                                                mid = find_middle(over_line, over_odds, under_line, under_odds)
+                                                if mid["is_middle"] and mid["recommended"]:
+                                                    middle_opportunities.append({
+                                                        "game": f"{game['home']} vs {game['away']}",
+                                                        "market": "Total",
+                                                        "lines": f"Over {over_line} ({over_odds}) @ {t1['book']} | Under {under_line} ({under_odds}) @ {t2['book']}",
+                                                        "gap": mid["gap"],
+                                                        "middle_prob": f"{mid['middle_prob']*100:.1f}%",
+                                                        "ev_pct": mid["ev_pct"]
+                                                    })
+                        # Display results
+                        if arb_opportunities:
+                            st.subheader("✅ Arbitrage Opportunities")
+                            for arb in arb_opportunities:
+                                with st.expander(f"💰 {arb['game']} – {arb['type']}"):
+                                    st.write(f"**Best Home:** {arb['best_home']}")
+                                    st.write(f"**Best Away:** {arb['best_away']}")
+                                    st.write(f"**Profit:** {arb['profit']} ({arb['profit_pct']}% ROI)")
+                                    st.write(f"**Stakes:** {arb['stakes']}")
+                        else:
+                            st.info("No arbitrage opportunities found in today's games.")
+                        if middle_opportunities:
+                            st.subheader("🎯 Middle Opportunities")
+                            for mid in middle_opportunities:
+                                with st.expander(f"🎲 {mid['game']} – {mid['market']}"):
+                                    st.write(f"**Lines:** {mid['lines']}")
+                                    st.write(f"**Gap:** {mid['gap']} points")
+                                    st.write(f"**Middle Probability:** {mid['middle_prob']}")
+                                    st.write(f"**Expected Value:** {mid['ev_pct']}%")
+                        else:
+                            st.info("No middle opportunities found in today's games.")
             st.markdown("---")
-            st.subheader("Manual 2‑Way Arbitrage Tester")
-            col1, col2 = st.columns(2)
-            with col1:
-                book_a_odds = st.number_input("Book A odds", value=-110, step=5)
-            with col2:
-                book_b_odds = st.number_input("Book B odds", value=-110, step=5)
-            if st.button("Test Arbitrage"):
-                odds_a = {"Book A": book_a_odds}
-                odds_b = {"Book B": book_b_odds}
-                arb = find_arbitrage_2way(odds_a, odds_b, bankroll=100.0)
-                if arb["is_arb"]:
-                    st.success(f"✅ Arbitrage found! Profit: ${arb['profit']:.2f} (ROI: {arb['roi_pct']}%)")
-                    st.write(arb)
-                else:
-                    st.info("No arbitrage opportunity.")
-            st.markdown("---")
-            st.subheader("Middle Hunter Tester")
-            st.markdown("Enter two different lines (e.g., spread -4.5 and -1.5) to see middle EV.")
-            c1, c2 = st.columns(2)
-            with c1:
-                line_a = st.number_input("Line A", value=-4.5, step=0.5)
-                odds_a_mid = st.number_input("Odds A", value=-110, step=5)
-            with c2:
-                line_b = st.number_input("Line B", value=-1.5, step=0.5)
-                odds_b_mid = st.number_input("Odds B", value=-110, step=5)
-            if st.button("Test Middle"):
-                mid = find_middle(line_a, odds_a_mid, line_b, odds_b_mid)
-                if mid["is_middle"]:
-                    st.write(mid)
-                    if mid["recommended"]:
-                        st.success(f"✅ Middle opportunity! EV: {mid['ev_pct']}%")
+            st.subheader("Manual Testers (for any sport)")
+            # Manual testers remain as before (they are fully functional)
+            with st.expander("Manual 2‑Way Arbitrage Tester"):
+                col1, col2 = st.columns(2)
+                with col1:
+                    book_a_odds = st.number_input("Book A odds", value=-110, step=5, key="manual_arb_a")
+                with col2:
+                    book_b_odds = st.number_input("Book B odds", value=-110, step=5, key="manual_arb_b")
+                if st.button("Test Arbitrage (Manual)"):
+                    arb = find_arbitrage_2way({"Book A": book_a_odds}, {"Book B": book_b_odds}, bankroll=100.0)
+                    if arb["is_arb"]:
+                        st.success(f"✅ Arbitrage found! Profit: ${arb['profit']:.2f} (ROI: {arb['roi_pct']}%)")
+                        st.write(arb)
                     else:
-                        st.warning("Middle exists but negative EV.")
-                else:
-                    st.info("No middle window.")
-            st.markdown("---")
-            st.subheader("+EV Detection (Soft vs Sharp)")
-            st.markdown("Compare a soft book's odds to a sharp book (e.g., Pinnacle).")
-            soft = st.number_input("Soft book odds", value=-110, step=5)
-            sharp = st.number_input("Sharp book odds (e.g., Pinnacle)", value=-108, step=5)
-            if st.button("Check +EV"):
-                ev = find_plus_ev(soft, sharp)
-                if ev["is_plus_ev"]:
-                    st.success(f"✅ +EV! Edge: {ev['edge_pct']}%")
-                else:
-                    st.info(f"No +EV (edge: {ev['edge_pct']}%)")
+                        st.info("No arbitrage opportunity.")
+            with st.expander("Manual Middle Hunter Tester"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    line_a = st.number_input("Line A", value=-4.5, step=0.5, key="mid_line_a")
+                    odds_a_mid = st.number_input("Odds A", value=-110, step=5, key="mid_odds_a")
+                with c2:
+                    line_b = st.number_input("Line B", value=-1.5, step=0.5, key="mid_line_b")
+                    odds_b_mid = st.number_input("Odds B", value=-110, step=5, key="mid_odds_b")
+                if st.button("Test Middle (Manual)"):
+                    mid = find_middle(line_a, odds_a_mid, line_b, odds_b_mid)
+                    if mid["is_middle"]:
+                        st.write(mid)
+                        if mid["recommended"]:
+                            st.success(f"✅ Middle opportunity! EV: {mid['ev_pct']}%")
+                        else:
+                            st.warning("Middle exists but negative EV.")
+                    else:
+                        st.info("No middle window.")
+            with st.expander("Manual +EV Detection Tester"):
+                soft = st.number_input("Soft book odds", value=-110, step=5, key="ev_soft")
+                sharp = st.number_input("Sharp book odds (e.g., Pinnacle)", value=-108, step=5, key="ev_sharp")
+                if st.button("Check +EV (Manual)"):
+                    ev = find_plus_ev(soft, sharp)
+                    if ev["is_plus_ev"]:
+                        st.success(f"✅ +EV! Edge: {ev['edge_pct']}%")
+                    else:
+                        st.info(f"No +EV (edge: {ev['edge_pct']}%)")
 
 if __name__ == "__main__":
     run_dashboard()
