@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE - OPTIMIZED LAYOUT + STOP SCAN + APPROVED ONLY
+CLARITY 18.0 ELITE - FIXED KEYERROR + OPTIMIZED LAYOUT
 Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy
 NBA | MLB | NHL | NFL | PGA | TENNIS | UFC
 API KEYS: Perplexity + API-Sports + The Odds API
@@ -28,7 +28,7 @@ warnings.filterwarnings('ignore')
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
-VERSION = "18.0 Elite (Layout Optimized + Stop Scan)"
+VERSION = "18.0 Elite (Fixed KeyError)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -462,8 +462,6 @@ class PropScanner:
         self.session.headers.update(self.DEFAULT_HEADERS)
 
     def fetch_prizepicks_props(self, sport: str = None, stop_event: threading.Event = None) -> List[Dict]:
-        """Fetch props with optional stop event."""
-        # Attempt 1: Direct API
         try:
             props = self._fetch_direct(sport, use_proxy=False, stop_event=stop_event)
             if props:
@@ -472,7 +470,6 @@ class PropScanner:
         except Exception as e:
             st.warning(f"Direct API failed: {str(e)[:100]}")
 
-        # Attempt 2: AllOrigins Proxy
         try:
             props = self._fetch_direct(sport, use_proxy=True, stop_event=stop_event)
             if props:
@@ -481,7 +478,6 @@ class PropScanner:
         except Exception as e:
             st.warning(f"Proxy failed: {str(e)[:100]}")
 
-        # Final fallback
         st.warning("All sources failed. Using sample data.")
         return self._fallback_prizepicks_props(sport)
 
@@ -536,7 +532,7 @@ class PropScanner:
         return props
 
 # =============================================================================
-# CLARITY 18.0 ELITE - COMPLETE MASTER ENGINE
+# CLARITY 18.0 ELITE - COMPLETE MASTER ENGINE (FIXED)
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
@@ -1000,33 +996,37 @@ class Clarity18Elite:
     
     def run_best_bets_scan(self, selected_sports: List[str], stop_event: threading.Event = None,
                            progress_callback=None, result_callback=None) -> Dict:
-        """Scan with optional stop and incremental updates."""
         game_bets = []
         prop_bets = []
         rejected = []
         
-        # Scan games
         games = self.game_scanner.fetch_todays_games(selected_sports)
         for game in games:
             if stop_event and stop_event.is_set():
                 break
             sport = game["sport"]
             home, away = game["home"], game["away"]
+            
+            # Moneyline (FIXED)
             if game.get("home_ml") and game.get("away_ml"):
                 ml = self.analyze_moneyline(home, away, sport, game["home_ml"], game["away_ml"])
                 bet_info = {
                     "type": "moneyline", "sport": sport,
-                    "description": f"{ml['pick']} ML vs {away if ml['pick']==home else home}",
-                    "bet_line": f"{ml['pick']} ML ({game['home_ml'] if ml['pick']==home else game['away_ml']}) vs {away if ml['pick']==home else home}",
-                    "edge": ml['edge'], "probability": ml['win_prob'], "units": ml['units'],
-                    "odds": game['home_ml'] if ml['pick']==home else game['away_ml'],
+                    "description": f"{ml.get('pick', 'PASS')} ML vs {away if ml.get('pick')==home else home}",
+                    "bet_line": f"{ml.get('pick', 'N/A')} ML ({game['home_ml'] if ml.get('pick')==home else game['away_ml']}) vs {away if ml.get('pick')==home else home}",
+                    "edge": ml.get('edge', 0),
+                    "probability": ml.get('win_prob', 0.0),
+                    "units": ml.get('units', 0),
+                    "odds": game['home_ml'] if ml.get('pick')==home else game['away_ml'],
                     "season_warnings": ml.get('season_warnings', []),
                     "reject_reason": ml.get('reject_reason')
                 }
-                if ml['units'] > 0:
+                if ml.get('units', 0) > 0:
                     game_bets.append(bet_info)
                 else:
                     rejected.append(bet_info)
+            
+            # Spread (FIXED)
             if game.get("spread") and game.get("spread_odds"):
                 for pick_side in [home, away]:
                     spread_res = self.analyze_spread(home, away, game["spread"], pick_side, sport, game["spread_odds"])
@@ -1034,33 +1034,40 @@ class Clarity18Elite:
                         "type": "spread", "sport": sport,
                         "description": f"{pick_side} {game['spread']:+.1f} vs {away if pick_side==home else home}",
                         "bet_line": f"{pick_side} {game['spread']:+.1f} ({game['spread_odds']}) vs {away if pick_side==home else home}",
-                        "edge": spread_res['edge'], "probability": spread_res['prob_cover'], "units": spread_res['units'],
+                        "edge": spread_res.get('edge', 0),
+                        "probability": spread_res.get('prob_cover', 0.0),
+                        "units": spread_res.get('units', 0),
                         "odds": game['spread_odds'],
                         "season_warnings": spread_res.get('season_warnings', []),
                         "reject_reason": spread_res.get('reject_reason')
                     }
-                    if spread_res['units'] > 0:
+                    if spread_res.get('units', 0) > 0:
                         game_bets.append(bet_info)
                     else:
                         rejected.append(bet_info)
+            
+            # Totals (FIXED)
             if game.get("total"):
                 for pick_side, odds in [("OVER", game.get("over_odds", -110)), ("UNDER", game.get("under_odds", -110))]:
                     total_res = self.analyze_total(home, away, game["total"], pick_side, sport, odds)
+                    prob_key = 'prob_over' if pick_side == "OVER" else 'prob_under'
                     bet_info = {
                         "type": "total", "sport": sport,
                         "description": f"{home} vs {away}: {pick_side} {game['total']}",
                         "bet_line": f"{home} vs {away} — {pick_side} {game['total']} ({odds})",
-                        "edge": total_res['edge'], "probability": total_res['prob_over'] if pick_side=="OVER" else total_res['prob_under'],
-                        "units": total_res['units'], "odds": odds,
+                        "edge": total_res.get('edge', 0),
+                        "probability": total_res.get(prob_key, 0.0),
+                        "units": total_res.get('units', 0),
+                        "odds": odds,
                         "season_warnings": total_res.get('season_warnings', []),
                         "reject_reason": total_res.get('reject_reason')
                     }
-                    if total_res['units'] > 0:
+                    if total_res.get('units', 0) > 0:
                         game_bets.append(bet_info)
                     else:
                         rejected.append(bet_info)
         
-        # Scan PrizePicks
+        # PrizePicks props
         for sport in selected_sports:
             if stop_event and stop_event.is_set():
                 break
@@ -1081,12 +1088,14 @@ class Clarity18Elite:
                     "type": "player_prop", "sport": prop["sport"],
                     "description": f"{prop['player']} {prop['pick']} {prop['line']} {prop['market']}",
                     "bet_line": f"{prop['player']} {prop['pick']} {prop['line']} ({prop['odds']})",
-                    "edge": result['raw_edge'], "probability": result['probability'], "units": result['units'],
+                    "edge": result.get('raw_edge', 0),
+                    "probability": result.get('probability', 0.0),
+                    "units": result.get('units', 0),
                     "odds": prop['odds'],
                     "season_warning": result.get('season_warning'),
                     "reject_reason": result.get('reject_reason')
                 }
-                if result['units'] > 0:
+                if result.get('units', 0) > 0:
                     prop_bets.append(bet_info)
                 else:
                     rejected.append(bet_info)
@@ -1117,12 +1126,12 @@ class Clarity18Elite:
                     prop["player"], prop["market"], prop["line"], prop["pick"],
                     data, sport, prop["odds"], None, injury_info["injury"]
                 )
-                if result['units'] > 0:
+                if result.get('units', 0) > 0:
                     all_bets.append({
                         "player": prop["player"], "market": prop["market"], "line": prop["line"],
                         "pick": prop["pick"], "odds": prop["odds"], "bookmaker": prop["bookmaker"],
-                        "edge": result['raw_edge'], "probability": result['probability'],
-                        "units": result['units'], "sport": sport
+                        "edge": result.get('raw_edge', 0), "probability": result.get('probability', 0),
+                        "units": result.get('units', 0), "sport": sport
                     })
         best_bets = {}
         for bet in all_bets:
@@ -1258,7 +1267,6 @@ def run_dashboard():
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
     
-    # Main tabs
     tab1, tab2, tab3, tab4 = st.tabs([
         "🎮 GAME MARKETS", "🎯 PLAYER PROPS", "🏆 PRIZEPICKS SCANNER", "📊 ANALYTICS"
     ])
@@ -1282,7 +1290,7 @@ def run_dashboard():
                 away_odds = st.number_input("Away Odds", -500, 500, -110, key="ml_away_odds")
             if st.button("💰 ANALYZE MONEYLINE", type="primary", key="ml_button"):
                 result = engine.analyze_moneyline(home, away, sport_ml, home_odds, away_odds)
-                if result['units'] > 0:
+                if result.get('units', 0) > 0:
                     st.success(f"### {result['signal']} - {result['pick']} ({result['odds']})")
                     st.metric("Edge", f"{result['edge']:+.1%}")
                     st.metric("Win Probability", f"{result['win_prob']:.1%}")
@@ -1305,7 +1313,7 @@ def run_dashboard():
                 odds_sp = st.number_input("Odds", -500, 500, -110, key="sp_odds")
             if st.button("📊 ANALYZE SPREAD", type="primary", key="sp_button"):
                 result = engine.analyze_spread(home_sp, away_sp, spread, pick_sp, sport_sp, odds_sp)
-                if result['units'] > 0:
+                if result.get('units', 0) > 0:
                     st.success(f"### {result['signal']} - {pick_sp} {spread:+.1f} ({odds_sp})")
                     st.metric("Cover Probability", f"{result['prob_cover']:.1%}")
                     st.metric("Push Probability", f"{result['prob_push']:.1%}")
@@ -1330,7 +1338,7 @@ def run_dashboard():
                 odds_tot = st.number_input("Odds", -500, 500, -110, key="tot_odds")
             if st.button("📈 ANALYZE TOTAL", type="primary", key="tot_button"):
                 result = engine.analyze_total(home_tot, away_tot, total_line, pick_tot, sport_tot, odds_tot)
-                if result['units'] > 0:
+                if result.get('units', 0) > 0:
                     st.success(f"### {result['signal']} - {pick_tot} {total_line} ({odds_tot})")
                     c1, c2, c3 = st.columns(3)
                     with c1: st.metric("Projection", f"{result['projection']:.1f}")
@@ -1392,7 +1400,7 @@ def run_dashboard():
                 data = [float(x.strip()) for x in data_str.split(",")]
                 injury_info = engine.api.get_injury_status(player, sport)
                 result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team if team else None, injury_info["injury"])
-                if result['units'] > 0:
+                if result.get('units', 0) > 0:
                     st.success(f"### {result['signal']}")
                     if result.get('season_warning'):
                         st.warning(result['season_warning'])
@@ -1419,7 +1427,6 @@ def run_dashboard():
             scan_button = st.button("🔍 SCAN PRIZEPICKS", type="primary", use_container_width=True)
             stop_button = st.button("⏹️ STOP SCAN", use_container_width=True)
         
-        # Session state for scan control
         if "scan_running" not in st.session_state:
             st.session_state.scan_running = False
             st.session_state.stop_event = threading.Event()
@@ -1449,7 +1456,7 @@ def run_dashboard():
                 status_placeholder.info(msg)
             
             def add_result(bet):
-                if bet['units'] > 0:
+                if bet.get('units', 0) > 0:
                     if bet['type'] == 'player_prop':
                         st.session_state.scan_results["props"].append(bet)
                     else:
@@ -1457,7 +1464,6 @@ def run_dashboard():
                 else:
                     st.session_state.scan_results["rejected"].append(bet)
             
-            # Run scan in a way that allows UI updates
             with st.spinner("Scanning..."):
                 engine.run_best_bets_scan(
                     selected_sports_pp,
@@ -1469,7 +1475,6 @@ def run_dashboard():
             st.session_state.scan_status = "Scan complete!"
             st.rerun()
         
-        # Display results
         if not st.session_state.scan_running:
             if st.session_state.scan_status:
                 st.info(st.session_state.scan_status)
