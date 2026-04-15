@@ -1,11 +1,10 @@
+streamlit
 numpy
 pandas
 scipy
 openai
-streamlit
 requests
-pybaseball
-websockets
-apify-client>=1.7.0
-pytesseract
-pillow
+sqlite3
+lightgbm
+scikit-learn
+python-telegram-bot
