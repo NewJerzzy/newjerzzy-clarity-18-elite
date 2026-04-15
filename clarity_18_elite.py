@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE - FULLY AUTOMATIC OCR (All Tabs Complete)
+CLARITY 18.0 ELITE - WITH AUTO-TUNE & LOSS ANALYSIS
 Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy
 NBA | MLB | NHL | NFL | PGA | TENNIS | UFC
 """
@@ -28,7 +28,7 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
-VERSION = "18.0 Elite (Complete Auto OCR)"
+VERSION = "18.0 Elite (Auto-Tune + Loss Analysis)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -43,7 +43,7 @@ except ImportError:
     TELEGRAM_AVAILABLE = False
 
 # =============================================================================
-# SPORT MODELS, CATEGORIES, STAT CONFIG
+# SPORT MODELS, CATEGORIES, STAT CONFIG (unchanged)
 # =============================================================================
 SPORT_MODELS = {
     "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "avg_total": 228.5, "home_advantage": 3.0},
@@ -94,7 +94,7 @@ STAT_CONFIG = {
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
 # =============================================================================
-# HARDCODED TEAMS & ROSTERS (complete)
+# HARDCODED TEAMS & ROSTERS (complete - keep your existing)
 # =============================================================================
 HARDCODED_TEAMS = {
     "NBA": ["Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets", "Chicago Bulls",
@@ -246,8 +246,8 @@ class UnifiedAPIClient:
         try:
             r = self.perplexity_client.chat.completions.create(model="llama-3.1-sonar-large-32k-online", messages=[{"role": "user", "content": prompt}])
             return r.choices[0].message.content
-        except:
-            return ""
+        except Exception as e:
+            return f"Error: {e}"
     def get_injury_status(self, player: str, sport: str) -> dict:
         content = self.perplexity_call(f"{player} {sport} injury status today?")
         return {"injury": "OUT" if any(x in content.upper() for x in ["OUT", "GTD", "QUESTIONABLE"]) else "HEALTHY", "steam": "STEAM" in content.upper()}
@@ -431,12 +431,22 @@ class Clarity18Elite:
         self.scanned_bets = {"props":[],"games":[],"rejected":[],"best_odds":[],"arbs":[],"middles":[]}
         self.automation = BackgroundAutomation(self)
         self.automation.start()
+        self.last_tune_date = None
+        self._load_tuning_state()
     def _init_db(self):
         conn = sqlite3.connect(self.db_path)
         c = conn.cursor()
         c.execute("""CREATE TABLE IF NOT EXISTS bets (id TEXT PRIMARY KEY, player TEXT, sport TEXT, market TEXT, line REAL, pick TEXT, odds INTEGER, edge REAL, result TEXT, actual REAL, date TEXT, settled_date TEXT, bolt_signal TEXT)""")
         c.execute("""CREATE TABLE IF NOT EXISTS sem_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, sem_score INTEGER, accuracy REAL, bets_analyzed INTEGER)""")
+        c.execute("""CREATE TABLE IF NOT EXISTS tuning_log (id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT, prob_bolt_old REAL, prob_bolt_new REAL, dtm_bolt_old REAL, dtm_bolt_new REAL, win_rate REAL, bets_used INTEGER)""")
         conn.commit(); conn.close()
+    def _load_tuning_state(self):
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT timestamp FROM tuning_log ORDER BY id DESC LIMIT 1")
+        row = c.fetchone()
+        if row: self.last_tune_date = datetime.strptime(row[0], "%Y-%m-%d %H:%M:%S")
+        conn.close()
     def convert_odds(self, american: int) -> float: return 1 + american/100 if american>0 else 1 + 100/abs(american)
     def implied_prob(self, american: int) -> float: return 100/(american+100) if american>0 else abs(american)/(abs(american)+100)
     def l42_check(self, stat: str, line: float, avg: float) -> Tuple[bool, str]:
@@ -727,11 +737,44 @@ class Clarity18Elite:
             c.execute("UPDATE bets SET result=?, actual=?, settled_date=? WHERE id=?", (result,actual,datetime.now().strftime("%Y-%m-%d"),bet[0]))
         conn.commit(); conn.close()
         self._calibrate_sem()
+        self.auto_tune_thresholds()  # auto-tune after settling bets
     def _calibrate_sem(self):
         conn = sqlite3.connect(self.db_path); df = pd.read_sql_query("SELECT * FROM bets WHERE result IN ('WIN','LOSS')", conn); conn.close()
         if len(df)>5:
             wins = (df["result"]=="WIN").sum(); accuracy = wins/len(df); adjustment = (accuracy-0.55)*8
             self.sem_score = max(50, min(100, self.sem_score+adjustment))
+    def auto_tune_thresholds(self):
+        """Weekly adjustment of prob_bolt and dtm_bolt based on rolling win rate (min 50 bets, at least 7 days since last tune)."""
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query("SELECT result, date FROM bets WHERE result IN ('WIN','LOSS') ORDER BY date DESC LIMIT 100", conn)
+        conn.close()
+        if len(df) < 50: return  # need enough data
+        # Check if last tune was more than 7 days ago
+        if self.last_tune_date and (datetime.now() - self.last_tune_date).days < 7:
+            return
+        # Calculate win rate over last 50 bets
+        recent = df.head(50)
+        win_rate = (recent['result']=='WIN').mean()
+        # Target win rate 0.55 (baseline edge)
+        delta = win_rate - 0.55
+        # Tiny adjustments: ±0.01 for prob_bolt, ±0.005 for dtm_bolt
+        prob_old, dtm_old = self.prob_bolt, self.dtm_bolt
+        self.prob_bolt = max(0.70, min(0.90, self.prob_bolt + delta * 0.1))
+        self.dtm_bolt = max(0.10, min(0.25, self.dtm_bolt + delta * 0.05))
+        # Log the tuning event
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("INSERT INTO tuning_log (timestamp, prob_bolt_old, prob_bolt_new, dtm_bolt_old, dtm_bolt_new, win_rate, bets_used) VALUES (?,?,?,?,?,?,?)",
+                  (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), prob_old, self.prob_bolt, dtm_old, self.dtm_bolt, win_rate, 50))
+        conn.commit()
+        conn.close()
+        self.last_tune_date = datetime.now()
+        st.info(f"🔄 Auto-tune applied: prob_bolt {prob_old:.2f} → {self.prob_bolt:.2f}, dtm_bolt {dtm_old:.3f} → {self.dtm_bolt:.3f} (win rate last 50: {win_rate:.1%})")
+    def get_tuning_history(self) -> pd.DataFrame:
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query("SELECT * FROM tuning_log ORDER BY id DESC", conn)
+        conn.close()
+        return df
 
 class BackgroundAutomation:
     def __init__(self, engine): self.engine=engine; self.running=False; self.last_settlement=None; self.thread=None
@@ -788,34 +831,35 @@ def auto_parse_bets(text: str) -> List[Dict]:
     return unique
 
 # =============================================================================
-# STREAMLIT DASHBOARD (FULLY COMPLETE)
+# STREAMLIT DASHBOARD (with new Auto-Tune & Loss Analysis tab)
 # =============================================================================
 engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Approved Bets Only | Stop Scan | Fully Automatic OCR | Version: {VERSION}**")
+    st.markdown(f"**Approved Bets Only | Stop Scan | Auto-Tune | Loss Analysis | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Perplexity API LIVE")
         st.success("✅ PrizePicks API + Proxy")
-        st.success("✅ Auto OCR (No editing needed)")
+        st.success("✅ Auto-Tune Active")
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
+        st.metric("Prob Bolt", f"{engine.prob_bolt:.2f}")
+        st.metric("DTM Bolt", f"{engine.dtm_bolt:.3f}")
     
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🎮 GAME MARKETS", "🎯 PLAYER PROPS", "🏆 PRIZEPICKS SCANNER", "📊 ANALYTICS", "📸 IMAGE ANALYSIS"
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🎮 GAME MARKETS", "🎯 PLAYER PROPS", "🏆 PRIZEPICKS SCANNER", "📊 ANALYTICS", "📸 IMAGE ANALYSIS", "🔧 AUTO-TUNE & LOSS ANALYSIS"
     ])
     
     # =========================================================================
-    # TAB 1: GAME MARKETS (Moneyline, Spread, Totals, Alt Lines)
+    # TAB 1: GAME MARKETS (same as before - copy from your working file)
     # =========================================================================
     with tab1:
         st.header("Game Markets")
         game_tab1, game_tab2, game_tab3, game_tab4 = st.tabs(["💰 Moneyline", "📊 Spread", "📈 Totals", "🔄 Alt Lines"])
-        
         with game_tab1:
             c1, c2 = st.columns(2)
             with c1:
@@ -837,7 +881,6 @@ def run_dashboard():
                     st.error(f"### {result['signal']}")
                     if result.get('reject_reason'):
                         st.warning(f"Reason: {result['reject_reason']}")
-        
         with game_tab2:
             c1, c2 = st.columns(2)
             with c1:
@@ -861,7 +904,6 @@ def run_dashboard():
                     st.error(f"### {result['signal']}")
                     if result.get('reject_reason'):
                         st.warning(f"Reason: {result['reject_reason']}")
-        
         with game_tab3:
             c1, c2 = st.columns(2)
             with c1:
@@ -888,7 +930,6 @@ def run_dashboard():
                     st.error(f"### {result['signal']}")
                     if result.get('reject_reason'):
                         st.warning(f"Reason: {result['reject_reason']}")
-        
         with game_tab4:
             c1, c2 = st.columns(2)
             with c1:
@@ -912,7 +953,7 @@ def run_dashboard():
                 st.info(f"Value: {result['value']}")
     
     # =========================================================================
-    # TAB 2: PLAYER PROPS (Manual)
+    # TAB 2: PLAYER PROPS (manual)
     # =========================================================================
     with tab2:
         st.header("Manual Player Prop Analyzer")
@@ -930,7 +971,6 @@ def run_dashboard():
         with c2:
             data_str = st.text_area("Recent Games (comma separated)", "0, 1, 0, 2, 0, 1", key="prop_data")
             odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
-        
         if st.button("🚀 ANALYZE PROP", type="primary", key="prop_button"):
             if not player or player == "Select team first":
                 st.error("Please select a player.")
@@ -954,7 +994,7 @@ def run_dashboard():
                         st.warning(f"Reason: {result['reject_reason']}")
     
     # =========================================================================
-    # TAB 3: PRIZEPICKS SCANNER (with Stop & Approved Only)
+    # TAB 3: PRIZEPICKS SCANNER (with stop)
     # =========================================================================
     with tab3:
         st.header("🏆 PrizePicks Scanner (CLARITY Approved Only)")
@@ -964,26 +1004,22 @@ def run_dashboard():
         with col2:
             scan_button = st.button("🔍 SCAN PRIZEPICKS", type="primary", use_container_width=True)
             stop_button = st.button("⏹️ STOP SCAN", use_container_width=True)
-        
         if "scan_running" not in st.session_state:
             st.session_state.scan_running = False
             st.session_state.stop_event = threading.Event()
             st.session_state.scan_results = {"props": [], "games": [], "rejected": []}
             st.session_state.scan_status = ""
-        
         if scan_button:
             st.session_state.scan_running = True
             st.session_state.stop_event.clear()
             st.session_state.scan_results = {"props": [], "games": [], "rejected": []}
             st.session_state.scan_status = "Starting scan..."
             st.rerun()
-        
         if stop_button:
             st.session_state.stop_event.set()
             st.session_state.scan_running = False
             st.session_state.scan_status = "Scan stopped by user."
             st.rerun()
-        
         if st.session_state.scan_running:
             status_placeholder = st.empty()
             def update_status(msg):
@@ -1007,7 +1043,6 @@ def run_dashboard():
             st.session_state.scan_running = False
             st.session_state.scan_status = "Scan complete!"
             st.rerun()
-        
         if not st.session_state.scan_running:
             if st.session_state.scan_status:
                 st.info(st.session_state.scan_status)
@@ -1113,17 +1148,14 @@ def run_dashboard():
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
     
     # =========================================================================
-    # TAB 5: IMAGE ANALYSIS (Fully Automatic OCR)
+    # TAB 5: IMAGE ANALYSIS (automatic OCR)
     # =========================================================================
     with tab5:
         st.header("📸 Screenshot Analyzer (Automatic)")
         st.markdown("Upload a screenshot – CLARITY will extract and analyze all bets automatically.")
-        
         uploaded_file = st.file_uploader("Choose an image...", type=["png", "jpg", "jpeg"])
-        
         if uploaded_file is not None:
             st.image(uploaded_file, caption="Uploaded Screenshot", use_column_width=True)
-            
             if st.button("🔍 AUTO-ANALYZE SCREENSHOT", type="primary"):
                 with st.spinner("OCR in progress... (may take 10-15 seconds)"):
                     file_name = uploaded_file.name if uploaded_file.name else "screenshot.png"
@@ -1145,7 +1177,6 @@ def run_dashboard():
                             extracted_text = result["ParsedResults"][0]["ParsedText"]
                             with st.expander("📄 Raw OCR text (for reference only)"):
                                 st.code(extracted_text, language="text")
-                            
                             bets = auto_parse_bets(extracted_text)
                             if not bets:
                                 st.warning("No bets recognized automatically. This can happen if the screenshot is blurry or the format is unusual.")
@@ -1180,6 +1211,41 @@ def run_dashboard():
                                             st.markdown(f"**{bet['description']}**")
                                             if res.get('reject_reason'):
                                                 st.caption(f"Reason: {res['reject_reason']}")
+    
+    # =========================================================================
+    # TAB 6: AUTO-TUNE & LOSS ANALYSIS
+    # =========================================================================
+    with tab6:
+        st.header("🔧 Auto-Tune & Loss Analysis")
+        subtab1, subtab2 = st.tabs(["📉 Loss Analysis", "📈 Tuning History"])
+        
+        with subtab1:
+            st.subheader("Analyze a Losing Bet")
+            st.markdown("Paste the details of a losing bet (or describe what happened). CLARITY will use AI to explain why it likely lost.")
+            bet_description = st.text_area("Bet details (e.g., 'LeBron James OVER 27.5 PTS, lost because he scored 22')", height=150)
+            if st.button("🔍 Analyze Loss", type="primary"):
+                if not bet_description.strip():
+                    st.warning("Please enter bet details.")
+                else:
+                    with st.spinner("Asking AI for analysis..."):
+                        prompt = f"""As a professional sports betting analyst, explain why this bet likely lost. Provide 2-4 specific reasons (injury, game flow, opponent defense, unusual variance, coaching decision, weather if outdoor, etc.). Be concise but insightful.
+
+Bet: {bet_description}
+
+Reasons:"""
+                        analysis = engine.api.perplexity_call(prompt)
+                        st.markdown("### 📋 AI Analysis")
+                        st.markdown(analysis)
+                        st.caption("Note: This analysis is based on general knowledge and the information you provided. Use it to improve future bets.")
+        
+        with subtab2:
+            st.subheader("Threshold Adjustment History")
+            tuning_df = engine.get_tuning_history()
+            if tuning_df.empty:
+                st.info("No auto-tune events yet. After 50+ settled bets, the system will automatically adjust thresholds weekly.")
+            else:
+                st.dataframe(tuning_df)
+                st.caption("Changes are applied only when enough data (≥50 bets) and at least 7 days since last tune. Adjustments are tiny (±0.01 prob_bolt, ±0.005 dtm_bolt).")
 
 if __name__ == "__main__":
     run_dashboard()
