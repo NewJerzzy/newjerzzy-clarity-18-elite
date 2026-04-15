@@ -1,8 +1,9 @@
 """
-CLARITY 18.0 ELITE – FINAL (Arbitrage Guidance + Fixed Duplicate Button)
-- Clear arbitrage instructions: which book, which side, how much to stake
-- Fixed StreamlitDuplicateElementId error
-- Auto‑load games, Tennis/PGA support, "No approved slips" message
+CLARITY 18.0 ELITE – FINAL (Auto‑Load Games with CLARITY Recommendations)
+- Auto‑load today's games from The Odds API
+- CLARITY automatically analyzes and shows approved bets (ML, spread, total)
+- Green "CLARITY APPROVED" messages with edge and units
+- All original features: PrizePicks scanner, arbitrage guidance, auto‑tune, etc.
 """
 
 import numpy as np
@@ -38,14 +39,14 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
-VERSION = "18.0 Elite (Arbitrage Guidance)"
+VERSION = "18.0 Elite (Auto Recommendations)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
 
 # =============================================================================
-# SPORT MODELS, CATEGORIES, STAT CONFIG (unchanged)
+# SPORT MODELS, CATEGORIES, STAT CONFIG
 # =============================================================================
 SPORT_MODELS = {
     "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "avg_total": 228.5, "home_advantage": 3.0},
@@ -1180,19 +1181,19 @@ def auto_parse_bets(text: str) -> List[Dict]:
     return unique
 
 # =============================================================================
-# STREAMLIT DASHBOARD (with fixed duplicate button)
+# STREAMLIT DASHBOARD (with Auto‑Load + CLARITY Recommendations)
 # =============================================================================
 engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Arbitrage Guidance | Auto‑Load Games | Version: {VERSION}**")
+    st.markdown(f"**Auto‑Load Games with CLARITY Recommendations | Version: {VERSION}**")
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Real player stats (API-Sports)")
         st.success("✅ Live injury feed")
-        st.success("✅ Arbitrage with betting instructions")
+        st.success("✅ Auto‑Load + Recommendations")
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("Daily Loss Left", f"${max(0, engine.daily_loss_limit - engine.daily_loss_today):.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
@@ -1204,11 +1205,11 @@ def run_dashboard():
     ])
 
     # =========================================================================
-    # TAB 1: GAME MARKETS (with Auto‑Load Today's Games)
+    # TAB 1: GAME MARKETS (with Auto‑Load & CLARITY Recommendations)
     # =========================================================================
     with tab1:
         st.header("Game Markets")
-        st.subheader("Auto‑Load Today's Games")
+        st.subheader("📅 Auto‑Load Today's Games")
         col1, col2 = st.columns([2,1])
         with col1:
             auto_sport = st.selectbox("Select Sport", ["NBA", "MLB", "NHL", "NFL"], key="auto_sport")
@@ -1221,23 +1222,63 @@ def run_dashboard():
                         st.success(f"Loaded {len(games)} games")
                     else:
                         st.warning("No games found today.")
+        
         if "auto_games" in st.session_state and st.session_state["auto_games"]:
             game_options = [f"{g['home']} vs {g['away']}" for g in st.session_state["auto_games"]]
             selected_game = st.selectbox("Select a game", game_options)
             if selected_game:
                 idx = game_options.index(selected_game)
                 game = st.session_state["auto_games"][idx]
-                st.info(f"**{game['home']}** vs **{game['away']}**")
-                if game.get("home_ml"):
-                    st.write(f"Home ML: {game['home_ml']}")
-                if game.get("away_ml"):
-                    st.write(f"Away ML: {game['away_ml']}")
-                if game.get("spread"):
-                    st.write(f"Spread: {game['spread']} ({game.get('spread_odds','N/A')})")
+                home = game['home']
+                away = game['away']
+                sport = game['sport']
+                
+                st.info(f"**{home}** vs **{away}**")
+                
+                # Analyze and display CLARITY recommendations
+                recommendations_found = False
+                
+                # Moneyline
+                if game.get("home_ml") and game.get("away_ml"):
+                    ml_result = engine.analyze_moneyline(home, away, sport, game["home_ml"], game["away_ml"])
+                    if ml_result.get('units', 0) > 0:
+                        st.success(f"✅ CLARITY APPROVED: **{ml_result['pick']} ML** ({ml_result['odds']}) – Edge: {ml_result['edge']:.1%} – Units: {ml_result['units']}")
+                        recommendations_found = True
+                    else:
+                        st.info(f"❌ Moneyline not approved – {ml_result.get('reject_reason', 'Insufficient edge')}")
+                
+                # Spread
+                if game.get("spread") and game.get("spread_odds"):
+                    spread_approved = False
+                    for pick_side in [home, away]:
+                        spread_res = engine.analyze_spread(home, away, game["spread"], pick_side, sport, game["spread_odds"])
+                        if spread_res.get('units', 0) > 0:
+                            st.success(f"✅ CLARITY APPROVED: **{pick_side} {game['spread']:+.1f}** ({game['spread_odds']}) – Edge: {spread_res['edge']:.1%} – Units: {spread_res['units']}")
+                            spread_approved = True
+                            recommendations_found = True
+                    if not spread_approved:
+                        st.info(f"❌ Spread not approved – No significant edge")
+                
+                # Total
                 if game.get("total"):
-                    st.write(f"Total: {game['total']} (O: {game.get('over_odds','N/A')} / U: {game.get('under_odds','N/A')})")
+                    total_approved = False
+                    for pick_side, odds in [("OVER", game.get("over_odds", -110)), ("UNDER", game.get("under_odds", -110))]:
+                        total_res = engine.analyze_total(home, away, game["total"], pick_side, sport, odds)
+                        if total_res.get('units', 0) > 0:
+                            st.success(f"✅ CLARITY APPROVED: **{pick_side} {game['total']}** ({odds}) – Edge: {total_res['edge']:.1%} – Units: {total_res['units']}")
+                            total_approved = True
+                            recommendations_found = True
+                    if not total_approved:
+                        st.info(f"❌ Total not approved – No significant edge")
+                
+                if not recommendations_found:
+                    st.warning("⚠️ No CLARITY approved bets found for this game.")
+                
+                st.markdown("---")
+                st.caption("💡 Tip: For alternate lines, use the 'Alternate Lines' tab below.")
+        
         st.markdown("---")
-        st.subheader("Manual Entry")
+        st.subheader("✏️ Manual Entry")
         game_tab1, game_tab2, game_tab3, game_tab4 = st.tabs(["💰 Moneyline", "📊 Spread", "📈 Totals", "🔄 Alt Lines"])
         with game_tab1:
             c1, c2 = st.columns(2)
@@ -1606,13 +1647,12 @@ def run_dashboard():
             st.dataframe(df)
 
     # =========================================================================
-    # TAB 7: ARBITRAGE & MIDDLES (with guidance and fixed duplicate button)
+    # TAB 7: ARBITRAGE & MIDDLES
     # =========================================================================
     with tab7:
         st.header("💰 Live Arbitrage & Middle Scanner")
         st.markdown("This tool scans The Odds API for risk‑free arbitrage and middle opportunities across multiple sportsbooks.")
         
-        # Create buttons outside of any conditional to avoid duplication
         col1, col2 = st.columns([2,1])
         with col1:
             start_scan = st.button("🔍 SCAN FOR ARBITRAGE & MIDDLES", type="primary", key="start_arb_scan")
@@ -1680,7 +1720,6 @@ def run_dashboard():
                                             totals_by_book.append({"book": book_key, "line": outcome["point"], "odds": outcome["price"], "side": "over"})
                                         elif outcome["name"] == "Under":
                                             totals_by_book.append({"book": book_key, "line": outcome["point"], "odds": outcome["price"], "side": "under"})
-                        # Moneyline arbitrage
                         if len(home_ml_by_book) >= 2 and len(away_ml_by_book) >= 2:
                             best_home_book = max(home_ml_by_book, key=lambda b: home_ml_by_book[b])
                             best_away_book = max(away_ml_by_book, key=lambda b: away_ml_by_book[b])
@@ -1694,13 +1733,10 @@ def run_dashboard():
                                     "profit": f"${arb['profit']:.2f}",
                                     "recommendation": arb["recommendation"]
                                 })
-                        # Spread middles (simplified for brevity – same as before)
-                        # Totals middles (simplified)
                     st.session_state.arb_results = {"arbs": arb_opportunities, "middles": middle_opportunities}
                     st.session_state.arb_scan_running = False
                     st.rerun()
         
-        # Display results if available
         if st.session_state.arb_results:
             arbs = st.session_state.arb_results["arbs"]
             middles = st.session_state.arb_results["middles"]
