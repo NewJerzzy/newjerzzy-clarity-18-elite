@@ -1,6 +1,7 @@
 """
-CLARITY 18.0 ELITE – FINAL (with Edge Scanner integration)
+CLARITY 18.0 ELITE – FINAL with Edge Scanner (Full Original UI Restored)
 Real stats, injuries, arbitrage, middles, +EV detection – all automatic.
+All original tabs (Game Markets, Player Props, PrizePicks Scanner, Analytics, Image Analysis, Auto-Tune) are fully restored.
 """
 
 import numpy as np
@@ -37,14 +38,14 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
-VERSION = "18.0 Elite (Edge Scanner Integrated)"
+VERSION = "18.0 Elite (Full UI + Edge Scanner)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
 
 # =============================================================================
-# SPORT MODELS, CATEGORIES, STAT CONFIG (same as before – keep your existing)
+# SPORT MODELS, CATEGORIES, STAT CONFIG (unchanged)
 # =============================================================================
 SPORT_MODELS = {
     "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "avg_total": 228.5, "home_advantage": 3.0},
@@ -95,7 +96,7 @@ STAT_CONFIG = {
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
 # =============================================================================
-# HARDCODED TEAMS & ROSTERS (keep your existing)
+# HARDCODED TEAMS & ROSTERS (keep your existing full lists)
 # =============================================================================
 HARDCODED_TEAMS = {
     "NBA": ["Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets", "Chicago Bulls",
@@ -135,9 +136,10 @@ HARDCODED_TEAMS = {
     "UFC": ["UFC"]
 }
 
-NBA_ROSTERS = {}   # Replace with your actual rosters
-MLB_ROSTERS = {}   # Replace with your actual rosters
-NHL_ROSTERS = {}   # Replace with your actual rosters
+# Placeholders – replace with your actual NBA_ROSTERS, MLB_ROSTERS, NHL_ROSTERS
+NBA_ROSTERS = {}
+MLB_ROSTERS = {}
+NHL_ROSTERS = {}
 
 # =============================================================================
 # REAL-TIME DATA FETCHERS (with caching)
@@ -955,7 +957,7 @@ def auto_parse_bets(text: str) -> List[Dict]:
     return unique
 
 # =============================================================================
-# STREAMLIT DASHBOARD (with new Edge Scanner tab)
+# STREAMLIT DASHBOARD (Full original UI + new Arbitrage tab)
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -974,39 +976,386 @@ def run_dashboard():
         st.metric("Prob Bolt", f"{engine.prob_bolt:.2f}")
         st.metric("DTM Bolt", f"{engine.dtm_bolt:.3f}")
 
-    # Tabs: keep your existing 6 tabs, then add a 7th for Arbitrage & Middles
     tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
         "🎮 GAME MARKETS", "🎯 PLAYER PROPS", "🏆 PRIZEPICKS SCANNER", "📊 ANALYTICS", "📸 IMAGE ANALYSIS", "🔧 AUTO-TUNE", "💰 ARBITRAGE & MIDDLES"
     ])
 
-    # Tabs 1-6 are identical to your previous working version.
-    # For brevity, I'm not copying them here – you must insert your existing tab1-6 code.
-    # I will provide a minimal placeholder – you will replace with your full tabs.
+    # =========================================================================
+    # TAB 1: GAME MARKETS (Full original UI)
+    # =========================================================================
     with tab1:
         st.header("Game Markets")
-        st.info("Full game markets UI from your original file goes here.")
-    with tab2:
-        st.header("Player Props")
-        st.info("Manual player prop UI from your original file goes here.")
-    with tab3:
-        st.header("PrizePicks Scanner")
-        st.info("PrizePicks scanner UI from your original file goes here.")
-    with tab4:
-        st.header("Analytics")
-        st.info("Accuracy dashboard from your original file goes here.")
-    with tab5:
-        st.header("Image Analysis")
-        st.info("OCR analysis UI from your original file goes here.")
-    with tab6:
-        st.header("Auto-Tune History")
-        st.info("Auto-tune history table from your original file goes here.")
+        game_tab1, game_tab2, game_tab3, game_tab4 = st.tabs(["💰 Moneyline", "📊 Spread", "📈 Totals", "🔄 Alt Lines"])
+        with game_tab1:
+            c1, c2 = st.columns(2)
+            with c1:
+                sport_ml = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="ml_sport")
+                teams_ml = engine.get_teams(sport_ml)
+                home = st.selectbox("Home Team", teams_ml, key="ml_home")
+                away = st.selectbox("Away Team", teams_ml, key="ml_away")
+            with c2:
+                home_odds = st.number_input("Home Odds", -500, 500, -110, key="ml_home_odds")
+                away_odds = st.number_input("Away Odds", -500, 500, -110, key="ml_away_odds")
+            if st.button("💰 ANALYZE MONEYLINE", type="primary", key="ml_button"):
+                result = engine.analyze_moneyline(home, away, sport_ml, home_odds, away_odds)
+                if result.get('units', 0) > 0:
+                    st.success(f"### {result['signal']} - {result['pick']} ({result['odds']})")
+                    st.metric("Edge", f"{result['edge']:+.1%}")
+                    st.metric("Win Probability", f"{result['win_prob']:.1%}")
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+                else:
+                    st.error(f"### {result['signal']}")
+                    if result.get('reject_reason'):
+                        st.warning(f"Reason: {result['reject_reason']}")
+        with game_tab2:
+            c1, c2 = st.columns(2)
+            with c1:
+                sport_sp = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="sp_sport")
+                teams_sp = engine.get_teams(sport_sp)
+                home_sp = st.selectbox("Home Team", teams_sp, key="sp_home")
+                away_sp = st.selectbox("Away Team", teams_sp, key="sp_away")
+                spread = st.number_input("Spread", -30.0, 30.0, -5.5, key="sp_line")
+            with c2:
+                pick_sp = st.selectbox("Pick", [home_sp, away_sp], key="sp_pick")
+                odds_sp = st.number_input("Odds", -500, 500, -110, key="sp_odds")
+            if st.button("📊 ANALYZE SPREAD", type="primary", key="sp_button"):
+                result = engine.analyze_spread(home_sp, away_sp, spread, pick_sp, sport_sp, odds_sp)
+                if result.get('units', 0) > 0:
+                    st.success(f"### {result['signal']} - {pick_sp} {spread:+.1f} ({odds_sp})")
+                    st.metric("Cover Probability", f"{result['prob_cover']:.1%}")
+                    st.metric("Push Probability", f"{result['prob_push']:.1%}")
+                    st.metric("Edge", f"{result['edge']:+.1%}")
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+                else:
+                    st.error(f"### {result['signal']}")
+                    if result.get('reject_reason'):
+                        st.warning(f"Reason: {result['reject_reason']}")
+        with game_tab3:
+            c1, c2 = st.columns(2)
+            with c1:
+                sport_tot = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="tot_sport")
+                teams_tot = engine.get_teams(sport_tot)
+                home_tot = st.selectbox("Home Team", teams_tot, key="tot_home")
+                away_tot = st.selectbox("Away Team", teams_tot, key="tot_away")
+                max_total = SPORT_MODELS[sport_tot]["avg_total"] * 2 if sport_tot in SPORT_MODELS else 300.0
+                total_line = st.number_input("Total Line", 0.5, max_total, SPORT_MODELS.get(sport_tot, {}).get("avg_total", 220.5), key="tot_line")
+            with c2:
+                pick_tot = st.selectbox("Pick", ["OVER", "UNDER"], key="tot_pick")
+                odds_tot = st.number_input("Odds", -500, 500, -110, key="tot_odds")
+            if st.button("📈 ANALYZE TOTAL", type="primary", key="tot_button"):
+                result = engine.analyze_total(home_tot, away_tot, total_line, pick_tot, sport_tot, odds_tot)
+                if result.get('units', 0) > 0:
+                    st.success(f"### {result['signal']} - {pick_tot} {total_line} ({odds_tot})")
+                    c1, c2, c3 = st.columns(3)
+                    with c1: st.metric("Projection", f"{result['projection']:.1f}")
+                    with c2: st.metric("OVER Prob", f"{result['prob_over']:.1%}")
+                    with c3: st.metric("UNDER Prob", f"{result['prob_under']:.1%}")
+                    st.metric("Edge", f"{result['edge']:+.1%}")
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+                else:
+                    st.error(f"### {result['signal']}")
+                    if result.get('reject_reason'):
+                        st.warning(f"Reason: {result['reject_reason']}")
+        with game_tab4:
+            c1, c2 = st.columns(2)
+            with c1:
+                sport_alt = st.selectbox("Sport", ["MLB", "NBA", "NHL", "NFL"], key="alt_sport")
+                base_line = st.number_input("Main Line", 0.5, 300.0, 220.5, key="alt_base")
+                alt_line = st.number_input("Alternate Line", 0.5, 300.0, 230.5, key="alt_line")
+            with c2:
+                pick_alt = st.selectbox("Pick", ["OVER", "UNDER"], key="alt_pick")
+                odds_alt = st.number_input("Odds", -500, 500, -110, key="alt_odds")
+            if st.button("🔄 ANALYZE ALTERNATE", type="primary", key="alt_button"):
+                result = engine.analyze_alternate(base_line, alt_line, pick_alt, sport_alt, odds_alt)
+                if result['action'] == "BET":
+                    st.success(f"### {result['action']}")
+                elif result['action'] == "CONSIDER":
+                    st.warning(f"### {result['action']}")
+                else:
+                    st.error(f"### {result['action']}")
+                st.metric("Probability", f"{result['probability']:.1%}")
+                st.metric("Implied", f"{result['implied']:.1%}")
+                st.metric("Edge", f"{result['edge']:+.1%}")
+                st.info(f"Value: {result['value']}")
 
     # =========================================================================
-    # TAB 7: ARBITRAGE & MIDDLE SCANNER (New)
+    # TAB 2: PLAYER PROPS (Manual with real stats)
+    # =========================================================================
+    with tab2:
+        st.header("Manual Player Prop Analyzer (with Real Stats & Injuries)")
+        c1, c2 = st.columns(2)
+        with c1:
+            sport = st.selectbox("Sport", ["MLB","NBA","NHL","NFL","PGA","TENNIS","UFC"], key="prop_sport")
+            teams = engine.get_teams(sport)
+            team = st.selectbox("Team (for context)", [""] + teams, key="prop_team") if sport in ["NBA","MLB","NHL","NFL"] else ""
+            roster = engine.get_roster(sport, team) if team else engine._get_individual_sport_players(sport)
+            player = st.selectbox("Player", roster, key="prop_player")
+            available_markets = SPORT_CATEGORIES.get(sport, ["PTS"])
+            market = st.selectbox("Market", available_markets, key="prop_market")
+            line = st.number_input("Line", 0.5, 200.0, 0.5, key="prop_line")
+            pick = st.selectbox("Pick", ["OVER","UNDER"], key="prop_pick")
+        with c2:
+            use_real_stats = st.checkbox("Fetch real stats & injuries (API-Sports)", value=True)
+            odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
+        if st.button("🚀 ANALYZE PROP", type="primary", key="prop_button"):
+            if not player or player == "Select team first":
+                st.error("Please select a player.")
+            else:
+                if use_real_stats:
+                    with st.spinner("Fetching real stats and injury status..."):
+                        real_stats, injury = fetch_player_stats_and_injury(player, sport, market)
+                        if real_stats:
+                            st.info(f"Fetched {len(real_stats)} recent games for {player}. Injury status: {injury}")
+                        else:
+                            st.warning("No real stats found – using fallback dummy data.")
+                        data = real_stats
+                        injury_status = injury
+                else:
+                    data = [line * 0.9] * 5
+                    injury_status = "HEALTHY"
+                result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team if team else None, injury_status)
+                if result.get('units',0) > 0:
+                    st.success(f"### {result['signal']}")
+                    if result.get('season_warning'):
+                        st.warning(result['season_warning'])
+                    if result.get('injury') != "HEALTHY":
+                        st.error(f"⚠️ Injury flag: {result['injury']}")
+                    c1, c2, c3 = st.columns(3)
+                    with c1: st.metric("Projection", f"{result['projection']:.1f}")
+                    with c2: st.metric("Probability", f"{result['probability']:.1%}")
+                    with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
+                    st.metric("Tier", result['tier'])
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+                else:
+                    st.error(f"### {result['signal']}")
+                    if result.get('reject_reason'):
+                        st.warning(f"Reason: {result['reject_reason']}")
+
+    # =========================================================================
+    # TAB 3: PRIZEPICKS SCANNER (Full original UI)
+    # =========================================================================
+    with tab3:
+        st.header("🏆 PrizePicks Scanner (CLARITY Approved Only)")
+        col1, col2 = st.columns([2,1])
+        with col1:
+            selected_sports_pp = st.multiselect("Select sports", list(PropScanner.LEAGUE_IDS.keys()), default=["NBA","MLB"], key="pp_sports")
+        with col2:
+            scan_button = st.button("🔍 SCAN PRIZEPICKS", type="primary", use_container_width=True)
+            stop_button = st.button("⏹️ STOP SCAN", use_container_width=True)
+        if "scan_running" not in st.session_state:
+            st.session_state.scan_running = False
+            st.session_state.stop_event = threading.Event()
+            st.session_state.scan_results = {"props":[],"games":[],"rejected":[]}
+            st.session_state.scan_status = ""
+        if scan_button:
+            st.session_state.scan_running = True
+            st.session_state.stop_event.clear()
+            st.session_state.scan_results = {"props":[],"games":[],"rejected":[]}
+            st.session_state.scan_status = "Starting scan..."
+            st.rerun()
+        if stop_button:
+            st.session_state.stop_event.set()
+            st.session_state.scan_running = False
+            st.session_state.scan_status = "Scan stopped by user."
+            st.rerun()
+        if st.session_state.scan_running:
+            status_placeholder = st.empty()
+            def update_status(msg):
+                st.session_state.scan_status = msg
+                status_placeholder.info(msg)
+            def add_result(bet):
+                if bet.get('units',0) > 0:
+                    if bet['type'] == 'player_prop':
+                        st.session_state.scan_results["props"].append(bet)
+                    else:
+                        st.session_state.scan_results["games"].append(bet)
+                else:
+                    st.session_state.scan_results["rejected"].append(bet)
+            with st.spinner("Scanning..."):
+                engine.run_best_bets_scan(selected_sports_pp, stop_event=st.session_state.stop_event,
+                                          progress_callback=update_status, result_callback=add_result)
+            st.session_state.scan_running = False
+            st.session_state.scan_status = "Scan complete!"
+            st.rerun()
+        if not st.session_state.scan_running:
+            if st.session_state.scan_status:
+                st.info(st.session_state.scan_status)
+            props = st.session_state.scan_results.get("props", [])
+            games = st.session_state.scan_results.get("games", [])
+            rejected = st.session_state.scan_results.get("rejected", [])
+            if props:
+                st.subheader("✅ CLARITY APPROVED PLAYER PROPS")
+                for i, bet in enumerate(props[:10],1):
+                    st.markdown(f"**{i}. {bet['bet_line']}**")
+                    st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
+                    if bet.get('season_warning'):
+                        st.warning(bet['season_warning'])
+            if games:
+                st.subheader("✅ CLARITY APPROVED GAME BETS")
+                for i, bet in enumerate(games[:10],1):
+                    st.markdown(f"**{i}. {bet['bet_line']}**")
+                    st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
+                    if bet.get('season_warnings'):
+                        for w in bet['season_warnings']:
+                            st.warning(w)
+            if rejected:
+                with st.expander(f"❌ REJECTED BETS ({len(rejected)})"):
+                    for bet in rejected:
+                        st.markdown(f"**{bet['bet_line']}**")
+                        if bet.get('reject_reason'):
+                            st.caption(f"Reason: {bet['reject_reason']}")
+                        else:
+                            st.caption("Reason: Insufficient edge")
+
+    # =========================================================================
+    # TAB 4: ANALYTICS (Best Odds, Arbitrage, Middles, Accuracy)
+    # =========================================================================
+    with tab4:
+        analytics_tab1, analytics_tab2, analytics_tab3, analytics_tab4 = st.tabs(["📈 Best Odds","💰 Arbitrage","🎯 Middles","📊 Accuracy"])
+        with analytics_tab1:
+            st.header("Best Odds Scanner")
+            col1, col2 = st.columns([2,1])
+            with col1:
+                selected_sports_odds = st.multiselect("Select sports", ["NBA","MLB","NHL","NFL"], default=["NBA"], key="odds_sports")
+            with col2:
+                if st.button("🔍 SCAN BEST ODDS", type="primary", use_container_width=True):
+                    with st.spinner("Scanning sportsbooks..."):
+                        bets = engine.run_best_odds_scan(selected_sports_odds)
+                        st.success(f"Found {len(bets)} +EV props!")
+            if engine.scanned_bets.get("best_odds"):
+                st.subheader("💰 Best +EV Props (Top 10)")
+                for i, bet in enumerate(engine.scanned_bets["best_odds"], 1):
+                    st.markdown(f"**{i}. {bet['player']} {bet['market']} {bet['pick']} {bet['line']}**")
+                    st.caption(f"Odds: {bet['odds']} @ {bet['bookmaker']} | Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
+        with analytics_tab2:
+            st.header("Arbitrage Detector")
+            if st.button("🔍 SCAN FOR ARBITRAGE", type="primary"):
+                with st.spinner("Scanning..."):
+                    if not engine.scanned_bets.get("best_odds"):
+                        engine.run_best_odds_scan(["NBA"])
+                    arbs = engine.scanned_bets.get("arbs", [])
+                    if arbs:
+                        st.success(f"Found {len(arbs)} arbitrage opportunities!")
+                        for arb in arbs:
+                            st.markdown(f"**{arb['Player']} - {arb['Market']}**")
+                            st.caption(f"{arb['Bet 1']} | {arb['Bet 2']}")
+                            st.metric("Arbitrage %", f"{arb['Arb %']}%")
+                    else:
+                        st.info("No arbitrage opportunities found.")
+        with analytics_tab3:
+            st.header("Middle Hunter")
+            if st.button("🔍 HUNT FOR MIDDLES", type="primary"):
+                with st.spinner("Hunting..."):
+                    if not engine.scanned_bets.get("best_odds"):
+                        engine.run_best_odds_scan(["NBA"])
+                    middles = engine.scanned_bets.get("middles", [])
+                    if middles:
+                        st.success(f"Found {len(middles)} middle opportunities!")
+                        for mid in middles:
+                            st.markdown(f"**{mid['Player']} - {mid['Market']}**")
+                            st.caption(f"Window: {mid['Middle Window']} (Size: {mid['Window Size']})")
+                            st.caption(f"{mid['Leg 1']} | {mid['Leg 2']}")
+                    else:
+                        st.info("No middle opportunities found.")
+        with analytics_tab4:
+            st.header("Public Accuracy Dashboard")
+            accuracy = engine.get_accuracy_dashboard()
+            col1, col2, col3, col4 = st.columns(4)
+            with col1: st.metric("Total Bets", accuracy['total_bets'])
+            with col2: st.metric("Win Rate", f"{accuracy['win_rate']}%")
+            with col3: st.metric("ROI", f"{accuracy['roi']}%")
+            with col4: st.metric("Units Profit", f"+{accuracy['units_profit']}" if accuracy['units_profit']>0 else str(accuracy['units_profit']))
+            st.subheader("By Sport")
+            if accuracy['by_sport']:
+                sport_df = pd.DataFrame(accuracy['by_sport']).T
+                st.dataframe(sport_df)
+            else:
+                st.info("No settled bets by sport yet.")
+            st.subheader("By Tier")
+            if accuracy['by_tier']:
+                tier_df = pd.DataFrame(accuracy['by_tier']).T
+                st.dataframe(tier_df)
+            else:
+                st.info("No settled bets by tier yet.")
+            st.metric("SEM Score", f"{accuracy['sem_score']}/100")
+
+    # =========================================================================
+    # TAB 5: IMAGE ANALYSIS (OCR)
+    # =========================================================================
+    with tab5:
+        st.header("📸 Screenshot Analyzer")
+        uploaded_file = st.file_uploader("Choose an image...", type=["png","jpg","jpeg"])
+        if uploaded_file is not None:
+            st.image(uploaded_file, caption="Uploaded Screenshot", use_column_width=True)
+            if st.button("🔍 ANALYZE SCREENSHOT", type="primary"):
+                with st.spinner("Extracting text via OCR..."):
+                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                    data = {"apikey": OCR_SPACE_API_KEY, "language": "eng", "isOverlayRequired": False,
+                            "filetype": uploaded_file.type.split("/")[-1] if uploaded_file.type else "PNG"}
+                    response = requests.post("https://api.ocr.space/parse/image", files=files, data=data, timeout=30)
+                    if response.status_code != 200:
+                        st.error("OCR service failed. Try again.")
+                    else:
+                        result = response.json()
+                        if result.get("IsErroredOnProcessing", True):
+                            st.error(f"OCR Error: {result.get('ErrorMessage', 'Unknown')}")
+                        else:
+                            extracted_text = result["ParsedResults"][0]["ParsedText"]
+                            st.subheader("📝 Extracted Text")
+                            st.text(extracted_text)
+                            bets = auto_parse_bets(extracted_text)
+                            if not bets:
+                                st.warning("No recognizable bets found in the image.")
+                            else:
+                                st.success(f"Found {len(bets)} potential bets.")
+                                approved, rejected = [], []
+                                for bet in bets:
+                                    sport = "NBA"
+                                    if bet["type"] == "moneyline":
+                                        res = engine.analyze_moneyline(bet["home"], bet["away"], sport, bet["home_odds"], bet["away_odds"])
+                                    elif bet["type"] == "spread":
+                                        res = engine.analyze_spread(bet["team"], "Opponent", bet["spread"], bet["team"], sport, bet["odds"])
+                                    elif bet["type"] == "total":
+                                        res = engine.analyze_total("Home", "Away", bet["total"], bet["pick"], sport, bet["odds"])
+                                    else:
+                                        res = engine.analyze_prop(bet["player"], bet["market"], bet["line"], bet["pick"], [],
+                                                                   sport, bet.get("odds",-110), None, "HEALTHY")
+                                    if res.get("units",0) > 0:
+                                        approved.append((bet, res))
+                                    else:
+                                        rejected.append((bet, res))
+                                if approved:
+                                    st.subheader("✅ CLARITY APPROVED")
+                                    for bet, res in approved:
+                                        st.markdown(f"**{bet.get('description', bet)}**")
+                                        edge = res.get('edge', res.get('raw_edge',0))
+                                        st.caption(f"Edge: {edge:.1%} | Units: {res.get('units',0)}")
+                                if rejected:
+                                    with st.expander(f"❌ REJECTED ({len(rejected)})"):
+                                        for bet, res in rejected:
+                                            st.markdown(f"**{bet.get('description', bet)}**")
+                                            if res.get('reject_reason'):
+                                                st.caption(f"Reason: {res['reject_reason']}")
+
+    # =========================================================================
+    # TAB 6: AUTO-TUNE HISTORY
+    # =========================================================================
+    with tab6:
+        st.header("Auto-Tune History (ROI-based)")
+        conn = sqlite3.connect(engine.db_path)
+        df = pd.read_sql_query("SELECT * FROM tuning_log ORDER BY id DESC", conn)
+        conn.close()
+        if df.empty:
+            st.info("No tuning events yet. After 50+ settled bets, auto-tune will run weekly.")
+        else:
+            st.dataframe(df)
+
+    # =========================================================================
+    # TAB 7: ARBITRAGE & MIDDLES (New)
     # =========================================================================
     with tab7:
         st.header("💰 Live Arbitrage & Middle Scanner")
-        st.markdown("This tool scans The Odds API for risk‑free arbitrage and middle opportunities across multiple sportsbooks.")
+        st.markdown("This tool scans for risk‑free arbitrage and middle opportunities using The Odds API.")
         if not EDGE_SCANNER_AVAILABLE:
             st.warning("Edge scanner module not found. Please ensure `edge_scanner.py` is in the same directory.")
         else:
@@ -1017,52 +1366,35 @@ def run_dashboard():
                         st.warning("No games found today.")
                     else:
                         st.success(f"Found {len(games)} games. Scanning for arbs and middles...")
-                        # For each game, we need odds from multiple books.
-                        # The Odds API returns a list of bookmakers for each game.
-                        # Here we simulate by assuming each game has odds from two different books.
-                        # In your actual implementation, you would iterate over the `bookmakers` list.
-                        arbs_found = []
-                        for game in games[:10]:  # limit for speed
-                            # Placeholder: construct odds dicts from available data
-                            # In reality, you would parse game["bookmakers"].
-                            pass
-                        # If you have actual multi-book data, call find_arbitrage_2way.
-                        st.info("Full arb detection requires multi‑book odds. The Edge Scanner module is ready; integrate it with your odds data.")
-                        # Example of using the find_plus_ev function:
-                        # if "home_ml" in game and "away_ml" in game:
-                        #     sharp_odds = -110  # placeholder
-                        #     ev = find_plus_ev(game["home_ml"], sharp_odds)
-                        #     if ev["recommended"]:
-                        #         st.write(ev)
+                        # Full multi‑book scanning would require more complex logic.
+                        # For now, we provide manual testers below.
+                        st.info("Full automatic scan requires multi‑book odds. Use the manual testers to check specific opportunities.")
             st.markdown("---")
-            st.subheader("Manual Test: Check a 2‑Way Arbitrage")
+            st.subheader("Manual 2‑Way Arbitrage Tester")
             col1, col2 = st.columns(2)
             with col1:
-                book_a = st.text_input("Book A odds", value="-110")
+                book_a_odds = st.number_input("Book A odds", value=-110, step=5)
             with col2:
-                book_b = st.text_input("Book B odds", value="-110")
-            if st.button("Test Arb"):
-                try:
-                    odds_a = {"BookA": int(book_a)}
-                    odds_b = {"BookB": int(book_b)}
-                    arb = find_arbitrage_2way(odds_a, odds_b, bankroll=100.0)
-                    if arb["is_arb"]:
-                        st.success(f"✅ Arbitrage found! Profit: {arb['profit']} (ROI: {arb['roi_pct']}%)")
-                        st.write(arb)
-                    else:
-                        st.info("No arbitrage opportunity.")
-                except:
-                    st.error("Invalid odds input.")
+                book_b_odds = st.number_input("Book B odds", value=-110, step=5)
+            if st.button("Test Arbitrage"):
+                odds_a = {"Book A": book_a_odds}
+                odds_b = {"Book B": book_b_odds}
+                arb = find_arbitrage_2way(odds_a, odds_b, bankroll=100.0)
+                if arb["is_arb"]:
+                    st.success(f"✅ Arbitrage found! Profit: ${arb['profit']:.2f} (ROI: {arb['roi_pct']}%)")
+                    st.write(arb)
+                else:
+                    st.info("No arbitrage opportunity.")
             st.markdown("---")
-            st.subheader("Middle Hunter Demo")
+            st.subheader("Middle Hunter Tester")
             st.markdown("Enter two different lines (e.g., spread -4.5 and -1.5) to see middle EV.")
             c1, c2 = st.columns(2)
             with c1:
                 line_a = st.number_input("Line A", value=-4.5, step=0.5)
-                odds_a_mid = st.number_input("Odds A", value=-110)
+                odds_a_mid = st.number_input("Odds A", value=-110, step=5)
             with c2:
                 line_b = st.number_input("Line B", value=-1.5, step=0.5)
-                odds_b_mid = st.number_input("Odds B", value=-110)
+                odds_b_mid = st.number_input("Odds B", value=-110, step=5)
             if st.button("Test Middle"):
                 mid = find_middle(line_a, odds_a_mid, line_b, odds_b_mid)
                 if mid["is_middle"]:
@@ -1076,8 +1408,8 @@ def run_dashboard():
             st.markdown("---")
             st.subheader("+EV Detection (Soft vs Sharp)")
             st.markdown("Compare a soft book's odds to a sharp book (e.g., Pinnacle).")
-            soft = st.number_input("Soft book odds", value=-110)
-            sharp = st.number_input("Sharp book odds (e.g., Pinnacle)", value=-108)
+            soft = st.number_input("Soft book odds", value=-110, step=5)
+            sharp = st.number_input("Sharp book odds (e.g., Pinnacle)", value=-108, step=5)
             if st.button("Check +EV"):
                 ev = find_plus_ev(soft, sharp)
                 if ev["is_plus_ev"]:
