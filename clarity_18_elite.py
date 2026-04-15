@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE - FIXED KEYERROR + OPTIMIZED LAYOUT + OCR SCREENSHOT (FILE TYPE FIX)
+CLARITY 18.0 ELITE - FINAL: KEYERROR FIX + STOP SCAN + OCR (EDITABLE TEXT)
 Player Props | Moneylines | Spreads | Totals | Alternate Lines | PrizePicks | Best Odds | Arbitrage | Middles | Accuracy
 NBA | MLB | NHL | NFL | PGA | TENNIS | UFC
 API KEYS: Perplexity + API-Sports + The Odds API + OCR.space
@@ -28,8 +28,8 @@ warnings.filterwarnings('ignore')
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
-OCR_SPACE_API_KEY = "K89641020988957"   # <-- Your injected key
-VERSION = "18.0 Elite (OCR File Type Fixed)"
+OCR_SPACE_API_KEY = "K89641020988957"   # Your key
+VERSION = "18.0 Elite (OCR Editable Text)"
 BUILD_DATE = "2026-04-14"
 
 PERPLEXITY_BASE = "https://api.perplexity.ai"
@@ -533,7 +533,7 @@ class PropScanner:
         return props
 
 # =============================================================================
-# CLARITY 18.0 ELITE - COMPLETE MASTER ENGINE (FIXED)
+# CLARITY 18.0 ELITE - COMPLETE MASTER ENGINE
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
@@ -1008,7 +1008,7 @@ class Clarity18Elite:
             sport = game["sport"]
             home, away = game["home"], game["away"]
             
-            # Moneyline (FIXED)
+            # Moneyline
             if game.get("home_ml") and game.get("away_ml"):
                 ml = self.analyze_moneyline(home, away, sport, game["home_ml"], game["away_ml"])
                 bet_info = {
@@ -1027,7 +1027,7 @@ class Clarity18Elite:
                 else:
                     rejected.append(bet_info)
             
-            # Spread (FIXED)
+            # Spread
             if game.get("spread") and game.get("spread_odds"):
                 for pick_side in [home, away]:
                     spread_res = self.analyze_spread(home, away, game["spread"], pick_side, sport, game["spread_odds"])
@@ -1047,7 +1047,7 @@ class Clarity18Elite:
                     else:
                         rejected.append(bet_info)
             
-            # Totals (FIXED)
+            # Totals
             if game.get("total"):
                 for pick_side, odds in [("OVER", game.get("over_odds", -110)), ("UNDER", game.get("under_odds", -110))]:
                     total_res = self.analyze_total(home, away, game["total"], pick_side, sport, odds)
@@ -1250,39 +1250,51 @@ def start_telegram_bot(engine):
     return app
 
 # =============================================================================
-# HELPER FUNCTION FOR OCR PARSING
+# IMPROVED OCR PARSING FUNCTION
 # =============================================================================
-def parse_bets_from_text(text: str) -> List[Dict]:
-    """Extract betting information from OCR text."""
+def parse_bets_from_text_improved(text: str) -> List[Dict]:
+    """More flexible extraction of betting information from OCR text."""
     bets = []
-    # Player prop pattern: "LeBron James OVER 27.5 Points"
-    prop_pattern = re.compile(r"([A-Za-z\.\-' ]+?)\s+(OVER|UNDER)\s+(\d+\.?\d*)\s+([A-Za-z\s]+)", re.IGNORECASE)
-    for match in prop_pattern.finditer(text):
-        player = match.group(1).strip()
-        pick = match.group(2).upper()
-        line = float(match.group(3))
-        market_raw = match.group(4).strip().upper()
-        # Normalize market names
-        market_map = {
-            "POINTS": "PTS", "ASSISTS": "AST", "REBOUNDS": "REB", "THREES": "THREES",
-            "STRIKEOUTS": "KS", "HITS": "HITS", "HOME RUNS": "HR", "TOTAL BASES": "TB"
-        }
-        market = market_map.get(market_raw, market_raw.replace(" ", "_"))
-        bets.append({
-            "type": "player_prop",
-            "player": player,
-            "market": market,
-            "line": line,
-            "pick": pick,
-            "odds": -110,
-            "description": f"{player} {pick} {line} {market}"
-        })
+    lines = text.split('\n')
     
-    # Moneyline pattern: e.g., "Lakers -150" or "Celtics +130"
+    # Player prop patterns
+    prop_patterns = [
+        r"([A-Za-z\.\-' ]+?)\s+(OVER|UNDER|O/U|O\s*U)\s+(\d+\.?\d*)\s*([A-Za-z\s]+)",
+        r"([A-Za-z\.\-' ]+?)\s+(\d+\.?\d*)\s+(OVER|UNDER|O/U)",
+        r"([A-Za-z\.\-' ]+?)\s+(\d+\.?\d*)\s+([A-Za-z\s]+?)\s+(OVER|UNDER)",
+    ]
+    for pattern in prop_patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            groups = match.groups()
+            if len(groups) == 4:
+                player, pick_or_line, line_or_pick, market = groups
+                if pick_or_line.upper() in ["OVER", "UNDER", "O/U", "O U"]:
+                    pick = "OVER" if pick_or_line.upper().startswith("O") else "UNDER"
+                    line = float(line_or_pick)
+                else:
+                    line = float(pick_or_line)
+                    pick = "OVER" if line_or_pick.upper().startswith("O") else "UNDER"
+                market_clean = market.strip().upper()
+                market_map = {
+                    "POINTS": "PTS", "ASSISTS": "AST", "REBOUNDS": "REB", "THREES": "3PT",
+                    "STRIKEOUTS": "KS", "HITS": "HITS", "HOME RUNS": "HR", "TOTAL BASES": "TB"
+                }
+                market = market_map.get(market_clean, market_clean.replace(" ", "_"))
+                bets.append({
+                    "type": "player_prop",
+                    "player": player.strip(),
+                    "market": market,
+                    "line": line,
+                    "pick": pick,
+                    "odds": -110,
+                    "description": f"{player.strip()} {pick} {line} {market}"
+                })
+                break  # use first match
+    
+    # Moneyline: "Team Name +150" or "Team Name -120"
     ml_pattern = re.compile(r"([A-Za-z ]+?)\s+([+-]\d{3,})")
     teams_odds = ml_pattern.findall(text)
     if len(teams_odds) >= 2:
-        # Assume first two are home/away
         home, home_odds_str = teams_odds[0]
         away, away_odds_str = teams_odds[1]
         try:
@@ -1294,12 +1306,12 @@ def parse_bets_from_text(text: str) -> List[Dict]:
                 "away": away.strip(),
                 "home_odds": home_odds,
                 "away_odds": away_odds,
-                "description": f"{home} ML vs {away}"
+                "description": f"{home.strip()} ML vs {away.strip()}"
             })
-        except ValueError:
+        except:
             pass
     
-    # Spread pattern: e.g., "Lakers -5.5 (-110)"
+    # Spread: "Team Name -5.5 (-110)"
     spread_pattern = re.compile(r"([A-Za-z ]+?)\s+([+-]\d+\.?\d*)\s+\(([+-]\d+)\)")
     for match in spread_pattern.finditer(text):
         team = match.group(1).strip()
@@ -1313,12 +1325,14 @@ def parse_bets_from_text(text: str) -> List[Dict]:
             "description": f"{team} {spread:+.1f}"
         })
     
-    # Total pattern: e.g., "OVER 220.5 (-110)"
-    total_pattern = re.compile(r"(OVER|UNDER)\s+(\d+\.?\d*)\s+\(([+-]\d+)\)", re.IGNORECASE)
+    # Total: "OVER 220.5 (-110)"
+    total_pattern = re.compile(r"(OVER|UNDER|O/U|O\s*U)\s+(\d+\.?\d*)\s*\(?([+-]\d+)?\)?", re.IGNORECASE)
     for match in total_pattern.finditer(text):
-        pick = match.group(1).upper()
+        pick_raw = match.group(1).upper()
+        pick = "OVER" if pick_raw.startswith("O") else "UNDER"
         total = float(match.group(2))
-        odds = int(match.group(3))
+        odds_str = match.group(3)
+        odds = int(odds_str) if odds_str else -110
         bets.append({
             "type": "total",
             "pick": pick,
@@ -1327,17 +1341,25 @@ def parse_bets_from_text(text: str) -> List[Dict]:
             "description": f"{pick} {total}"
         })
     
-    return bets
+    # Remove duplicates based on description
+    unique = []
+    seen = set()
+    for bet in bets:
+        desc = bet.get("description", "")
+        if desc not in seen:
+            seen.add(desc)
+            unique.append(bet)
+    return unique
 
 # =============================================================================
-# DASHBOARD (OPTIMIZED LAYOUT + OCR TAB WITH FILE TYPE FIX)
+# DASHBOARD (OPTIMIZED LAYOUT + OCR WITH EDITABLE TEXT)
 # =============================================================================
 engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Approved Bets Only | Stop Scan | OCR Screenshot | Version: {VERSION}**")
+    st.markdown(f"**Approved Bets Only | Stop Scan | OCR Screenshot (Editable) | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
@@ -1353,7 +1375,7 @@ def run_dashboard():
     ])
     
     # -------------------------------------------------------------------------
-    # TAB 1: GAME MARKETS (ML, Spread, Totals, Alt Lines)
+    # TAB 1: GAME MARKETS (unchanged, kept for brevity – include full content)
     # -------------------------------------------------------------------------
     with tab1:
         st.header("Game Markets")
@@ -1529,13 +1551,9 @@ def run_dashboard():
         
         if st.session_state.scan_running:
             status_placeholder = st.empty()
-            props_placeholder = st.empty()
-            games_placeholder = st.empty()
-            
             def update_status(msg):
                 st.session_state.scan_status = msg
                 status_placeholder.info(msg)
-            
             def add_result(bet):
                 if bet.get('units', 0) > 0:
                     if bet['type'] == 'player_prop':
@@ -1544,7 +1562,6 @@ def run_dashboard():
                         st.session_state.scan_results["games"].append(bet)
                 else:
                     st.session_state.scan_results["rejected"].append(bet)
-            
             with st.spinner("Scanning..."):
                 engine.run_best_bets_scan(
                     selected_sports_pp,
@@ -1559,11 +1576,9 @@ def run_dashboard():
         if not st.session_state.scan_running:
             if st.session_state.scan_status:
                 st.info(st.session_state.scan_status)
-            
             props = st.session_state.scan_results.get("props", [])
             games = st.session_state.scan_results.get("games", [])
             rejected = st.session_state.scan_results.get("rejected", [])
-            
             if props:
                 st.subheader("✅ CLARITY APPROVED PLAYER PROPS")
                 for i, bet in enumerate(props[:10], 1):
@@ -1571,7 +1586,6 @@ def run_dashboard():
                     st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
                     if bet.get('season_warning'):
                         st.warning(bet['season_warning'])
-            
             if games:
                 st.subheader("✅ CLARITY APPROVED GAME BETS")
                 for i, bet in enumerate(games[:10], 1):
@@ -1580,7 +1594,6 @@ def run_dashboard():
                     if bet.get('season_warnings'):
                         for w in bet['season_warnings']:
                             st.warning(w)
-            
             if rejected:
                 with st.expander(f"❌ REJECTED BETS ({len(rejected)})"):
                     for bet in rejected:
@@ -1597,7 +1610,6 @@ def run_dashboard():
         analytics_tab1, analytics_tab2, analytics_tab3, analytics_tab4 = st.tabs([
             "📈 Best Odds", "💰 Arbitrage", "🎯 Middles", "📊 Accuracy"
         ])
-        
         with analytics_tab1:
             st.header("Best Odds Scanner")
             col1, col2 = st.columns([2, 1])
@@ -1613,7 +1625,6 @@ def run_dashboard():
                 for i, bet in enumerate(engine.scanned_bets["best_odds"], 1):
                     st.markdown(f"**{i}. {bet['player']} {bet['market']} {bet['pick']} {bet['line']}**")
                     st.caption(f"Odds: {bet['odds']} @ {bet['bookmaker']} | Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
-        
         with analytics_tab2:
             st.header("Arbitrage Detector")
             if st.button("🔍 SCAN FOR ARBITRAGE", type="primary"):
@@ -1629,7 +1640,6 @@ def run_dashboard():
                             st.metric("Arbitrage %", f"{arb['Arb %']}%")
                     else:
                         st.info("No arbitrage opportunities found.")
-        
         with analytics_tab3:
             st.header("Middle Hunter")
             if st.button("🔍 HUNT FOR MIDDLES", type="primary"):
@@ -1645,7 +1655,6 @@ def run_dashboard():
                             st.caption(f"{mid['Leg 1']} | {mid['Leg 2']}")
                     else:
                         st.info("No middle opportunities found.")
-        
         with analytics_tab4:
             st.header("Public Accuracy Dashboard")
             accuracy = engine.get_accuracy_dashboard()
@@ -1669,7 +1678,7 @@ def run_dashboard():
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
     
     # -------------------------------------------------------------------------
-    # TAB 5: IMAGE ANALYSIS (OCR) - FIXED FILE TYPE
+    # TAB 5: IMAGE ANALYSIS (OCR with Editable Text)
     # -------------------------------------------------------------------------
     with tab5:
         st.header("📸 Screenshot Analyzer")
@@ -1680,9 +1689,8 @@ def run_dashboard():
         if uploaded_file is not None:
             st.image(uploaded_file, caption="Uploaded Screenshot", use_column_width=True)
             
-            if st.button("🔍 ANALYZE SCREENSHOT", type="primary"):
+            if st.button("🔍 EXTRACT TEXT WITH OCR", type="primary"):
                 with st.spinner("Extracting text via OCR..."):
-                    # Prepare file with proper filename and content type
                     file_name = uploaded_file.name if uploaded_file.name else "screenshot.png"
                     files = {"file": (file_name, uploaded_file.getvalue(), uploaded_file.type)}
                     data = {
@@ -1705,51 +1713,57 @@ def run_dashboard():
                             st.error(f"OCR Error: {result.get('ErrorMessage', 'Unknown')}")
                         else:
                             extracted_text = result["ParsedResults"][0]["ParsedText"]
-                            st.subheader("📝 Extracted Text")
-                            st.text(extracted_text)
-                            
-                            bets = parse_bets_from_text(extracted_text)
-                            if not bets:
-                                st.warning("No recognizable bets found in the image.")
+                            st.session_state["ocr_text"] = extracted_text
+                            st.success("Text extracted! You can edit it below if needed.")
+            
+            if "ocr_text" in st.session_state:
+                st.subheader("📝 Extracted Text (Edit if needed)")
+                edited_text = st.text_area("OCR Result", st.session_state["ocr_text"], height=200)
+                
+                if st.button("🔍 PARSE & ANALYZE BETS", type="primary"):
+                    bets = parse_bets_from_text_improved(edited_text)
+                    if not bets:
+                        st.warning("No recognizable bets found. Try editing the text to match formats like: 'LeBron James OVER 27.5 Points' or 'Lakers -5.5 (-110)'")
+                        st.info("Example formats:\n- Player OVER/UNDER line Market\n- Team +/-spread (odds)\n- OVER/UNDER total (odds)\n- Team +150 (moneyline)")
+                    else:
+                        st.success(f"Found {len(bets)} potential bets.")
+                        approved = []
+                        rejected = []
+                        for bet in bets:
+                            sport = "NBA"  # default
+                            if bet.get("type") == "moneyline":
+                                res = engine.analyze_moneyline(bet["home"], bet["away"], sport, bet["home_odds"], bet["away_odds"])
+                            elif bet.get("type") == "spread":
+                                res = engine.analyze_spread(bet["team"], "Opponent", bet["spread"], bet["team"], sport, bet["odds"])
+                            elif bet.get("type") == "total":
+                                res = engine.analyze_total("Home", "Away", bet["total"], bet["pick"], sport, bet["odds"])
+                            else:  # player prop
+                                data = [float(bet["line"]) * 0.9] * 5
+                                res = engine.analyze_prop(
+                                    bet["player"], bet["market"], bet["line"], bet["pick"],
+                                    data, sport, bet.get("odds", -110), None, "HEALTHY"
+                                )
+                            if res.get("units", 0) > 0:
+                                approved.append({"bet": bet, "result": res})
                             else:
-                                st.success(f"Found {len(bets)} potential bets.")
-                                approved = []
-                                rejected = []
-                                for bet in bets:
-                                    sport = "NBA"  # default; could be inferred
-                                    if bet.get("type") == "moneyline":
-                                        res = engine.analyze_moneyline(bet["home"], bet["away"], sport, bet["home_odds"], bet["away_odds"])
-                                    elif bet.get("type") == "spread":
-                                        res = engine.analyze_spread(bet["team"], "Opponent", bet["spread"], bet["team"], sport, bet["odds"])
-                                    elif bet.get("type") == "total":
-                                        res = engine.analyze_total("Home", "Away", bet["total"], bet["pick"], sport, bet["odds"])
-                                    else:  # player prop
-                                        data = [float(bet["line"]) * 0.9] * 5
-                                        res = engine.analyze_prop(
-                                            bet["player"], bet["market"], bet["line"], bet["pick"],
-                                            data, sport, bet.get("odds", -110), None, "HEALTHY"
-                                        )
-                                    if res.get("units", 0) > 0:
-                                        approved.append({"bet": bet, "result": res})
-                                    else:
-                                        rejected.append({"bet": bet, "result": res})
-                                
-                                if approved:
-                                    st.subheader("✅ CLARITY APPROVED")
-                                    for item in approved:
-                                        bet = item["bet"]
-                                        res = item["result"]
-                                        st.markdown(f"**{bet.get('description', bet)}**")
-                                        edge = res.get('edge', res.get('raw_edge', 0))
-                                        st.caption(f"Edge: {edge:.1%} | Units: {res.get('units', 0)}")
-                                if rejected:
-                                    with st.expander(f"❌ REJECTED ({len(rejected)})"):
-                                        for item in rejected:
-                                            bet = item["bet"]
-                                            res = item["result"]
-                                            st.markdown(f"**{bet.get('description', bet)}**")
-                                            if res.get('reject_reason'):
-                                                st.caption(f"Reason: {res['reject_reason']}")
+                                rejected.append({"bet": bet, "result": res})
+                        
+                        if approved:
+                            st.subheader("✅ CLARITY APPROVED")
+                            for item in approved:
+                                bet = item["bet"]
+                                res = item["result"]
+                                st.markdown(f"**{bet.get('description', bet)}**")
+                                edge = res.get('edge', res.get('raw_edge', 0))
+                                st.caption(f"Edge: {edge:.1%} | Units: {res.get('units', 0)}")
+                        if rejected:
+                            with st.expander(f"❌ REJECTED ({len(rejected)})"):
+                                for item in rejected:
+                                    bet = item["bet"]
+                                    res = item["result"]
+                                    st.markdown(f"**{bet.get('description', bet)}**")
+                                    if res.get('reject_reason'):
+                                        st.caption(f"Reason: {res['reject_reason']}")
 
 if __name__ == "__main__":
     run_dashboard()
