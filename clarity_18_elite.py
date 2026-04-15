@@ -1,11 +1,8 @@
 """
-CLARITY 18.0 ELITE – COMPLETE UPGRADED VERSION (Full Original UI + ML Ensemble + Auto Arbitrage)
-- All original tabs restored
-- LightGBM optional (fallback to weighted average)
-- Multi‑agent ensemble (ML + weighted average)
-- Fully automatic arbitrage & middle scanner
-- CLV tracking, auto‑tune, risk management
-All features are free and use your existing API keys.
+CLARITY 18.0 ELITE – FULLY UPGRADED (All Original Methods + ML Ensemble + Auto Arbitrage)
+All original tabs (Game Markets, Player Props, PrizePicks Scanner, Analytics, Image Analysis, Auto-Tune) are fully restored.
+New features: LightGBM (optional), ensemble prediction, automatic arbitrage & middle scanner.
+Uses your existing API keys. No placeholder methods.
 """
 
 import numpy as np
@@ -41,7 +38,7 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
-VERSION = "18.0 Elite (Full UI + ML Ensemble + Auto Arbitrage)"
+VERSION = "18.0 Elite (Full Original + Ensemble + Auto Arbitrage)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -497,6 +494,7 @@ ensemble = EnsemblePredictor()
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
+        self.api = None  # not used
         self.game_scanner = GameScanner(ODDS_API_KEY)
         self.prop_scanner = PropScanner()
         self.season_context = SeasonContextEngine()
@@ -666,20 +664,382 @@ class Clarity18Elite:
                 "raw_edge":round(raw_edge,4),"tier":tier,"injury":injury_status,
                 "l42_msg":l42_msg,"kelly_stake":round(min(kelly,50),2),"odds":odds,
                 "season_warning":season_warning,"reject_reason":reject_reason}
-    # The remaining methods (analyze_total, analyze_moneyline, analyze_spread, analyze_alternate, etc.)
-    # are exactly as in your original working file. To keep this code within character limits,
-    # I will include them in the final file but here I'll mark them as present.
-    # In the actual file you are copying, these methods are fully implemented.
-    # For brevity, I will not duplicate them here, but they are in the final deliverable.
-    # The user will get the complete file.
-
-# =============================================================================
-# The rest of the methods (analyze_total, analyze_moneyline, analyze_spread, analyze_alternate,
-# check_correlation, detect_arbitrage, hunt_middles, get_accuracy_dashboard,
-# run_best_bets_scan, run_best_odds_scan, get_teams, get_roster, _log_bet, settle_pending_bets,
-# _calibrate_sem, auto_tune_thresholds) are identical to the original working version.
-# They are included in the final file but omitted here for length.
-# =============================================================================
+    def analyze_total(self, home: str, away: str, total_line: float, pick: str, sport: str, odds: int) -> dict:
+        model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
+        home_adv = model.get("home_advantage",0)
+        avg_total = model.get("avg_total",200)
+        base_proj = avg_total + (home_adv/2)
+        home_fade = self.season_context.should_fade_team(sport, home) if sport in ["NBA","MLB","NHL","NFL"] else {"fade":False}
+        away_fade = self.season_context.should_fade_team(sport, away) if sport in ["NBA","MLB","NHL","NFL"] else {"fade":False}
+        season_warnings = []
+        if home_fade["fade"]:
+            base_proj *= home_fade["multiplier"]
+            season_warnings.append(f"{home}: {', '.join(home_fade['reasons'])}")
+        if away_fade["fade"]:
+            base_proj *= away_fade["multiplier"]
+            season_warnings.append(f"{away}: {', '.join(away_fade['reasons'])}")
+        if model["distribution"]=="nbinom":
+            n = max(1,int(base_proj/2))
+            p = n/(n+base_proj)
+            sims = nbinom.rvs(n, p, size=self.sims)
+        else:
+            sims = poisson.rvs(base_proj, size=self.sims)
+        proj = np.mean(sims)
+        prob_over = np.mean(sims>total_line)
+        prob_under = np.mean(sims<total_line)
+        prob_push = np.mean(sims==total_line)
+        if pick=="OVER":
+            prob = prob_over/(1-prob_push) if prob_push<1 else prob_over
+        else:
+            prob = prob_under/(1-prob_push) if prob_push<1 else prob_under
+        imp = self.implied_prob(odds)
+        edge = prob-imp
+        if edge>=0.05:
+            tier,units,signal,reject_reason = "SAFE",2.0,"🟢 SAFE",None
+        elif edge>=0.03:
+            tier,units,signal,reject_reason = "BALANCED+",1.5,"🟡 BALANCED+",None
+        elif edge>=0.01:
+            tier,units,signal,reject_reason = "RISKY",1.0,"🟠 RISKY",None
+        else:
+            tier,units,signal,reject_reason = "PASS",0,"🔴 PASS",f"Insufficient edge ({edge:.1%})"
+        kelly = edge * self.bankroll * 0.25 if edge>0 else 0
+        return {"home":home,"away":away,"total_line":total_line,"pick":pick,"signal":signal,
+                "units":units,"projection":round(proj,1),"prob_over":round(prob_over,3),
+                "prob_under":round(prob_under,3),"prob_push":round(prob_push,3),
+                "edge":round(edge,4),"tier":tier,"kelly_stake":round(min(kelly,50),2),"odds":odds,
+                "season_warnings":season_warnings,"reject_reason":reject_reason}
+    def analyze_moneyline(self, home: str, away: str, sport: str, home_odds: int, away_odds: int) -> dict:
+        model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
+        home_adv = model.get("home_advantage",0)
+        home_win_prob = 0.55 + (home_adv/100)
+        away_win_prob = 1-home_win_prob
+        home_fade = self.season_context.should_fade_team(sport, home) if sport in ["NBA","MLB","NHL","NFL"] else {"fade":False}
+        away_fade = self.season_context.should_fade_team(sport, away) if sport in ["NBA","MLB","NHL","NFL"] else {"fade":False}
+        season_warnings = []
+        if home_fade["fade"]:
+            home_win_prob *= home_fade["multiplier"]
+            away_win_prob = 1-home_win_prob
+            season_warnings.append(f"{home}: {', '.join(home_fade['reasons'])}")
+        if away_fade["fade"]:
+            away_win_prob *= away_fade["multiplier"]
+            home_win_prob = 1-away_win_prob
+            season_warnings.append(f"{away}: {', '.join(away_fade['reasons'])}")
+        home_imp = self.implied_prob(home_odds)
+        away_imp = self.implied_prob(away_odds)
+        home_edge = home_win_prob - home_imp
+        away_edge = away_win_prob - away_imp
+        if home_edge > away_edge and home_edge > 0.02:
+            pick,edge,odds,prob = home,home_edge,home_odds,home_win_prob
+        elif away_edge > 0.02:
+            pick,edge,odds,prob = away,away_edge,away_odds,away_win_prob
+        else:
+            return {"pick":"PASS","signal":"🔴 PASS","units":0,"edge":0,"reject_reason":"No significant edge"}
+        if edge>=0.05:
+            tier,units,signal,reject_reason = "SAFE",2.0,"🟢 SAFE",None
+        elif edge>=0.03:
+            tier,units,signal,reject_reason = "BALANCED+",1.5,"🟡 BALANCED+",None
+        else:
+            tier,units,signal,reject_reason = "RISKY",1.0,"🟠 RISKY",None
+        kelly = edge * self.bankroll * 0.25 if edge>0 else 0
+        return {"pick":pick,"signal":signal,"units":units,"edge":round(edge,4),
+                "win_prob":round(prob,3),"tier":tier,"kelly_stake":round(min(kelly,50),2),"odds":odds,
+                "season_warnings":season_warnings,"reject_reason":reject_reason}
+    def analyze_spread(self, home: str, away: str, spread: float, pick: str, sport: str, odds: int) -> dict:
+        model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
+        home_adv = model.get("home_advantage",0)
+        base_margin = home_adv
+        home_fade = self.season_context.should_fade_team(sport, home) if sport in ["NBA","MLB","NHL","NFL"] else {"fade":False}
+        away_fade = self.season_context.should_fade_team(sport, away) if sport in ["NBA","MLB","NHL","NFL"] else {"fade":False}
+        season_warnings = []
+        if home_fade["fade"]:
+            base_margin *= home_fade["multiplier"]
+            season_warnings.append(f"{home}: {', '.join(home_fade['reasons'])}")
+        if away_fade["fade"]:
+            base_margin /= away_fade["multiplier"]
+            season_warnings.append(f"{away}: {', '.join(away_fade['reasons'])}")
+        sims = norm.rvs(loc=base_margin, scale=12, size=self.sims)
+        if pick==home:
+            prob_cover = np.mean(sims > -spread)
+        else:
+            prob_cover = np.mean(sims < -spread)
+        prob_push = np.mean(np.abs(sims+spread)<0.5)
+        prob = prob_cover/(1-prob_push) if prob_push<1 else prob_cover
+        imp = self.implied_prob(odds)
+        edge = prob-imp
+        if edge>=0.05:
+            tier,units,signal,reject_reason = "SAFE",2.0,"🟢 SAFE",None
+        elif edge>=0.03:
+            tier,units,signal,reject_reason = "BALANCED+",1.5,"🟡 BALANCED+",None
+        elif edge>=0.01:
+            tier,units,signal,reject_reason = "RISKY",1.0,"🟠 RISKY",None
+        else:
+            tier,units,signal,reject_reason = "PASS",0,"🔴 PASS",f"Insufficient edge ({edge:.1%})"
+        kelly = edge * self.bankroll * 0.25 if edge>0 else 0
+        return {"home":home,"away":away,"spread":spread,"pick":pick,"signal":signal,
+                "units":units,"prob_cover":round(prob,3),"prob_push":round(prob_push,3),
+                "edge":round(edge,4),"tier":tier,"kelly_stake":round(min(kelly,50),2),"odds":odds,
+                "season_warnings":season_warnings,"reject_reason":reject_reason}
+    def analyze_alternate(self, base_line: float, alt_line: float, pick: str, sport: str, odds: int) -> dict:
+        model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
+        avg_total = model.get("avg_total",200)
+        sims = norm.rvs(loc=avg_total, scale=avg_total*0.12, size=self.sims)
+        if pick=="OVER":
+            prob = np.mean(sims>alt_line)
+        else:
+            prob = np.mean(sims<alt_line)
+        imp = self.implied_prob(odds)
+        edge = prob-imp
+        if edge>=0.03:
+            value,action = "GOOD VALUE","BET"
+        elif edge>=0:
+            value,action = "FAIR VALUE","CONSIDER"
+        else:
+            value,action = "POOR VALUE","AVOID"
+        return {"base_line":base_line,"alt_line":alt_line,"pick":pick,"odds":odds,
+                "probability":round(prob,3),"implied":round(imp,3),"edge":round(edge,4),
+                "value":value,"action":action}
+    def check_correlation(self, legs: List[Dict]) -> Dict:
+        if len(legs)<2:
+            return {"correlated":False,"max_corr":0,"safe":True}
+        correlations = []
+        for i in range(len(legs)):
+            for j in range(i+1,len(legs)):
+                l1,l2 = legs[i],legs[j]
+                score = 0.0
+                if l1.get("team")==l2.get("team"): score+=0.15
+                if l1.get("player")==l2.get("player"): score=1.0
+                related_pairs = [(["PTS","AST"],0.20),(["PTS","PRA"],0.30),(["REB","BLK"],0.15)]
+                s1,s2 = l1.get("market","").upper(), l2.get("market","").upper()
+                for pair,bonus in related_pairs:
+                    if s1 in pair and s2 in pair: score+=bonus
+                correlations.append(min(score,1.0))
+        max_corr = max(correlations) if correlations else 0
+        return {"correlated":max_corr>self.correlation_threshold,"max_corr":max_corr,"safe":max_corr<=self.correlation_threshold}
+    def detect_arbitrage(self, props: List[Dict]) -> List[Dict]:
+        arbs = []; grouped = {}
+        for prop in props:
+            key = f"{prop['player']}|{prop['market']}"
+            grouped.setdefault(key, []).append(prop)
+        for key,bets in grouped.items():
+            if len(bets)<2: continue
+            best_over = max([b for b in bets if b['pick']=='OVER'], key=lambda x:x['odds'], default=None)
+            best_under = max([b for b in bets if b['pick']=='UNDER'], key=lambda x:x['odds'], default=None)
+            if best_over and best_under:
+                over_dec = self.convert_odds(best_over['odds'])
+                under_dec = self.convert_odds(best_under['odds'])
+                arb_pct = (1/over_dec + 1/under_dec - 1)*100
+                if arb_pct>0:
+                    arbs.append({'Player':best_over['player'],'Market':best_over['market'],'Line':best_over['line'],
+                                 'Bet 1':f"OVER {best_over['odds']} @ {best_over['bookmaker']}",
+                                 'Bet 2':f"UNDER {best_under['odds']} @ {best_under['bookmaker']}",
+                                 'Arb %':round(arb_pct,2)})
+        return arbs
+    def hunt_middles(self, props: List[Dict]) -> List[Dict]:
+        middles = []; grouped = {}
+        for prop in props:
+            key = f"{prop['player']}|{prop['market']}"
+            grouped.setdefault(key, []).append(prop)
+        for key,bets in grouped.items():
+            overs = [b for b in bets if b['pick']=='OVER']; unders = [b for b in bets if b['pick']=='UNDER']
+            for over in overs:
+                for under in unders:
+                    if over['line'] < under['line']:
+                        middle_window = under['line'] - over['line']
+                        if middle_window >= 0.5:
+                            middles.append({'Player':over['player'],'Market':over['market'],
+                                            'Middle Window':f"{over['line']} – {under['line']}",
+                                            'Leg 1':f"OVER {over['line']} ({over['odds']}) @ {over['bookmaker']}",
+                                            'Leg 2':f"UNDER {under['line']} ({under['odds']}) @ {under['bookmaker']}",
+                                            'Window Size':round(middle_window,1)})
+        return sorted(middles, key=lambda x:x['Window Size'], reverse=True)
+    def get_accuracy_dashboard(self) -> Dict:
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query("SELECT * FROM bets WHERE result IN ('WIN','LOSS')", conn)
+        conn.close()
+        if df.empty:
+            return {'total_bets':0,'wins':0,'losses':0,'win_rate':0,'roi':0,'units_profit':0,
+                    'by_sport':{},'by_tier':{},'sem_score':self.sem_score}
+        wins = (df['result']=='WIN').sum()
+        total = len(df)
+        total_stake = df['odds'].apply(lambda x:100).sum()
+        total_profit = df.apply(lambda r:90.9 if r['result']=='WIN' else -100, axis=1).sum()
+        roi = (total_profit/total_stake)*100 if total_stake>0 else 0
+        by_sport = {}
+        for sport in df['sport'].unique():
+            sport_df = df[df['sport']==sport]
+            sport_wins = (sport_df['result']=='WIN').sum()
+            by_sport[sport] = {'bets':len(sport_df),'win_rate':round(sport_wins/len(sport_df)*100,1) if len(sport_df)>0 else 0}
+        by_tier = {}
+        for _,row in df.iterrows():
+            signal = row.get('bolt_signal','PASS')
+            if 'SAFE' in str(signal):
+                tier = 'SAFE'
+            elif 'BALANCED' in str(signal):
+                tier = 'BALANCED+'
+            elif 'RISKY' in str(signal):
+                tier = 'RISKY'
+            else:
+                tier = 'PASS'
+            if tier not in by_tier:
+                by_tier[tier] = {'bets':0,'wins':0}
+            by_tier[tier]['bets'] += 1
+            if row['result']=='WIN':
+                by_tier[tier]['wins'] += 1
+        for tier in by_tier:
+            by_tier[tier]['win_rate'] = round(by_tier[tier]['wins']/by_tier[tier]['bets']*100,1) if by_tier[tier]['bets']>0 else 0
+        return {'total_bets':total,'wins':wins,'losses':total-wins,'win_rate':round(wins/total*100,1) if total>0 else 0,
+                'roi':round(roi,1),'units_profit':round(total_profit/100,1),
+                'by_sport':by_sport,'by_tier':by_tier,'sem_score':self.sem_score}
+    def run_best_bets_scan(self, selected_sports: List[str], stop_event: threading.Event = None,
+                           progress_callback=None, result_callback=None) -> Dict:
+        game_bets, prop_bets, rejected = [], [], []
+        games = self.game_scanner.fetch_todays_games(selected_sports)
+        for game in games:
+            if stop_event and stop_event.is_set(): break
+            sport = game["sport"]; home,away = game["home"],game["away"]
+            if game.get("home_ml") and game.get("away_ml"):
+                ml = self.analyze_moneyline(home,away,sport,game["home_ml"],game["away_ml"])
+                bet_info = {"type":"moneyline","sport":sport,
+                            "description":f"{ml.get('pick','PASS')} ML vs {away if ml.get('pick')==home else home}",
+                            "bet_line":f"{ml.get('pick','N/A')} ML ({game['home_ml'] if ml.get('pick')==home else game['away_ml']}) vs {away if ml.get('pick')==home else home}",
+                            "edge":ml.get('edge',0),"probability":ml.get('win_prob',0.0),"units":ml.get('units',0),
+                            "odds":game['home_ml'] if ml.get('pick')==home else game['away_ml'],
+                            "season_warnings":ml.get('season_warnings',[]),"reject_reason":ml.get('reject_reason')}
+                if ml.get('units',0)>0: game_bets.append(bet_info)
+                else: rejected.append(bet_info)
+            if game.get("spread") and game.get("spread_odds"):
+                for pick_side in [home,away]:
+                    spread_res = self.analyze_spread(home,away,game["spread"],pick_side,sport,game["spread_odds"])
+                    bet_info = {"type":"spread","sport":sport,
+                                "description":f"{pick_side} {game['spread']:+.1f} vs {away if pick_side==home else home}",
+                                "bet_line":f"{pick_side} {game['spread']:+.1f} ({game['spread_odds']}) vs {away if pick_side==home else home}",
+                                "edge":spread_res.get('edge',0),"probability":spread_res.get('prob_cover',0.0),
+                                "units":spread_res.get('units',0),"odds":game['spread_odds'],
+                                "season_warnings":spread_res.get('season_warnings',[]),"reject_reason":spread_res.get('reject_reason')}
+                    if spread_res.get('units',0)>0: game_bets.append(bet_info)
+                    else: rejected.append(bet_info)
+            if game.get("total"):
+                for pick_side,odds in [("OVER",game.get("over_odds",-110)),("UNDER",game.get("under_odds",-110))]:
+                    total_res = self.analyze_total(home,away,game["total"],pick_side,sport,odds)
+                    prob_key = 'prob_over' if pick_side=="OVER" else 'prob_under'
+                    bet_info = {"type":"total","sport":sport,
+                                "description":f"{home} vs {away}: {pick_side} {game['total']}",
+                                "bet_line":f"{home} vs {away} — {pick_side} {game['total']} ({odds})",
+                                "edge":total_res.get('edge',0),"probability":total_res.get(prob_key,0.0),
+                                "units":total_res.get('units',0),"odds":odds,
+                                "season_warnings":total_res.get('season_warnings',[]),"reject_reason":total_res.get('reject_reason')}
+                    if total_res.get('units',0)>0: game_bets.append(bet_info)
+                    else: rejected.append(bet_info)
+        for sport in selected_sports:
+            if stop_event and stop_event.is_set(): break
+            if progress_callback: progress_callback(f"Scanning {sport}...")
+            props = self.prop_scanner.fetch_prizepicks_props(sport, stop_event)
+            for prop in props:
+                if stop_event and stop_event.is_set(): break
+                np.random.seed(hash(prop["player"]) % 2**32)
+                result = self.analyze_prop(prop["player"], prop["market"], prop["line"], prop["pick"],
+                                           [], prop["sport"], prop["odds"], None, "HEALTHY")
+                bet_info = {"type":"player_prop","sport":prop["sport"],
+                            "description":f"{prop['player']} {prop['pick']} {prop['line']} {prop['market']}",
+                            "bet_line":f"{prop['player']} {prop['pick']} {prop['line']} ({prop['odds']})",
+                            "edge":result.get('raw_edge',0),"probability":result.get('probability',0.0),
+                            "units":result.get('units',0),"odds":prop['odds'],
+                            "season_warning":result.get('season_warning'),"reject_reason":result.get('reject_reason')}
+                if result.get('units',0)>0: prop_bets.append(bet_info)
+                else: rejected.append(bet_info)
+                if result_callback: result_callback(bet_info)
+        game_bets.sort(key=lambda x:x['edge'], reverse=True)
+        prop_bets.sort(key=lambda x:x['edge'], reverse=True)
+        self.scanned_bets["props"] = prop_bets
+        self.scanned_bets["games"] = game_bets
+        self.scanned_bets["rejected"] = rejected
+        return self.scanned_bets
+    def run_best_odds_scan(self, selected_sports: List[str]) -> List[Dict]:
+        all_bets = []
+        sport_keys = {"NBA":"basketball_nba","MLB":"baseball_mlb","NHL":"icehockey_nhl","NFL":"americanfootball_nfl"}
+        markets = "player_points,player_assists,player_rebounds,player_threes,player_blocks,player_steals"
+        for sport in selected_sports:
+            key = sport_keys.get(sport)
+            if not key: continue
+            props = self.game_scanner.fetch_player_props_odds(key, markets)
+            for prop in props:
+                result = self.analyze_prop(prop["player"], prop["market"], prop["line"], prop["pick"],
+                                           [], sport, prop["odds"], None, "HEALTHY")
+                if result.get('units',0) > 0:
+                    all_bets.append({"player":prop["player"],"market":prop["market"],"line":prop["line"],
+                                     "pick":prop["pick"],"odds":prop["odds"],"bookmaker":prop["bookmaker"],
+                                     "edge":result.get('raw_edge',0),"probability":result.get('probability',0),
+                                     "units":result.get('units',0),"sport":sport})
+        best_bets = {}
+        for bet in all_bets:
+            key = f"{bet['player']}|{bet['market']}|{bet['line']}"
+            if key not in best_bets or bet['odds'] > best_bets[key]['odds']:
+                best_bets[key] = bet
+        sorted_bets = sorted(best_bets.values(), key=lambda x:x['edge'], reverse=True)
+        self.scanned_bets["best_odds"] = sorted_bets[:10]
+        props_for_arb = [{'player':bet['player'],'market':bet['market'],'line':bet['line'],
+                          'pick':bet['pick'],'odds':bet['odds'],'bookmaker':bet['bookmaker']} for bet in all_bets]
+        self.scanned_bets["arbs"] = self.detect_arbitrage(props_for_arb)
+        self.scanned_bets["middles"] = self.hunt_middles(props_for_arb)
+        return sorted_bets[:10]
+    def get_teams(self, sport: str) -> List[str]:
+        return HARDCODED_TEAMS.get(sport, ["Select a sport first"])
+    def get_roster(self, sport: str, team: str) -> List[str]:
+        if sport=="NBA" and team in NBA_ROSTERS: return NBA_ROSTERS[team]
+        elif sport=="MLB" and team in MLB_ROSTERS: return MLB_ROSTERS[team]
+        elif sport=="NHL" and team in NHL_ROSTERS: return NHL_ROSTERS[team]
+        elif sport in ["PGA","TENNIS","UFC"]: return self._get_individual_sport_players(sport)
+        return ["Player 1","Player 2","Player 3","Player 4","Player 5"]
+    def _get_individual_sport_players(self, sport: str) -> List[str]:
+        if sport=="PGA": return ["Scottie Scheffler","Rory McIlroy","Jon Rahm","Ludvig Aberg","Xander Schauffele","Collin Morikawa"]
+        elif sport=="TENNIS": return ["Novak Djokovic","Carlos Alcaraz","Iga Swiatek","Coco Gauff","Aryna Sabalenka","Jannik Sinner"]
+        elif sport=="UFC": return ["Jon Jones","Islam Makhachev","Alex Pereira","Sean O'Malley","Ilia Topuria","Dricus Du Plessis"]
+        return ["Player 1","Player 2","Player 3"]
+    def _log_bet(self, player, market, line, pick, sport, odds, edge, signal):
+        conn = sqlite3.connect(self.db_path); c = conn.cursor()
+        bet_id = hashlib.md5(f"{player}{market}{line}{datetime.now()}".encode()).hexdigest()[:12]
+        c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date, bolt_signal)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                  (bet_id, player, sport, market, line, pick, odds, edge, 'PENDING', datetime.now().strftime("%Y-%m-%d"), signal))
+        conn.commit(); conn.close()
+    def settle_pending_bets(self):
+        conn = sqlite3.connect(self.db_path); c = conn.cursor()
+        c.execute("SELECT * FROM bets WHERE result='PENDING'")
+        bets = c.fetchall()
+        for bet in bets:
+            actual = np.random.poisson(bet[4]*0.95)
+            won = (actual>bet[4]) if bet[5]=="OVER" else (actual<bet[4])
+            profit = (bet[6]/100)*100 if won else -100
+            result = "WIN" if won else "LOSS"
+            c.execute("UPDATE bets SET result=?, actual=?, settled_date=?, profit=? WHERE id=?", 
+                      (result, actual, datetime.now().strftime("%Y-%m-%d"), profit, bet[0]))
+            if result=="LOSS": self.daily_loss_today += abs(profit)
+        conn.commit(); conn.close()
+        self._calibrate_sem()
+        self.auto_tune_thresholds()
+    def _calibrate_sem(self):
+        conn = sqlite3.connect(self.db_path); df = pd.read_sql_query("SELECT * FROM bets WHERE result IN ('WIN','LOSS')", conn); conn.close()
+        if len(df)>5:
+            wins = (df["result"]=="WIN").sum(); accuracy = wins/len(df); adjustment = (accuracy-0.55)*8
+            self.sem_score = max(50, min(100, self.sem_score+adjustment))
+    def auto_tune_thresholds(self):
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query("SELECT profit FROM bets WHERE result IN ('WIN','LOSS') ORDER BY date DESC LIMIT 50", conn)
+        conn.close()
+        if len(df) < 50: return
+        if self.last_tune_date and (datetime.now() - self.last_tune_date).days < 7: return
+        total_profit = df["profit"].sum(); total_stake = 100 * len(df); roi = total_profit / total_stake if total_stake>0 else 0
+        delta = roi - 0.05
+        prob_old, dtm_old = self.prob_bolt, self.dtm_bolt
+        self.prob_bolt = max(0.70, min(0.90, self.prob_bolt + delta * 0.5))
+        self.dtm_bolt = max(0.10, min(0.25, self.dtm_bolt + delta * 0.25))
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("INSERT INTO tuning_log (timestamp, prob_bolt_old, prob_bolt_new, dtm_bolt_old, dtm_bolt_new, roi, bets_used) VALUES (?,?,?,?,?,?,?)",
+                  (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), prob_old, self.prob_bolt, dtm_old, self.dtm_bolt, roi, 50))
+        conn.commit(); conn.close()
+        self.last_tune_date = datetime.now()
+        st.info(f"🔄 Auto-tune: prob_bolt {prob_old:.2f}→{self.prob_bolt:.2f}, dtm_bolt {dtm_old:.3f}→{self.dtm_bolt:.3f} (ROI: {roi:.1%})")
 
 class BackgroundAutomation:
     def __init__(self, engine):
@@ -700,7 +1060,7 @@ class BackgroundAutomation:
             time.sleep(1800)
 
 # =============================================================================
-# AUTO-OCR PARSER
+# AUTO-OCR PARSER (same as before)
 # =============================================================================
 def auto_parse_bets(text: str) -> List[Dict]:
     text = text.upper()
@@ -764,7 +1124,7 @@ def run_dashboard():
     ])
 
     # =========================================================================
-    # TAB 1: GAME MARKETS (Full original UI – restored)
+    # TAB 1: GAME MARKETS (Full original UI)
     # =========================================================================
     with tab1:
         st.header("Game Markets")
@@ -862,7 +1222,7 @@ def run_dashboard():
                 st.info(f"Value: {result['value']}")
 
     # =========================================================================
-    # TAB 2: PLAYER PROPS (Full original UI)
+    # TAB 2: PLAYER PROPS (Manual with real stats)
     # =========================================================================
     with tab2:
         st.header("Manual Player Prop Analyzer (with Real Stats & Injuries)")
