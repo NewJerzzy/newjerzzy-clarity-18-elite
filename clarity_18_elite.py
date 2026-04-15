@@ -1,9 +1,9 @@
 """
-CLARITY 18.0 ELITE – FULLY ORGANIZED (Merged Scanners + Clean Layout)
-- Tabs: Game Markets | Player Props | PrizePicks Scanner | SCANNERS & ACCURACY | Image Analysis | Auto-Tune
-- Scanners tab contains: Best Odds, Arbitrage, Middles, Accuracy (all in one place)
-- Sidebar quick links for easy navigation
-- All original features intact
+CLARITY 18.0 ELITE – COMPLETE (Auto-Load + Alternate Lines + Parlay Builder)
+- Auto-load today's games with CLARITY recommendations
+- Alternate lines automatically scanned
+- Parlay builder (2-leg and 3-leg) from approved bets
+- Organized: 6 tabs (Scanners & Accuracy merged)
 """
 
 import numpy as np
@@ -39,7 +39,7 @@ UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
-VERSION = "18.0 Elite (Organized)"
+VERSION = "18.0 Elite (Parlay Builder)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -1181,20 +1181,20 @@ def auto_parse_bets(text: str) -> List[Dict]:
     return unique
 
 # =============================================================================
-# STREAMLIT DASHBOARD (ORGANIZED: 6 TABS, SCANNERS MERGED)
+# STREAMLIT DASHBOARD (with Parlay Builder)
 # =============================================================================
 engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Organized: Scanners & Accuracy merged | Version: {VERSION}**")
+    st.markdown(f"**Auto-Load + Alternate Lines + Parlay Builder | Version: {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Real player stats (API-Sports)")
         st.success("✅ Live injury feed")
-        st.success("✅ Auto‑Load + Recommendations")
+        st.success("✅ Auto-Load + Parlay Builder")
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("Daily Loss Left", f"${max(0, engine.daily_loss_limit - engine.daily_loss_today):.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
@@ -1203,27 +1203,25 @@ def run_dashboard():
         
         st.markdown("---")
         st.caption("💡 **Quick Tips:**")
-        st.caption("• **Game Markets** → Auto‑load games, get CLARITY picks")
+        st.caption("• **Game Markets** → Auto-load games, get CLARITY picks & parlays")
         st.caption("• **Scanners** → Best odds, arbitrage, middles, accuracy")
         st.caption("• **PrizePicks** → Automated prop scanner")
-        st.caption("• **Arbitrage & Middles** are now inside **Scanners** tab")
 
-    # NEW TAB ORDER – only 6 tabs (Arbitrage merged into Scanners)
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🎮 GAME MARKETS", 
         "🎯 PLAYER PROPS", 
         "🏆 PRIZEPICKS SCANNER", 
-        "📊 SCANNERS & ACCURACY",   # Merged: Best Odds, Arbitrage, Middles, Accuracy
+        "📊 SCANNERS & ACCURACY", 
         "📸 IMAGE ANALYSIS", 
         "🔧 AUTO-TUNE"
     ])
 
     # =========================================================================
-    # TAB 1: GAME MARKETS (unchanged from your working version)
+    # TAB 1: GAME MARKETS (with Auto-Load, Alternate Lines, & Parlay Builder)
     # =========================================================================
     with tab1:
         st.header("Game Markets")
-        st.subheader("📅 Auto‑Load Today's Games")
+        st.subheader("📅 Auto-Load Today's Games")
         col1, col2 = st.columns([2,1])
         with col1:
             auto_sport = st.selectbox("Select Sport", ["NBA", "MLB", "NHL", "NFL"], key="auto_sport")
@@ -1233,6 +1231,7 @@ def run_dashboard():
                     games = engine.game_scanner.fetch_todays_games([auto_sport])
                     if games:
                         st.session_state["auto_games"] = games
+                        st.session_state["auto_games_analyzed"] = None
                         st.success(f"Loaded {len(games)} games")
                     else:
                         st.warning("No games found today.")
@@ -1250,46 +1249,190 @@ def run_dashboard():
                 st.info(f"**{home}** vs **{away}**")
                 
                 recommendations_found = False
+                approved_bets_for_parlay = []
                 
-                # Moneyline
+                # ----- Moneyline -----
                 if game.get("home_ml") and game.get("away_ml"):
                     ml_result = engine.analyze_moneyline(home, away, sport, game["home_ml"], game["away_ml"])
                     if ml_result.get('units', 0) > 0:
                         st.success(f"✅ CLARITY APPROVED: **{ml_result['pick']} ML** ({ml_result['odds']}) – Edge: {ml_result['edge']:.1%} – Units: {ml_result['units']}")
+                        approved_bets_for_parlay.append({
+                            "description": f"{ml_result['pick']} ML",
+                            "odds": ml_result['odds'],
+                            "edge": ml_result['edge'],
+                            "units": ml_result['units'],
+                            "game": f"{home} vs {away}"
+                        })
                         recommendations_found = True
                     else:
                         st.info(f"❌ Moneyline not approved – {ml_result.get('reject_reason', 'Insufficient edge')}")
                 
-                # Spread
+                # ----- Standard Spread -----
                 if game.get("spread") and game.get("spread_odds"):
                     spread_approved = False
                     for pick_side in [home, away]:
                         spread_res = engine.analyze_spread(home, away, game["spread"], pick_side, sport, game["spread_odds"])
                         if spread_res.get('units', 0) > 0:
                             st.success(f"✅ CLARITY APPROVED: **{pick_side} {game['spread']:+.1f}** ({game['spread_odds']}) – Edge: {spread_res['edge']:.1%} – Units: {spread_res['units']}")
+                            approved_bets_for_parlay.append({
+                                "description": f"{pick_side} {game['spread']:+.1f}",
+                                "odds": game['spread_odds'],
+                                "edge": spread_res['edge'],
+                                "units": spread_res['units'],
+                                "game": f"{home} vs {away}"
+                            })
                             spread_approved = True
                             recommendations_found = True
                     if not spread_approved:
                         st.info(f"❌ Spread not approved – No significant edge")
                 
-                # Total
+                # ----- Standard Total -----
                 if game.get("total"):
                     total_approved = False
                     for pick_side, odds in [("OVER", game.get("over_odds", -110)), ("UNDER", game.get("under_odds", -110))]:
                         total_res = engine.analyze_total(home, away, game["total"], pick_side, sport, odds)
                         if total_res.get('units', 0) > 0:
                             st.success(f"✅ CLARITY APPROVED: **{pick_side} {game['total']}** ({odds}) – Edge: {total_res['edge']:.1%} – Units: {total_res['units']}")
+                            approved_bets_for_parlay.append({
+                                "description": f"{pick_side} {game['total']}",
+                                "odds": odds,
+                                "edge": total_res['edge'],
+                                "units": total_res['units'],
+                                "game": f"{home} vs {away}"
+                            })
                             total_approved = True
                             recommendations_found = True
                     if not total_approved:
                         st.info(f"❌ Total not approved – No significant edge")
                 
-                if not recommendations_found:
+                # ----- Alternate Lines -----
+                st.markdown("---")
+                st.subheader("🔄 Best Alternate Lines")
+                alt_found = False
+                
+                if game.get("spread") and game.get("spread_odds"):
+                    alt_spreads = [game["spread"] + 1, game["spread"] - 1]
+                    for alt_spread in alt_spreads:
+                        if abs(alt_spread - game["spread"]) <= 2:
+                            est_odds = game["spread_odds"] + (10 if alt_spread > game["spread"] else -10)
+                            for pick_side in [home, away]:
+                                alt_res = engine.analyze_spread(home, away, alt_spread, pick_side, sport, est_odds)
+                                if alt_res.get('units', 0) > 0:
+                                    st.success(f"✅ CLARITY APPROVED (Alternate): **{pick_side} {alt_spread:+.1f}** (est. {est_odds}) – Edge: {alt_res['edge']:.1%} – Units: {alt_res['units']}")
+                                    alt_found = True
+                                    break
+                
+                if game.get("total"):
+                    alt_totals = [game["total"] + 1, game["total"] - 1]
+                    for alt_total in alt_totals:
+                        est_over_odds = game.get("over_odds", -110) - 10 if alt_total > game["total"] else game.get("over_odds", -110) + 10
+                        est_under_odds = game.get("under_odds", -110) - 10 if alt_total < game["total"] else game.get("under_odds", -110) + 10
+                        for pick_side, odds in [("OVER", est_over_odds), ("UNDER", est_under_odds)]:
+                            alt_res = engine.analyze_total(home, away, alt_total, pick_side, sport, odds)
+                            if alt_res.get('units', 0) > 0:
+                                st.success(f"✅ CLARITY APPROVED (Alternate): **{pick_side} {alt_total}** (est. {odds}) – Edge: {alt_res['edge']:.1%} – Units: {alt_res['units']}")
+                                alt_found = True
+                                break
+                
+                if not alt_found:
+                    st.info("No alternate lines with significant edge found.")
+                
+                if not recommendations_found and not alt_found:
                     st.warning("⚠️ No CLARITY approved bets found for this game.")
                 
+                # =========================================================================
+                # CLARITY SUGGESTED PARLAY BUILDER
+                # =========================================================================
                 st.markdown("---")
-                st.caption("💡 Tip: For alternate lines, use the 'Alternate Lines' tab below.")
+                st.subheader("🎯 CLARITY SUGGESTED PARLAYS")
+                st.caption("Based on approved bets from all loaded games (different games only)")
+                
+                # Collect all approved bets from all loaded games
+                if "auto_games_analyzed" not in st.session_state or st.session_state["auto_games_analyzed"] is None:
+                    all_approved = []
+                    for g in st.session_state["auto_games"]:
+                        g_home = g['home']
+                        g_away = g['away']
+                        g_sport = g['sport']
+                        if g.get("home_ml") and g.get("away_ml"):
+                            ml_res = engine.analyze_moneyline(g_home, g_away, g_sport, g["home_ml"], g["away_ml"])
+                            if ml_res.get('units', 0) > 0:
+                                all_approved.append({
+                                    "description": f"{ml_res['pick']} ML",
+                                    "odds": ml_res['odds'],
+                                    "edge": ml_res['edge'],
+                                    "game": f"{g_home} vs {g_away}"
+                                })
+                        if g.get("spread") and g.get("spread_odds"):
+                            for pick_side in [g_home, g_away]:
+                                spread_res = engine.analyze_spread(g_home, g_away, g["spread"], pick_side, g_sport, g["spread_odds"])
+                                if spread_res.get('units', 0) > 0:
+                                    all_approved.append({
+                                        "description": f"{pick_side} {g['spread']:+.1f}",
+                                        "odds": g['spread_odds'],
+                                        "edge": spread_res['edge'],
+                                        "game": f"{g_home} vs {g_away}"
+                                    })
+                        if g.get("total"):
+                            for pick_side, odds in [("OVER", g.get("over_odds", -110)), ("UNDER", g.get("under_odds", -110))]:
+                                total_res = engine.analyze_total(g_home, g_away, g["total"], pick_side, g_sport, odds)
+                                if total_res.get('units', 0) > 0:
+                                    all_approved.append({
+                                        "description": f"{pick_side} {g['total']}",
+                                        "odds": odds,
+                                        "edge": total_res['edge'],
+                                        "game": f"{g_home} vs {g_away}"
+                                    })
+                    st.session_state["auto_games_analyzed"] = all_approved
+                
+                all_approved = st.session_state.get("auto_games_analyzed", [])
+                
+                if len(all_approved) < 2:
+                    st.info("Need at least 2 approved bets from different games to build a parlay.")
+                else:
+                    def decimal_odds(american):
+                        return american/100+1 if american>0 else 100/abs(american)+1
+                    
+                    # Build 2-leg parlay
+                    best_bets = sorted(all_approved, key=lambda x: x['edge'], reverse=True)
+                    leg1 = best_bets[0]
+                    leg2 = None
+                    for bet in best_bets[1:]:
+                        if bet['game'] != leg1['game']:
+                            leg2 = bet
+                            break
+                    if leg2:
+                        dec1 = decimal_odds(leg1['odds'])
+                        dec2 = decimal_odds(leg2['odds'])
+                        parlay_odds = round((dec1 * dec2 - 1) * 100)
+                        parlay_odds_str = f"+{parlay_odds}" if parlay_odds > 0 else str(parlay_odds)
+                        st.success(f"**🔒 2-LEG PARLAY**")
+                        st.markdown(f"- {leg1['description']} ({leg1['odds']}) – Edge: {leg1['edge']:.1%}")
+                        st.markdown(f"- {leg2['description']} ({leg2['odds']}) – Edge: {leg2['edge']:.1%}")
+                        st.caption(f"📊 Estimated odds: {parlay_odds_str}")
+                    
+                    # Build 3-leg parlay
+                    leg3 = None
+                    for bet in best_bets[2:]:
+                        if bet['game'] not in [leg1['game'], leg2['game']] if leg2 else []:
+                            leg3 = bet
+                            break
+                    if leg2 and leg3:
+                        dec1 = decimal_odds(leg1['odds'])
+                        dec2 = decimal_odds(leg2['odds'])
+                        dec3 = decimal_odds(leg3['odds'])
+                        parlay_odds = round((dec1 * dec2 * dec3 - 1) * 100)
+                        parlay_odds_str = f"+{parlay_odds}" if parlay_odds > 0 else str(parlay_odds)
+                        st.success(f"**🚀 3-LEG PARLAY**")
+                        st.markdown(f"- {leg1['description']} ({leg1['odds']}) – Edge: {leg1['edge']:.1%}")
+                        st.markdown(f"- {leg2['description']} ({leg2['odds']}) – Edge: {leg2['edge']:.1%}")
+                        st.markdown(f"- {leg3['description']} ({leg3['odds']}) – Edge: {leg3['edge']:.1%}")
+                        st.caption(f"📊 Estimated odds: {parlay_odds_str}")
+                
+                st.markdown("---")
+                st.caption("💡 Tip: For more alternate lines, use the 'Alternate Lines' tab below.")
         
+        # Manual Entry (unchanged from your working version)
         st.markdown("---")
         st.subheader("✏️ Manual Entry")
         game_tab1, game_tab2, game_tab3, game_tab4 = st.tabs(["💰 Moneyline", "📊 Spread", "📈 Totals", "🔄 Alt Lines"])
@@ -1386,7 +1529,7 @@ def run_dashboard():
                 st.info(f"Value: {result['value']}")
 
     # =========================================================================
-    # TAB 2: PLAYER PROPS (unchanged)
+    # TAB 2: PLAYER PROPS (unchanged from your working version)
     # =========================================================================
     with tab2:
         st.header("Manual Player Prop Analyzer (with Real Stats & Injuries)")
@@ -1517,13 +1660,12 @@ def run_dashboard():
                             st.caption("Reason: Insufficient edge")
 
     # =========================================================================
-    # TAB 4: SCANNERS & ACCURACY (merged: Best Odds, Arbitrage, Middles, Accuracy)
+    # TAB 4: SCANNERS & ACCURACY (merged)
     # =========================================================================
     with tab4:
         st.header("📊 Scanners & Accuracy Dashboard")
         scanner_tabs = st.tabs(["📈 Best Odds", "💰 Arbitrage", "🎯 Middles", "📊 Accuracy"])
         
-        # ----- Best Odds Scanner -----
         with scanner_tabs[0]:
             st.header("Best Odds Scanner")
             col1, col2 = st.columns([2,1])
@@ -1540,7 +1682,6 @@ def run_dashboard():
                     st.markdown(f"**{i}. {bet['player']} {bet['market']} {bet['pick']} {bet['line']}**")
                     st.caption(f"Odds: {bet['odds']} @ {bet['bookmaker']} | Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
         
-        # ----- Arbitrage Scanner -----
         with scanner_tabs[1]:
             st.header("Arbitrage Detector")
             if st.button("🔍 SCAN FOR ARBITRAGE", type="primary"):
@@ -1557,7 +1698,6 @@ def run_dashboard():
                     else:
                         st.info("No arbitrage opportunities found.")
         
-        # ----- Middles Scanner -----
         with scanner_tabs[2]:
             st.header("Middle Hunter")
             if st.button("🔍 HUNT FOR MIDDLES", type="primary"):
@@ -1574,7 +1714,6 @@ def run_dashboard():
                     else:
                         st.info("No middle opportunities found.")
         
-        # ----- Accuracy Dashboard -----
         with scanner_tabs[3]:
             st.header("Public Accuracy Dashboard")
             accuracy = engine.get_accuracy_dashboard()
