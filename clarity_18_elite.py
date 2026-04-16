@@ -1,8 +1,8 @@
 """
-CLARITY 18.0 ELITE – UNIVERSAL PARSER
-- Extracts moneyline, spread, totals, AND player props from raw sportsbook text
-- Works with MLB board, NBA board, and player prop listings
-- Paste as-is – no reformatting required
+CLARITY 18.0 ELITE – UNIVERSAL MULTI-FORMAT PARSER
+- Extracts every leg from bet tickets and odds boards
+- Logs win/loss results when available
+- Handles tennis, NHL, MLB, NBA, and player props
 """
 
 import numpy as np
@@ -38,7 +38,7 @@ ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 
-VERSION = "18.0 Elite (Universal Parser)"
+VERSION = "18.0 Elite (Universal Multi-Format Parser)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -1142,138 +1142,142 @@ class BackgroundAutomation:
             time.sleep(1800)
 
 # =============================================================================
-# UNIVERSAL RAW ODDS BOARD PARSER
+# UNIVERSAL MULTI-FORMAT PARSER
 # =============================================================================
 def parse_raw_odds_board(text: str) -> List[Dict]:
     """
-    Extract all bets (moneyline, spread, total, player props) from raw sportsbook text.
-    Handles MLB board, NBA board, and player prop listings.
+    Extract all bets from bet tickets or odds boards.
+    Returns list of dicts with type, team/player, odds, line, result, sport.
     """
     bets = []
-    lines = text.split('\n')
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
     
-    # Pre-compile patterns
-    team_pattern = re.compile(r'^([A-Za-z\s\.]+(?:[A-Z][a-z]+)+)')  # Team names at line start
-    spread_pattern = re.compile(r'^([+-]\d+\.?\d*)\s*\(([+-]\d+)\)')
-    moneyline_pattern = re.compile(r'^([+-]\d+)$')
-    total_pattern = re.compile(r'^[OU]\s*(\d+\.?\d*)\s*\(([+-]\d+)\)')
+    # Determine overall result (WIN/LOSS) from ticket header
+    overall_result = None
+    for line in lines[:10]:
+        if re.search(r'\b(LOSS|LOST)\b', line, re.IGNORECASE):
+            overall_result = "LOSS"
+            break
+        elif re.search(r'\b(WIN|WON)\b', line, re.IGNORECASE) and not re.search(r'PARLAY.*LOSS', line, re.IGNORECASE):
+            overall_result = "WIN"
+            break
     
-    # Player prop patterns
-    player_name_pattern = re.compile(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)')
-    prop_line_pattern = re.compile(r'^(\d+\.?\d*)\s+([A-Za-z\+]+)')
+    # Detect sport from text
+    sport = "MLB"
+    if re.search(r'NHL|Ice Hockey', text, re.IGNORECASE): sport = "NHL"
+    elif re.search(r'NBA|Basketball', text, re.IGNORECASE): sport = "NBA"
+    elif re.search(r'NFL|Football', text, re.IGNORECASE): sport = "NFL"
+    elif re.search(r'WTA|ATP|Tennis', text, re.IGNORECASE): sport = "TENNIS"
     
-    current_game = None
-    current_sport = "MLB"  # default, will be overridden if NBA teams detected
-    
-    for i, line in enumerate(lines):
-        line = line.strip()
-        if not line:
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        
+        # Ticket format: "New York Mets (+178)" or "Dallas Stars -111"
+        ticket_ml = re.match(r'^([A-Za-z\s\.]+?)\s+\(?([+-]\d+)\)?$', line)
+        if ticket_ml:
+            team = ticket_ml.group(1).strip()
+            odds = int(ticket_ml.group(2))
+            # Look ahead for sport/league info to confirm sport
+            for j in range(i+1, min(i+5, len(lines))):
+                if re.search(r'NHL|MLB|NBA', lines[j], re.IGNORECASE):
+                    if 'NHL' in lines[j]: sport = 'NHL'
+                    elif 'MLB' in lines[j]: sport = 'MLB'
+                    elif 'NBA' in lines[j]: sport = 'NBA'
+                    break
+            bets.append({
+                "type": "moneyline",
+                "team": team,
+                "odds": odds,
+                "sport": sport,
+                "result": overall_result
+            })
+            i += 1
             continue
         
-        # Detect sport from team names
-        if any(nba_team in line for nba_team in ["Lakers", "Celtics", "Knicks", "Nuggets", "Bucks", "Suns"]):
-            current_sport = "NBA"
+        # Tennis handicap: "Sonmez, Zeynep (+4.5)"
+        tennis_hc = re.match(r'^([A-Za-z\-\'\.]+,\s+[A-Za-z\-\'\.]+)\s*\(([+-]\d+\.?\d*)\)$', line)
+        if tennis_hc:
+            player = tennis_hc.group(1).strip()
+            line_val = float(tennis_hc.group(2))
+            # Next line should be odds
+            odds = -110
+            if i+1 < len(lines) and re.match(r'^[+-]\d+$', lines[i+1]):
+                odds = int(lines[i+1])
+                i += 1
+            bets.append({
+                "type": "spread",
+                "player": player,
+                "line": line_val,
+                "odds": odds,
+                "sport": "TENNIS",
+                "result": overall_result
+            })
+            i += 1
+            continue
         
-        # Look for team names (start of a game block)
-        team_match = team_pattern.match(line)
-        if team_match and not re.search(r'[OU]\s*\d', line):  # avoid totals lines
-            team_name = team_match.group(1).strip()
-            # Check if it's a known team
-            known_teams = HARDCODED_TEAMS.get(current_sport, [])
-            if any(team_name in t for t in known_teams):
-                if current_game is None:
-                    current_game = {"home": team_name, "away": None, "sport": current_sport}
-                elif current_game.get("away") is None and team_name != current_game["home"]:
-                    current_game["away"] = team_name
+        # Team run line: "Toronto Blue Jays (-1.5)"
+        runline = re.match(r'^([A-Za-z\s\.]+?)\s*\(([+-]\d+\.?\d*)\)$', line)
+        if runline:
+            team = runline.group(1).strip()
+            line_val = float(runline.group(2))
+            # Next line might be odds
+            odds = -110
+            if i+1 < len(lines) and re.match(r'^[+-]\d+$', lines[i+1]):
+                odds = int(lines[i+1])
+                i += 1
+            bets.append({
+                "type": "spread",
+                "team": team,
+                "line": line_val,
+                "odds": odds,
+                "sport": sport,
+                "result": overall_result
+            })
+            i += 1
+            continue
         
-        # If we have a game context, look for odds
-        if current_game and current_game.get("home") and current_game.get("away"):
-            # Moneyline
-            ml_match = moneyline_pattern.match(line)
-            if ml_match:
-                odds = int(ml_match.group(1))
-                if "home_ml" not in current_game:
-                    current_game["home_ml"] = odds
-                elif "away_ml" not in current_game:
-                    current_game["away_ml"] = odds
-                    # Game is complete, add it
-                    bets.append({
-                        "type": "game",
-                        "sport": current_sport,
-                        "home": current_game["home"],
-                        "away": current_game["away"],
-                        "home_ml": current_game.get("home_ml"),
-                        "away_ml": current_game.get("away_ml"),
-                        "spread": current_game.get("spread"),
-                        "spread_odds": current_game.get("spread_odds"),
-                        "total": current_game.get("total"),
-                        "over_odds": current_game.get("over_odds"),
-                        "under_odds": current_game.get("under_odds")
-                    })
-                    current_game = None
-            
-            # Spread
-            spread_match = spread_pattern.match(line)
-            if spread_match:
-                spread = float(spread_match.group(1))
-                odds = int(spread_match.group(2))
-                current_game["spread"] = spread
-                current_game["spread_odds"] = odds
-            
-            # Total
-            total_match = total_pattern.search(line)
-            if total_match:
-                total = float(total_match.group(1))
-                odds = int(total_match.group(2))
-                if "total" not in current_game:
-                    current_game["total"] = total
-                    current_game["over_odds"] = odds
-                else:
-                    current_game["under_odds"] = odds
+        # Player prop: "Jalen Brunson 14.5 Rebs+Asts"
+        prop_match = re.match(r'^([A-Za-z\s\.\-\']+)\s+(\d+\.?\d*)\s+([A-Za-z\+]+)$', line)
+        if prop_match:
+            player = prop_match.group(1).strip()
+            line_val = float(prop_match.group(2))
+            market = prop_match.group(3).strip().upper()
+            bets.append({
+                "type": "player_prop",
+                "player": player,
+                "market": market,
+                "line": line_val,
+                "sport": sport,
+                "result": overall_result
+            })
+            i += 1
+            continue
         
-        # Player props detection (no game context needed)
-        player_match = player_name_pattern.match(line)
-        if player_match:
-            player = player_match.group(1).strip()
-            # Look ahead for prop line
-            for j in range(i+1, min(i+5, len(lines))):
-                next_line = lines[j].strip()
-                prop_match = prop_line_pattern.match(next_line)
-                if prop_match:
-                    line_val = float(prop_match.group(1))
-                    market = prop_match.group(2).upper().replace(" ", "_")
-                    # Map common prop names
-                    market_map = {
-                        "PTS": "PTS", "REB": "REB", "AST": "AST", 
-                        "REBS+ASTS": "PRA", "PTS+REB": "PR", "PTS+AST": "PA",
-                        "POINTS": "PTS", "REBOUNDS": "REB", "ASSISTS": "AST"
-                    }
-                    market = market_map.get(market, market)
-                    bets.append({
-                        "type": "player_prop",
-                        "player": player,
-                        "market": market,
-                        "line": line_val,
-                        "sport": current_sport
-                    })
-                    break
+        i += 1
     
-    # Also try to extract totals/spreads from NBA format
-    nba_total_pattern = re.compile(r'[OU](\d+\.?\d*)\s*\(([+-]\d+)\)')
-    for line in lines:
-        total_match = nba_total_pattern.search(line)
-        if total_match:
-            # This is a total line, but we need the game context from surrounding lines
-            pass
+    # If no bets found, try simpler patterns
+    if not bets:
+        # NHL moneyline: "Dallas Stars -111"
+        for line in lines:
+            ml_simple = re.match(r'^([A-Za-z\s\.]+)\s+([+-]\d+)$', line)
+            if ml_simple:
+                team = ml_simple.group(1).strip()
+                odds = int(ml_simple.group(2))
+                bets.append({
+                    "type": "moneyline",
+                    "team": team,
+                    "odds": odds,
+                    "sport": sport,
+                    "result": overall_result
+                })
     
     return bets
 
 def parse_chat_transcript(text: str) -> List[Dict]:
-    """Wrapper that uses the universal parser."""
     return parse_raw_odds_board(text)
 
 def auto_parse_bets(text: str) -> List[Dict]:
-    """Legacy OCR parser for screenshots."""
     text = text.upper()
     text = text.replace("0VER","OVER")
     bets = []
@@ -1307,7 +1311,7 @@ engine = Clarity18Elite()
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Universal Board Parser | {VERSION}**")
+    st.markdown(f"**Universal Multi-Format Parser | {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
@@ -1868,18 +1872,19 @@ def run_dashboard():
             st.dataframe(df)
         
         st.markdown("---")
-        st.subheader("📥 IMPORT BETS FROM RAW SPORTSBOOK TEXT")
+        st.subheader("📥 IMPORT BETS FROM TICKET OR BOARD")
         st.markdown("""
-        **Paste any format – MLB board, NBA board, or player prop listings.**
-        The parser automatically extracts:
-        - Moneyline (e.g., -180, +155)
-        - Spread (e.g., -4.0 (-115))
-        - Total (e.g., O218.5 (-110))
-        - Player props (e.g., Jalen Brunson 14.5 Rebs+Asts)
+        **Paste any bet ticket or odds board text.** The parser extracts:
+        - Moneyline: `New York Mets (+178)`, `Dallas Stars -111`
+        - Spread/Run Line: `Toronto Blue Jays (-1.5) +137`
+        - Tennis Handicap: `Sonmez, Zeynep (+4.5) +105`
+        - Player Props: `Jalen Brunson 14.5 Rebs+Asts`
+        
+        **Win/Loss results are automatically detected** from ticket headers (LOSS/WIN).
         """)
         
-        raw_text = st.text_area("Paste raw sportsbook text here", height=300)
-        if st.button("🔍 Extract Bets from Text", type="primary"):
+        raw_text = st.text_area("Paste ticket or board text here", height=300)
+        if st.button("🔍 Extract Bets", type="primary"):
             if raw_text.strip():
                 imported_bets = parse_raw_odds_board(raw_text)
                 if imported_bets:
@@ -1887,10 +1892,15 @@ def run_dashboard():
                     st.subheader("📋 Bets to import")
                     
                     for bet in imported_bets:
-                        if bet.get("type") == "game":
-                            st.write(f"🎮 {bet['home']} vs {bet['away']} | ML: {bet.get('home_ml')}/{bet.get('away_ml')} | Spread: {bet.get('spread')} ({bet.get('spread_odds')}) | Total: {bet.get('total')} (O:{bet.get('over_odds')} U:{bet.get('under_odds')})")
+                        if bet.get("type") == "moneyline":
+                            st.write(f"💰 {bet['team']} ML {bet['odds']} | Sport: {bet.get('sport','?')} | Result: {bet.get('result','?')}")
+                        elif bet.get("type") == "spread":
+                            if bet.get("player"):
+                                st.write(f"🎾 {bet['player']} {bet['line']:+.1f} {bet['odds']} | Result: {bet.get('result','?')}")
+                            else:
+                                st.write(f"📊 {bet['team']} {bet['line']:+.1f} {bet['odds']} | Sport: {bet.get('sport','?')} | Result: {bet.get('result','?')}")
                         elif bet.get("type") == "player_prop":
-                            st.write(f"🎯 {bet['player']} - {bet['line']} {bet['market']}")
+                            st.write(f"🎯 {bet['player']} {bet['line']} {bet['market']} | Result: {bet.get('result','?')}")
                     
                     if st.button("✅ IMPORT ALL EXTRACTED BETS"):
                         imported_count = 0
@@ -1899,21 +1909,28 @@ def run_dashboard():
                             c = conn.cursor()
                             bet_id = hashlib.md5(f"{str(bet)}{datetime.now()}".encode()).hexdigest()[:12]
                             
-                            if bet.get("type") == "game":
-                                # Store as pending game bet
-                                c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date, bolt_signal)
-                                             VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                                          (bet_id, f"{bet['home']} vs {bet['away']}", bet.get('sport','MLB'), 'game', 0, '', 0, 0, 'PENDING', datetime.now().strftime("%Y-%m-%d"), "RAW_IMPORT"))
-                                imported_count += 1
+                            result = bet.get("result", "PENDING")
+                            if result and result.upper() in ["WIN", "LOSS"]:
+                                profit = 100 if result.upper() == "WIN" else -100  # simplified; real profit needs stake
+                            else:
+                                result = "PENDING"
+                                profit = 0
                             
-                            elif bet.get("type") == "player_prop":
-                                c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date, bolt_signal)
-                                             VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                                          (bet_id, bet['player'], bet.get('sport','NBA'), bet['market'], bet['line'], 'OVER', -110, 0, 'PENDING', datetime.now().strftime("%Y-%m-%d"), "RAW_IMPORT"))
-                                imported_count += 1
+                            player = bet.get("team") or bet.get("player") or "Unknown"
+                            sport = bet.get("sport", "MLB")
+                            market = bet.get("type", "moneyline")
+                            line = bet.get("line", 0)
+                            odds = bet.get("odds", -110)
                             
+                            c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date, settled_date, bolt_signal, profit)
+                                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                      (bet_id, player, sport, market, line, '', odds, 0, result,
+                                       datetime.now().strftime("%Y-%m-%d"),
+                                       datetime.now().strftime("%Y-%m-%d") if result != "PENDING" else None,
+                                       "IMPORTED", profit))
                             conn.commit()
                             conn.close()
+                            imported_count += 1
                         
                         st.success(f"✅ Imported {imported_count} bets successfully!")
                         engine._calibrate_sem()
@@ -1921,7 +1938,7 @@ def run_dashboard():
                         engine._auto_retrain_ml()
                         st.rerun()
                 else:
-                    st.warning("No bets found. Try pasting a larger section of the odds board.")
+                    st.warning("No bets found. Try pasting a larger section.")
             else:
                 st.warning("Please paste some text.")
         
@@ -1945,7 +1962,7 @@ def run_dashboard():
                 row = c.fetchone()
                 if row:
                     line, pick, odds = row
-                    if pick and line:  # For props
+                    if pick and line:
                         won = (actual_result > line) if pick == "OVER" else (actual_result < line)
                         result = "WIN" if won else "LOSS"
                         profit = (abs(odds)/100 * 100) if won else -100
@@ -1953,7 +1970,7 @@ def run_dashboard():
                             profit = (odds/100 * 100) if won else -100
                         c.execute("UPDATE bets SET result = ?, actual = ?, settled_date = ?, profit = ? WHERE id = ?",
                                   (result, actual_result, datetime.now().strftime("%Y-%m-%d"), profit, selected_bet_id))
-                    else:  # For game bets without specific pick
+                    else:
                         c.execute("UPDATE bets SET result = ?, settled_date = ? WHERE id = ?",
                                   ("SETTLED", datetime.now().strftime("%Y-%m-%d"), selected_bet_id))
                     conn.commit()
