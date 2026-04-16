@@ -1,8 +1,6 @@
 """)
-
 prop_text = st.text_area("Paste player props here", height=250)
 game_date_input = st.date_input("Game date (default: yesterday)", value=datetime.now() - timedelta(days=1))
-
 if st.button("🔍 Import & Auto-Settle Props", type="primary"):
     if prop_text.strip():
         with st.spinner("Parsing and settling props..."):
@@ -12,17 +10,14 @@ if st.button("🔍 Import & Auto-Settle Props", type="primary"):
             else:
                 imported_count = 0
                 for prop in props:
-                    # Auto-settle
                     result, actual = auto_settle_prop(
                         prop["player"], prop["market"], prop["line"], prop["pick"],
                         prop.get("sport", "NBA"), prop.get("opponent", ""), prop["game_date"]
                     )
-                    # Determine profit (assuming standard -110 odds)
                     odds = -110
                     profit = (abs(odds)/100 * 100) if result == "WIN" else -100
                     if odds > 0:
                         profit = (odds/100 * 100) if result == "WIN" else -100
-                    
                     conn = sqlite3.connect(engine.db_path)
                     c = conn.cursor()
                     bet_id = hashlib.md5(f"{prop['player']}{prop['market']}{prop['line']}{datetime.now()}".encode()).hexdigest()[:12]
@@ -34,7 +29,6 @@ if st.button("🔍 Import & Auto-Settle Props", type="primary"):
                     conn.commit()
                     conn.close()
                     imported_count += 1
-                
                 st.success(f"✅ Imported and settled {imported_count} props!")
                 engine._calibrate_sem()
                 engine.auto_tune_thresholds()
@@ -42,7 +36,6 @@ if st.button("🔍 Import & Auto-Settle Props", type="primary"):
                 st.rerun()
     else:
         st.warning("Please paste some props.")
-
 st.markdown("---")
 st.subheader("📋 Pending Bets")
 conn = sqlite3.connect(engine.db_path)
