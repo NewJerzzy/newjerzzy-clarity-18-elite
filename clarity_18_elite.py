@@ -1,8 +1,8 @@
 """
-CLARITY 18.0 ELITE – MULTI-TICKET SEGMENTED PARSER
-- Segments pasted text into individual tickets
-- Correctly assigns WIN/LOSS per ticket
-- Extracts moneyline, spread, total, and player props
+CLARITY 18.0 ELITE – ROSTER FIX + NEXT DAY GAMES + TAB REORDER
+- Real NBA/MLB/NHL rosters fetched from API-Sports
+- Option to load tomorrow's games
+- PrizePicks Scanner and Scanners & Accuracy tabs moved up
 """
 
 import numpy as np
@@ -38,7 +38,7 @@ ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 
-VERSION = "18.0 Elite (Multi-Ticket Segmented Parser)"
+VERSION = "18.0 Elite (Roster + Tomorrow + Tab Reorder)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -328,6 +328,43 @@ def fetch_player_stats_and_injury(player_name: str, sport: str, market: str, num
     return stats, injury_status
 
 # =============================================================================
+# TEAM ROSTER FETCHER (NEW)
+# =============================================================================
+@st.cache_data(ttl=86400)  # cache for 24 hours
+def fetch_team_roster(sport: str, team: str) -> List[str]:
+    """Fetch current roster for a team from API-Sports."""
+    if sport not in ["NBA", "MLB", "NHL", "NFL"]:
+        return []
+    league_map = {"NBA": 12, "MLB": 1, "NHL": 5, "NFL": 1}
+    league_id = league_map.get(sport)
+    if not league_id:
+        return []
+    headers = {"x-apisports-key": API_SPORTS_KEY}
+    try:
+        # First get team ID
+        url = "https://v1.api-sports.io/teams"
+        params = {"league": league_id, "season": "2025-2026" if sport in ["NBA","NHL"] else "2025", "search": team}
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        if r.status_code != 200:
+            return []
+        data = r.json().get("response", [])
+        if not data:
+            return []
+        team_id = data[0]["team"]["id"]
+        
+        # Get players for team
+        players_url = "https://v1.api-sports.io/players"
+        params = {"league": league_id, "season": "2025-2026" if sport in ["NBA","NHL"] else "2025", "team": team_id}
+        r2 = requests.get(players_url, headers=headers, params=params, timeout=10)
+        if r2.status_code != 200:
+            return []
+        players_data = r2.json().get("response", [])
+        roster = [p["player"]["name"] for p in players_data if p.get("player", {}).get("name")]
+        return sorted(roster) if roster else []
+    except:
+        return []
+
+# =============================================================================
 # SEASON CONTEXT ENGINE
 # =============================================================================
 class SeasonContextEngine:
@@ -398,13 +435,17 @@ class OddsAPIClientWrapper:
             pass
         return None
 
-    def fetch_todays_games(self, sports: List[str]) -> List[Dict]:
+    def fetch_games(self, sports: List[str], date: str = None) -> List[Dict]:
+        """Fetch games for a specific date (YYYY-MM-DD) or today if None."""
         all_games = []
         for sport in sports:
             sport_key = self.sport_key_map.get(sport)
             if not sport_key:
                 continue
-            events_data = self._request(f"sports/{sport_key}/events", {})
+            params = {}
+            if date:
+                params['date'] = date
+            events_data = self._request(f"sports/{sport_key}/events", params)
             if not events_data or 'data' not in events_data:
                 continue
             for event in events_data['data'][:5]:
@@ -421,7 +462,8 @@ class OddsAPIClientWrapper:
                     "sport": sport,
                     "home": event['home_team'],
                     "away": event['away_team'],
-                    "bookmakers": bookmakers
+                    "bookmakers": bookmakers,
+                    "date": event.get('commence_time')
                 }
                 for market in bm.get('markets', []):
                     if market['key'] == 'h2h':
@@ -446,7 +488,7 @@ class OddsAPIClientWrapper:
         return all_games
 
 # =============================================================================
-# GAME SCANNER (USES ODDS-API.IO PRIMARY, THE ODDS API FALLBACK)
+# GAME SCANNER (UPDATED WITH DATE OPTION)
 # =============================================================================
 class GameScanner:
     def __init__(self, api_key: str):
@@ -454,11 +496,27 @@ class GameScanner:
         self.base_url = ODDS_API_BASE
         self.new_odds_client = OddsAPIClientWrapper(ODDS_API_IO_KEY) if ODDS_API_IO_KEY else None
 
+    def fetch_games_by_date(self, sports: List[str] = None, days_offset: int = 0) -> List[Dict]:
+        """Fetch games for a given day offset (0 = today, 1 = tomorrow)."""
+        if sports is None:
+            sports = ["NBA","MLB","NHL","NFL"]
+        target_date = (datetime.now() + timedelta(days=days_offset)).strftime("%Y-%m-%d")
+        
+        if self.new_odds_client:
+            games = self.new_odds_client.fetch_games(sports, date=target_date)
+            if games:
+                return games
+        
+        # Fallback to The Odds API (does not support date parameter easily, so skip for non-today)
+        if days_offset != 0:
+            return []
+        return self.fetch_todays_games(sports)
+
     def fetch_todays_games(self, sports: List[str] = None) -> List[Dict]:
         if sports is None:
             sports = ["NBA","MLB","NHL","NFL"]
         if self.new_odds_client:
-            games = self.new_odds_client.fetch_todays_games(sports)
+            games = self.new_odds_client.fetch_games(sports)
             if games:
                 return games
         all_games = []
@@ -945,16 +1003,22 @@ class Clarity18Elite:
                 "implied":round(self.implied_prob(odds),3),"edge":round(edge,4),"value":value,"action":action}
     def get_teams(self, sport): return HARDCODED_TEAMS.get(sport, ["Select a sport first"])
     def get_roster(self, sport, team):
-        if sport in ["PGA","TENNIS","UFC"]: return self._get_individual_sport_players(sport)
+        """Get real roster from API-Sports if possible, else fallback."""
+        if sport in ["PGA","TENNIS","UFC"]:
+            return self._get_individual_sport_players(sport)
+        if team and sport in ["NBA","MLB","NHL","NFL"]:
+            roster = fetch_team_roster(sport, team)
+            if roster:
+                return roster
         return ["Player 1","Player 2","Player 3","Player 4","Player 5"]
     def _get_individual_sport_players(self, sport):
         if sport=="PGA": return ["Scottie Scheffler","Rory McIlroy","Jon Rahm","Ludvig Aberg","Xander Schauffele","Collin Morikawa"]
         elif sport=="TENNIS": return ["Novak Djokovic","Carlos Alcaraz","Iga Swiatek","Coco Gauff","Aryna Sabalenka","Jannik Sinner"]
         elif sport=="UFC": return ["Jon Jones","Islam Makhachev","Alex Pereira","Sean O'Malley","Ilia Topuria","Dricus Du Plessis"]
         return ["Player 1","Player 2","Player 3"]
-    def run_best_bets_scan(self, selected_sports, stop_event=None, progress_callback=None, result_callback=None):
+    def run_best_bets_scan(self, selected_sports, stop_event=None, progress_callback=None, result_callback=None, days_offset=0):
         game_bets, prop_bets, rejected = [], [], []
-        games = self.game_scanner.fetch_todays_games(selected_sports)
+        games = self.game_scanner.fetch_games_by_date(selected_sports, days_offset)
         for game in games:
             if stop_event and stop_event.is_set(): break
             sport, home, away = game["sport"], game["home"], game["away"]
@@ -1142,44 +1206,29 @@ class BackgroundAutomation:
             time.sleep(1800)
 
 # =============================================================================
-# MULTI-TICKET SEGMENTED PARSER
+# MULTI-TICKET SEGMENTED PARSER (unchanged)
 # =============================================================================
 def segment_tickets(text: str) -> List[str]:
-    """
-    Split pasted text into individual ticket blocks.
-    Delimiters: lines starting with 'PARLAY', 'Bet ticket:', 'Risk:', or a date pattern.
-    """
     lines = text.split('\n')
     blocks = []
     current_block = []
-    
     for line in lines:
-        # Detect start of a new ticket
         if (re.search(r'^(PARLAY|Bet ticket:|Risk:)', line.strip(), re.IGNORECASE) or
             re.search(r'^\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}\s*(AM|PM)', line.strip(), re.IGNORECASE)):
             if current_block:
                 blocks.append('\n'.join(current_block))
                 current_block = []
         current_block.append(line)
-    
     if current_block:
         blocks.append('\n'.join(current_block))
-    
-    # If no clear segmentation, return whole text as one block
     if not blocks or len(blocks) == 1:
         return [text]
     return blocks
 
 def parse_ticket_block(block: str) -> Tuple[List[Dict], Optional[str]]:
-    """
-    Extract bets from a single ticket block and determine its result.
-    Returns (list of bet dicts, result string)
-    """
     bets = []
     result = None
     lines = block.split('\n')
-    
-    # Find result within this block
     for line in lines:
         if re.search(r'\b(LOSS|LOST)\b', line, re.IGNORECASE):
             result = "LOSS"
@@ -1187,84 +1236,46 @@ def parse_ticket_block(block: str) -> Tuple[List[Dict], Optional[str]]:
         elif re.search(r'\b(WIN|WON)\b', line, re.IGNORECASE):
             result = "WIN"
             break
-    
-    # Detect sport
     sport = "MLB"
-    if re.search(r'NHL|Ice Hockey', block, re.IGNORECASE):
-        sport = "NHL"
-    elif re.search(r'NBA|Basketball', block, re.IGNORECASE):
-        sport = "NBA"
-    elif re.search(r'NFL|Football', block, re.IGNORECASE):
-        sport = "NFL"
-    elif re.search(r'WTA|ATP|Tennis', block, re.IGNORECASE):
-        sport = "TENNIS"
-    
-    # Process line by line
+    if re.search(r'NHL|Ice Hockey', block, re.IGNORECASE): sport = "NHL"
+    elif re.search(r'NBA|Basketball', block, re.IGNORECASE): sport = "NBA"
+    elif re.search(r'NFL|Football', block, re.IGNORECASE): sport = "NFL"
+    elif re.search(r'WTA|ATP|Tennis', block, re.IGNORECASE): sport = "TENNIS"
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
-        
-        # Moneyline: "New York Mets (+178)" or "Dallas Stars -111"
+        if not line: continue
         ml_match = re.match(r'^([A-Za-z\s\.]+?)\s*\(?([+-]\d+)\)?$', line)
         if ml_match:
             team = ml_match.group(1).strip()
             odds = int(ml_match.group(2))
-            bets.append({
-                "type": "moneyline",
-                "team": team,
-                "odds": odds,
-                "sport": sport
-            })
+            bets.append({"type": "moneyline", "team": team, "odds": odds, "sport": sport})
             continue
-        
-        # Tennis handicap: "Sonmez, Zeynep (+4.5)"
         tennis_match = re.match(r'^([A-Za-z\-\'\.]+,\s+[A-Za-z\-\'\.]+)\s*\(([+-]\d+\.?\d*)\)$', line)
         if tennis_match:
             player = tennis_match.group(1).strip()
             line_val = float(tennis_match.group(2))
-            bets.append({
-                "type": "spread",
-                "player": player,
-                "line": line_val,
-                "sport": "TENNIS"
-            })
+            bets.append({"type": "spread", "player": player, "line": line_val, "sport": "TENNIS"})
             continue
-        
-        # Odds line (standalone): "+105"
         odds_match = re.match(r'^([+-]\d+)$', line)
         if odds_match and bets:
             bets[-1]["odds"] = int(odds_match.group(1))
             continue
-        
-        # Run line: "Toronto Blue Jays (-1.5)"
         runline_match = re.match(r'^([A-Za-z\s\.]+?)\s*\(([+-]\d+\.?\d*)\)$', line)
         if runline_match:
             team = runline_match.group(1).strip()
             line_val = float(runline_match.group(2))
-            bets.append({
-                "type": "spread",
-                "team": team,
-                "line": line_val,
-                "sport": sport
-            })
+            bets.append({"type": "spread", "team": team, "line": line_val, "sport": sport})
             continue
-    
     return bets, result
 
 def parse_raw_odds_board(text: str) -> List[Dict]:
-    """
-    Main entry: segment into tickets, parse each, apply per-ticket result.
-    """
     all_bets = []
     blocks = segment_tickets(text)
-    
     for block in blocks:
         bets, result = parse_ticket_block(block)
         for bet in bets:
             bet["result"] = result
             all_bets.append(bet)
-    
     return all_bets
 
 def parse_chat_transcript(text: str) -> List[Dict]:
@@ -1297,52 +1308,56 @@ def auto_parse_bets(text: str) -> List[Dict]:
     return bets
 
 # =============================================================================
-# STREAMLIT DASHBOARD
+# STREAMLIT DASHBOARD (TABS REORDERED)
 # =============================================================================
 engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Multi-Ticket Segmented Parser | {VERSION}**")
+    st.markdown(f"**Real Rosters + Tomorrow Games | {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         st.success("✅ Odds-API.io (primary)")
         st.success("✅ The Odds API (fallback)")
-        st.success("✅ Opponent Strength")
-        st.success("✅ Rest/Injury Fade")
+        st.success("✅ Real Team Rosters")
+        st.success("✅ Tomorrow's Games Supported")
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("Daily Loss Left", f"${max(0, engine.daily_loss_limit - engine.daily_loss_today):.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
         st.metric("Prob Bolt", f"{engine.prob_bolt:.2f}")
         st.metric("DTM Bolt", f"{engine.dtm_bolt:.3f}")
 
+    # NEW TAB ORDER: Game Markets, PrizePicks Scanner, Scanners & Accuracy, Player Props, Image Analysis, Auto-Tune
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "🎮 GAME MARKETS", "🎯 PLAYER PROPS", "🏆 PRIZEPICKS SCANNER", "📊 SCANNERS & ACCURACY", "📸 IMAGE ANALYSIS", "🔧 AUTO-TUNE"
+        "🎮 GAME MARKETS", "🏆 PRIZEPICKS SCANNER", "📊 SCANNERS & ACCURACY", "🎯 PLAYER PROPS", "📸 IMAGE ANALYSIS", "🔧 AUTO-TUNE"
     ])
 
     all_sports = ["NBA", "MLB", "NHL", "NFL", "SOCCER_EPL", "SOCCER_LALIGA", "COLLEGE_BASKETBALL", "COLLEGE_FOOTBALL", "ESPORTS_LOL", "ESPORTS_CS2"]
 
     # =========================================================================
-    # TAB 1: GAME MARKETS
+    # TAB 1: GAME MARKETS (with Tomorrow option)
     # =========================================================================
     with tab1:
         st.header("Game Markets")
-        st.subheader("📅 Auto-Load Today's Games")
-        col1, col2 = st.columns([2,1])
+        st.subheader("📅 Auto-Load Games")
+        col1, col2, col3 = st.columns([2,1,1])
         with col1:
             auto_sport = st.selectbox("Select Sport", all_sports, key="auto_sport")
         with col2:
-            if st.button("📅 LOAD TODAY'S GAMES", type="primary"):
-                with st.spinner("Fetching today's games..."):
-                    games = engine.game_scanner.fetch_todays_games([auto_sport])
+            load_tomorrow = st.checkbox("Load tomorrow's games", value=False)
+        with col3:
+            if st.button("📅 LOAD GAMES", type="primary"):
+                days_offset = 1 if load_tomorrow else 0
+                with st.spinner(f"Fetching {'tomorrow' if days_offset else 'today'}'s games..."):
+                    games = engine.game_scanner.fetch_games_by_date([auto_sport], days_offset)
                     if games:
                         st.session_state["auto_games"] = games
                         st.session_state["auto_games_analyzed"] = None
                         st.success(f"Loaded {len(games)} games")
                     else:
-                        st.warning("No games found today.")
+                        st.warning(f"No games found for {'tomorrow' if days_offset else 'today'}.")
         
         if "auto_games" in st.session_state and st.session_state["auto_games"]:
             game_options = [f"{g['home']} vs {g['away']}" for g in st.session_state["auto_games"]]
@@ -1586,61 +1601,9 @@ def run_dashboard():
                 st.info(f"Value: {result['value']}")
 
     # =========================================================================
-    # TAB 2: PLAYER PROPS
+    # TAB 2: PRIZEPICKS SCANNER (moved up)
     # =========================================================================
     with tab2:
-        st.header("Manual Player Prop Analyzer (Enhanced)")
-        c1, c2 = st.columns(2)
-        with c1:
-            sport = st.selectbox("Sport", all_sports, key="prop_sport")
-            teams = engine.get_teams(sport)
-            team = st.selectbox("Team (for context)", [""] + teams, key="prop_team") if sport in ["NBA","MLB","NHL","NFL","SOCCER_EPL","SOCCER_LALIGA","COLLEGE_BASKETBALL","COLLEGE_FOOTBALL"] else ""
-            roster = engine.get_roster(sport, team) if team else engine._get_individual_sport_players(sport)
-            player = st.selectbox("Player", roster, key="prop_player")
-            available_markets = SPORT_CATEGORIES.get(sport, ["PTS"])
-            market = st.selectbox("Market", available_markets, key="prop_market")
-            line = st.number_input("Line", 0.5, 200.0, 0.5, key="prop_line")
-            pick = st.selectbox("Pick", ["OVER","UNDER"], key="prop_pick")
-            opponent = st.selectbox("Opponent (optional)", [""] + teams, key="prop_opponent") if teams else ""
-        with c2:
-            use_real_stats = st.checkbox("Fetch real stats & injuries (API-Sports)", value=True)
-            odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
-        if st.button("🚀 ANALYZE PROP", type="primary", key="prop_button"):
-            if not player or player == "Select team first":
-                st.error("Please select a player.")
-            else:
-                if use_real_stats:
-                    with st.spinner("Fetching real stats and injury status..."):
-                        real_stats, injury = fetch_player_stats_and_injury(player, sport, market)
-                        if real_stats:
-                            st.info(f"Fetched {len(real_stats)} recent games for {player}. Injury status: {injury}")
-                        else:
-                            st.warning("No real stats found – using fallback dummy data.")
-                        data = real_stats
-                        injury_status = injury
-                else:
-                    data = [line * 0.9] * 5
-                    injury_status = "HEALTHY"
-                opp = opponent if opponent else None
-                result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team if team else None, injury_status, opp)
-                if result.get('units',0) > 0:
-                    st.success(f"### {result['signal']}")
-                    if result.get('season_warning'): st.warning(result['season_warning'])
-                    if result.get('injury') != "HEALTHY": st.error(f"⚠️ Injury flag: {result['injury']}")
-                    c1, c2, c3 = st.columns(3)
-                    with c1: st.metric("Projection", f"{result['projection']:.1f}")
-                    with c2: st.metric("Probability", f"{result['probability']:.1%}")
-                    with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
-                    st.metric("Tier", result['tier'])
-                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
-                else:
-                    st.error(f"### {result['signal']}")
-                    if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
-
-    # =========================================================================
-    # TAB 3: PRIZEPICKS SCANNER
-    # =========================================================================
-    with tab3:
         st.header("🏆 PrizePicks Scanner (CLARITY Approved Only)")
         col1, col2 = st.columns([2,1])
         with col1:
@@ -1716,9 +1679,9 @@ def run_dashboard():
                             st.caption("Reason: Insufficient edge")
 
     # =========================================================================
-    # TAB 4: SCANNERS & ACCURACY
+    # TAB 3: SCANNERS & ACCURACY (moved up)
     # =========================================================================
-    with tab4:
+    with tab3:
         st.header("📊 Scanners & Accuracy Dashboard")
         scanner_tabs = st.tabs(["📈 Best Odds", "💰 Arbitrage", "🎯 Middles", "📊 Accuracy"])
         
@@ -1793,7 +1756,59 @@ def run_dashboard():
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
 
     # =========================================================================
-    # TAB 5: IMAGE ANALYSIS
+    # TAB 4: PLAYER PROPS (now with real rosters)
+    # =========================================================================
+    with tab4:
+        st.header("Manual Player Prop Analyzer (Real Rosters)")
+        c1, c2 = st.columns(2)
+        with c1:
+            sport = st.selectbox("Sport", all_sports, key="prop_sport")
+            teams = engine.get_teams(sport)
+            team = st.selectbox("Team (for context)", [""] + teams, key="prop_team") if sport in ["NBA","MLB","NHL","NFL","SOCCER_EPL","SOCCER_LALIGA","COLLEGE_BASKETBALL","COLLEGE_FOOTBALL"] else ""
+            roster = engine.get_roster(sport, team) if team else engine._get_individual_sport_players(sport)
+            player = st.selectbox("Player", roster, key="prop_player")
+            available_markets = SPORT_CATEGORIES.get(sport, ["PTS"])
+            market = st.selectbox("Market", available_markets, key="prop_market")
+            line = st.number_input("Line", 0.5, 200.0, 0.5, key="prop_line")
+            pick = st.selectbox("Pick", ["OVER","UNDER"], key="prop_pick")
+            opponent = st.selectbox("Opponent (optional)", [""] + teams, key="prop_opponent") if teams else ""
+        with c2:
+            use_real_stats = st.checkbox("Fetch real stats & injuries (API-Sports)", value=True)
+            odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
+        if st.button("🚀 ANALYZE PROP", type="primary", key="prop_button"):
+            if not player or player == "Select team first" or player.startswith("Player "):
+                st.error("Please select a valid player.")
+            else:
+                if use_real_stats:
+                    with st.spinner("Fetching real stats and injury status..."):
+                        real_stats, injury = fetch_player_stats_and_injury(player, sport, market)
+                        if real_stats:
+                            st.info(f"Fetched {len(real_stats)} recent games for {player}. Injury status: {injury}")
+                        else:
+                            st.warning("No real stats found – using fallback dummy data.")
+                        data = real_stats
+                        injury_status = injury
+                else:
+                    data = [line * 0.9] * 5
+                    injury_status = "HEALTHY"
+                opp = opponent if opponent else None
+                result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team if team else None, injury_status, opp)
+                if result.get('units',0) > 0:
+                    st.success(f"### {result['signal']}")
+                    if result.get('season_warning'): st.warning(result['season_warning'])
+                    if result.get('injury') != "HEALTHY": st.error(f"⚠️ Injury flag: {result['injury']}")
+                    c1, c2, c3 = st.columns(3)
+                    with c1: st.metric("Projection", f"{result['projection']:.1f}")
+                    with c2: st.metric("Probability", f"{result['probability']:.1%}")
+                    with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
+                    st.metric("Tier", result['tier'])
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+                else:
+                    st.error(f"### {result['signal']}")
+                    if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
+
+    # =========================================================================
+    # TAB 5: IMAGE ANALYSIS (unchanged)
     # =========================================================================
     with tab5:
         st.header("📸 Screenshot Analyzer")
@@ -1851,7 +1866,7 @@ def run_dashboard():
                                                 st.caption(f"Reason: {res['reject_reason']}")
 
     # =========================================================================
-    # TAB 6: AUTO-TUNE (with Multi-Ticket Parser)
+    # TAB 6: AUTO-TUNE (unchanged)
     # =========================================================================
     with tab6:
         st.header("Auto-Tune History (ROI-based)")
@@ -1901,7 +1916,7 @@ def run_dashboard():
                             result = bet.get("result", "PENDING")
                             profit = 0
                             if result == "WIN":
-                                profit = 100  # simplified
+                                profit = 100
                             elif result == "LOSS":
                                 profit = -100
                             
