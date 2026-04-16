@@ -3,7 +3,8 @@ CLARITY 18.0 ELITE – AUTO-SETTLE PLAYER PROPS + PASTE PROPS BOARD
 - Auto‑Tune tab: paste numbered props; Clarity fetches actual stats and marks WIN/LOSS.
 - PrizePicks Scanner: paste text or upload screenshot for instant analysis.
 - Game Markets: tomorrow's games support.
-- All other features intact.
+- Pending bets are settled automatically using real API stats (no random simulation).
+- All settled bets drive SEM calibration, auto‑tune, and ML retraining.
 """
 
 import numpy as np
@@ -1250,21 +1251,38 @@ class Clarity18Elite:
         c.execute("INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date, bolt_signal) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                   (bet_id, player, sport, market, line, pick, odds, edge, 'PENDING', datetime.now().strftime("%Y-%m-%d"), signal))
         conn.commit(); conn.close()
+
+    # =========================================================================
+    # UPDATED: settle_pending_bets now uses real API stats via auto_settle_prop
+    # =========================================================================
     def settle_pending_bets(self):
-        conn = sqlite3.connect(self.db_path); c = conn.cursor()
-        c.execute("SELECT * FROM bets WHERE result='PENDING'")
+        conn = sqlite3.connect(self.db_path)
+        c = conn.cursor()
+        c.execute("SELECT id, player, sport, market, line, pick, odds, date FROM bets WHERE result='PENDING'")
         bets = c.fetchall()
         for bet in bets:
-            actual = np.random.poisson(bet[4]*0.95)
-            won = (actual>bet[4]) if bet[5]=="OVER" else (actual<bet[4])
-            profit = (bet[6]/100)*100 if won else -100
-            result = "WIN" if won else "LOSS"
-            c.execute("UPDATE bets SET result=?, actual=?, settled_date=?, profit=? WHERE id=?", (result, actual, datetime.now().strftime("%Y-%m-%d"), profit, bet[0]))
-            if result=="LOSS": self.daily_loss_today += abs(profit)
-        conn.commit(); conn.close()
+            bet_id, player, sport, market, line, pick, odds, date_str = bet
+            # Use auto_settle_prop to fetch real stats (opponent is empty, but date is used)
+            result, actual = auto_settle_prop(player, market, line, pick, sport, "", date_str)
+            if result == "PENDING":
+                # If API fails, keep as PENDING (do not overwrite)
+                continue
+            # Calculate profit based on odds (standard -110 or any American odds)
+            if odds > 0:
+                profit = (odds / 100) * 100 if result == "WIN" else -100
+            else:
+                profit = (100 / abs(odds)) * 100 if result == "WIN" else -100
+            c.execute("""UPDATE bets SET result=?, actual=?, settled_date=?, profit=?
+                         WHERE id=?""",
+                      (result, actual, datetime.now().strftime("%Y-%m-%d"), profit, bet_id))
+            if result == "LOSS":
+                self.daily_loss_today += abs(profit)
+        conn.commit()
+        conn.close()
         self._calibrate_sem()
         self.auto_tune_thresholds()
         self._auto_retrain_ml()
+
     def _calibrate_sem(self):
         conn = sqlite3.connect(self.db_path); df = pd.read_sql_query("SELECT * FROM bets WHERE result IN ('WIN','LOSS')", conn); conn.close()
         if len(df)>5:
