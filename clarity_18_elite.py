@@ -1,10 +1,8 @@
 """
-CLARITY 18.0 ELITE – LEAN (Redundancies Removed)
-- Odds-API.io primary, The Odds API fallback (kept for reliability)
-- Opponent Strength Adjustment
-- Rest/Injury Fade Logic
-- Bet Slip OCR Import
-- All Tabs Restored
+CLARITY 18.0 ELITE – ENHANCED CHAT IMPORT (Game Bets Supported)
+- Parses moneyline, spread, and totals from chat transcripts
+- Imports and analyzes game bets alongside player props
+- All other features intact (opponent strength, rest fade, OCR, etc.)
 """
 
 import numpy as np
@@ -23,7 +21,6 @@ import warnings
 import pickle
 import os
 
-# Optional LightGBM
 try:
     import lightgbm as lgb
     LGB_AVAILABLE = True
@@ -37,11 +34,11 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"  # The Odds API (fallback)
+ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
-ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"  # Odds-API.io (primary)
+ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 
-VERSION = "18.0 Elite (Lean)"
+VERSION = "18.0 Elite (Game Bet Chat Import)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -460,12 +457,10 @@ class GameScanner:
     def fetch_todays_games(self, sports: List[str] = None) -> List[Dict]:
         if sports is None:
             sports = ["NBA","MLB","NHL","NFL"]
-        # Try new API first
         if self.new_odds_client:
             games = self.new_odds_client.fetch_todays_games(sports)
             if games:
                 return games
-        # Fallback to The Odds API
         all_games = []
         sport_keys = {
             "NBA":"basketball_nba","MLB":"baseball_mlb","NHL":"icehockey_nhl","NFL":"americanfootball_nfl",
@@ -1147,17 +1142,39 @@ class BackgroundAutomation:
             time.sleep(1800)
 
 # =============================================================================
-# CHAT TRANSCRIPT IMPORT PARSER
+# ENHANCED CHAT TRANSCRIPT IMPORT (SUPPORTS GAME BETS)
 # =============================================================================
 def parse_chat_transcript(text: str) -> List[Dict]:
+    """
+    Extract bets from chat conversation lines.
+    Supports:
+      - Player props: "LeBron James OVER 25.5 PTS Actual: 28 Odds: -110 Sport: NBA"
+      - Moneyline: "Rockets ML -225 @ Lakers" or "Lakers ML vs Rockets"
+      - Spread: "Magic +2.0 -115 @ 76ers"
+      - Totals: "OVER 228.5 -110 in Lakers vs Rockets"
+    """
     lines = text.split('\n')
     bets = []
-    pattern = re.compile(
+    
+    # Player prop pattern (original)
+    prop_pattern = re.compile(
         r"([A-Za-z\.\-' ]+?)\s+(OVER|UNDER)\s+(\d+\.?\d*)\s+([A-Z]{2,})\s+Actual:\s*(\d+\.?\d*)\s+Odds:\s*([+-]?\d+)\s+Sport:\s*([A-Z_]+)",
         re.IGNORECASE
     )
+    
+    # Moneyline patterns
+    ml_pattern1 = re.compile(r"([A-Za-z\s]+?)\s+ML\s+([+-]\d+)\s*(?:@|vs\.?)\s*([A-Za-z\s]+)", re.IGNORECASE)  # Rockets ML -225 @ Lakers
+    ml_pattern2 = re.compile(r"([A-Za-z\s]+?)\s+ML\s+([+-]\d+)", re.IGNORECASE)  # Rockets ML -225 (opponent unknown)
+    
+    # Spread pattern: Magic +2.0 -115 @ 76ers
+    spread_pattern = re.compile(r"([A-Za-z\s]+?)\s+([+-]\d+\.?\d*)\s+([+-]\d+)\s*(?:@|vs\.?)\s*([A-Za-z\s]+)", re.IGNORECASE)
+    
+    # Totals pattern: OVER 228.5 -110 in Lakers vs Rockets
+    total_pattern = re.compile(r"(OVER|UNDER)\s+(\d+\.?\d*)\s+([+-]\d+)\s+in\s+([A-Za-z\s]+?)\s+vs\.?\s+([A-Za-z\s]+)", re.IGNORECASE)
+    
     for line in lines:
-        match = pattern.search(line)
+        # Player prop
+        match = prop_pattern.search(line)
         if match:
             player = match.group(1).strip()
             pick = match.group(2).upper()
@@ -1169,6 +1186,7 @@ def parse_chat_transcript(text: str) -> List[Dict]:
             market_map = {"PTS":"PTS","REB":"REB","AST":"AST","PRA":"PRA","PR":"PR","PA":"PA"}
             market = market_map.get(market_raw, market_raw)
             bets.append({
+                "type": "player_prop",
                 "player": player.title(),
                 "market": market,
                 "line": line_val,
@@ -1177,6 +1195,71 @@ def parse_chat_transcript(text: str) -> List[Dict]:
                 "odds": odds,
                 "sport": sport
             })
+            continue
+        
+        # Totals
+        match = total_pattern.search(line)
+        if match:
+            pick = match.group(1).upper()
+            total = float(match.group(2))
+            odds = int(match.group(3))
+            home = match.group(4).strip()
+            away = match.group(5).strip()
+            bets.append({
+                "type": "total",
+                "home": home,
+                "away": away,
+                "pick": pick,
+                "line": total,
+                "odds": odds,
+                "sport": "NBA"  # default; can be overridden by context
+            })
+            continue
+        
+        # Spread
+        match = spread_pattern.search(line)
+        if match:
+            team = match.group(1).strip()
+            spread = float(match.group(2))
+            odds = int(match.group(3))
+            opponent = match.group(4).strip()
+            bets.append({
+                "type": "spread",
+                "team": team,
+                "spread": spread,
+                "odds": odds,
+                "opponent": opponent,
+                "sport": "NBA"
+            })
+            continue
+        
+        # Moneyline (with opponent)
+        match = ml_pattern1.search(line)
+        if match:
+            team = match.group(1).strip()
+            odds = int(match.group(2))
+            opponent = match.group(3).strip()
+            bets.append({
+                "type": "moneyline",
+                "team": team,
+                "odds": odds,
+                "opponent": opponent,
+                "sport": "NBA"
+            })
+            continue
+        
+        # Moneyline (no opponent)
+        match = ml_pattern2.search(line)
+        if match:
+            team = match.group(1).strip()
+            odds = int(match.group(2))
+            bets.append({
+                "type": "moneyline",
+                "team": team,
+                "odds": odds,
+                "sport": "NBA"
+            })
+    
     return bets
 
 def auto_parse_bets(text: str) -> List[Dict]:
@@ -1235,7 +1318,7 @@ engine = Clarity18Elite()
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Lean Version | {VERSION}**")
+    st.markdown(f"**Game Bet Chat Import | {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
@@ -1782,7 +1865,7 @@ def run_dashboard():
                                                 st.caption(f"Reason: {res['reject_reason']}")
 
     # =========================================================================
-    # TAB 6: AUTO-TUNE (with Chat Import)
+    # TAB 6: AUTO-TUNE (with Enhanced Chat Import)
     # =========================================================================
     with tab6:
         st.header("Auto-Tune History (ROI-based)")
@@ -1797,9 +1880,13 @@ def run_dashboard():
         
         st.markdown("---")
         st.subheader("📥 IMPORT BETS FROM CHAT TRANSCRIPT")
-        st.markdown("Copy the entire chat conversation (or a portion) and paste below. CLARITY will extract all bets formatted as:")
-        st.code("Player Name OVER/UNDER line MARKET Actual: value Odds: american Sport: SPORT", language="text")
-        st.markdown("Example: `Kawhi Leonard UNDER 33.5 PTS Actual: 28 Odds: -110 Sport: NBA`")
+        st.markdown("""
+        Paste chat lines. Supported formats:
+        - **Player props**: `LeBron James OVER 25.5 PTS Actual: 28 Odds: -110 Sport: NBA`
+        - **Moneyline**: `Rockets ML -225 @ Lakers` or `Lakers ML vs Rockets`
+        - **Spread**: `Magic +2.0 -115 @ 76ers`
+        - **Totals**: `OVER 228.5 -110 in Lakers vs Rockets`
+        """)
         
         chat_text = st.text_area("Paste chat transcript here", height=200)
         if st.button("🔍 Extract Bets from Chat", type="primary"):
@@ -1809,32 +1896,63 @@ def run_dashboard():
                     st.success(f"Found {len(imported_bets)} bets")
                     st.subheader("📋 Bets to import")
                     for bet in imported_bets:
-                        st.write(f"{bet['player']} {bet['pick']} {bet['line']} {bet['market']} → Actual: {bet['actual']} (Odds: {bet['odds']}, Sport: {bet['sport']})")
+                        if bet.get("type") == "player_prop":
+                            st.write(f"🎯 {bet['player']} {bet['pick']} {bet['line']} {bet['market']} → Actual: {bet.get('actual','?')} (Odds: {bet['odds']}, Sport: {bet['sport']})")
+                        elif bet.get("type") == "moneyline":
+                            opp = bet.get('opponent', '?')
+                            st.write(f"💰 {bet['team']} ML {bet['odds']} vs {opp} (Sport: {bet.get('sport','NBA')})")
+                        elif bet.get("type") == "spread":
+                            st.write(f"📊 {bet['team']} {bet['spread']:+.1f} {bet['odds']} vs {bet.get('opponent','?')}")
+                        elif bet.get("type") == "total":
+                            st.write(f"📈 {bet['pick']} {bet['line']} {bet['odds']} in {bet.get('home','?')} vs {bet.get('away','?')}")
+                    
                     if st.button("✅ IMPORT ALL BETS FROM CHAT"):
                         imported_count = 0
                         for bet in imported_bets:
-                            won = (bet['actual'] > bet['line']) if bet['pick'] == "OVER" else (bet['actual'] < bet['line'])
-                            result = "WIN" if won else "LOSS"
-                            profit = (abs(bet['odds'])/100 * 100) if won else -100
-                            if bet['odds'] > 0:
-                                profit = (bet['odds']/100 * 100) if won else -100
                             conn = sqlite3.connect(engine.db_path)
                             c = conn.cursor()
-                            bet_id = hashlib.md5(f"{bet['player']}{bet['market']}{bet['line']}{datetime.now()}".encode()).hexdigest()[:12]
-                            c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, actual, date, settled_date, bolt_signal, profit)
-                                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                      (bet_id, bet['player'], bet['sport'], bet['market'], bet['line'], bet['pick'], bet['odds'], 0.05 if won else -0.05, result, bet['actual'],
-                                       datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d"), "CHAT_IMPORT", profit))
+                            bet_id = hashlib.md5(f"{str(bet)}{datetime.now()}".encode()).hexdigest()[:12]
+                            
+                            if bet.get("type") == "player_prop":
+                                actual = bet.get('actual', 0)
+                                won = (actual > bet['line']) if bet['pick'] == "OVER" else (actual < bet['line'])
+                                result = "WIN" if won else "LOSS"
+                                profit = (abs(bet['odds'])/100 * 100) if won else -100
+                                if bet['odds'] > 0:
+                                    profit = (bet['odds']/100 * 100) if won else -100
+                                c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, actual, date, settled_date, bolt_signal, profit)
+                                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                          (bet_id, bet['player'], bet['sport'], bet['market'], bet['line'], bet['pick'], bet['odds'], 0.05 if won else -0.05, result, actual,
+                                           datetime.now().strftime("%Y-%m-%d"), datetime.now().strftime("%Y-%m-%d"), "CHAT_IMPORT", profit))
+                            
+                            elif bet.get("type") == "moneyline":
+                                # For moneyline, we need actual result? User may not provide. We'll mark as pending or ask for actual.
+                                # For now, we'll store as pending with placeholder.
+                                c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date, bolt_signal)
+                                             VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                          (bet_id, bet['team'], bet.get('sport','NBA'), 'moneyline', 0, bet['team'], bet['odds'], 0, 'PENDING', datetime.now().strftime("%Y-%m-%d"), "CHAT_IMPORT"))
+                            
+                            elif bet.get("type") == "spread":
+                                c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date, bolt_signal)
+                                             VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                          (bet_id, bet['team'], bet.get('sport','NBA'), 'spread', bet['spread'], bet['team'], bet['odds'], 0, 'PENDING', datetime.now().strftime("%Y-%m-%d"), "CHAT_IMPORT"))
+                            
+                            elif bet.get("type") == "total":
+                                c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date, bolt_signal)
+                                             VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                                          (bet_id, f"{bet.get('home','')} vs {bet.get('away','')}", bet.get('sport','NBA'), 'total', bet['line'], bet['pick'], bet['odds'], 0, 'PENDING', datetime.now().strftime("%Y-%m-%d"), "CHAT_IMPORT"))
+                            
                             conn.commit()
                             conn.close()
                             imported_count += 1
+                        
                         st.success(f"✅ Imported {imported_count} bets successfully!")
                         engine._calibrate_sem()
                         engine.auto_tune_thresholds()
                         engine._auto_retrain_ml()
                         st.rerun()
                 else:
-                    st.warning("No bets found. Ensure each line follows the format: Player OVER/UNDER line MARKET Actual: value Odds: american Sport: SPORT")
+                    st.warning("No bets found. Check format examples above.")
             else:
                 st.warning("Please paste some chat text.")
         
