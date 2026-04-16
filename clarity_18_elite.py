@@ -1,8 +1,8 @@
 """
-CLARITY 18.0 ELITE – ROSTER FIX + NEXT DAY GAMES + TAB REORDER
-- Real NBA/MLB/NHL rosters fetched from API-Sports
-- Option to load tomorrow's games
-- PrizePicks Scanner and Scanners & Accuracy tabs moved up
+CLARITY 18.0 ELITE – ROSTER FIX (Real Players)
+- Improved fetch_team_roster with fallback to actual NBA players
+- Warning shown when fallback is used
+- Poisson models NOT yet integrated (evaluation only)
 """
 
 import numpy as np
@@ -38,7 +38,7 @@ ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 
-VERSION = "18.0 Elite (Roster + Tomorrow + Tab Reorder)"
+VERSION = "18.0 Elite (Roster Fix)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -158,6 +158,42 @@ HARDCODED_TEAMS = {
     "COLLEGE_FOOTBALL": ["Alabama", "Georgia", "Ohio State", "Michigan", "Clemson", "LSU", "USC", "Texas"],
     "ESPORTS_LOL": ["T1", "Gen.G", "G2 Esports", "Fnatic", "Cloud9", "DWG KIA"],
     "ESPORTS_CS2": ["NAVI", "FaZe Clan", "G2", "Vitality", "ENCE", "MOUZ"]
+}
+
+# =============================================================================
+# FALLBACK NBA ROSTERS (top players per team)
+# =============================================================================
+FALLBACK_NBA_ROSTERS = {
+    "Atlanta Hawks": ["Trae Young", "Dejounte Murray", "Jalen Johnson", "Clint Capela", "Bogdan Bogdanovic"],
+    "Boston Celtics": ["Jayson Tatum", "Jaylen Brown", "Kristaps Porzingis", "Jrue Holiday", "Derrick White"],
+    "Brooklyn Nets": ["Mikal Bridges", "Cameron Johnson", "Nic Claxton", "Dennis Schroder", "Dorian Finney-Smith"],
+    "Charlotte Hornets": ["LaMelo Ball", "Brandon Miller", "Miles Bridges", "Mark Williams", "Grant Williams"],
+    "Chicago Bulls": ["Zach LaVine", "DeMar DeRozan", "Nikola Vucevic", "Coby White", "Patrick Williams"],
+    "Cleveland Cavaliers": ["Donovan Mitchell", "Darius Garland", "Evan Mobley", "Jarrett Allen", "Caris LeVert"],
+    "Dallas Mavericks": ["Luka Doncic", "Kyrie Irving", "Daniel Gafford", "P.J. Washington", "Dereck Lively II"],
+    "Denver Nuggets": ["Nikola Jokic", "Jamal Murray", "Michael Porter Jr.", "Aaron Gordon", "Christian Braun"],
+    "Detroit Pistons": ["Cade Cunningham", "Jaden Ivey", "Ausar Thompson", "Jalen Duren", "Isaiah Stewart"],
+    "Golden State Warriors": ["Stephen Curry", "Jimmy Butler", "Draymond Green", "Jonathan Kuminga", "Brandin Podziemski"],
+    "Houston Rockets": ["Jalen Green", "Alperen Sengun", "Fred VanVleet", "Amen Thompson", "Dillon Brooks"],
+    "Indiana Pacers": ["Tyrese Haliburton", "Pascal Siakam", "Myles Turner", "Bennedict Mathurin", "Andrew Nembhard"],
+    "LA Clippers": ["Kawhi Leonard", "James Harden", "Norman Powell", "Ivica Zubac", "Derrick Jones Jr."],
+    "Los Angeles Lakers": ["LeBron James", "Luka Doncic", "Austin Reaves", "Rui Hachimura", "Dorian Finney-Smith"],
+    "Memphis Grizzlies": ["Ja Morant", "Jaren Jackson Jr.", "Desmond Bane", "Zach Edey", "GG Jackson"],
+    "Miami Heat": ["Jimmy Butler", "Bam Adebayo", "Tyler Herro", "Terry Rozier", "Nikola Jovic"],
+    "Milwaukee Bucks": ["Giannis Antetokounmpo", "Damian Lillard", "Brook Lopez", "Kyle Kuzma", "Kevin Porter Jr."],
+    "Minnesota Timberwolves": ["Anthony Edwards", "Julius Randle", "Rudy Gobert", "Jaden McDaniels", "Naz Reid"],
+    "New Orleans Pelicans": ["Zion Williamson", "CJ McCollum", "Trey Murphy III", "Herbert Jones", "Yves Missi"],
+    "New York Knicks": ["Jalen Brunson", "Karl-Anthony Towns", "Mikal Bridges", "OG Anunoby", "Josh Hart"],
+    "Oklahoma City Thunder": ["Shai Gilgeous-Alexander", "Jalen Williams", "Chet Holmgren", "Luguentz Dort", "Isaiah Hartenstein"],
+    "Orlando Magic": ["Paolo Banchero", "Franz Wagner", "Jalen Suggs", "Goga Bitadze", "Kentavious Caldwell-Pope"],
+    "Philadelphia 76ers": ["Joel Embiid", "Tyrese Maxey", "Paul George", "Kelly Oubre Jr.", "Quentin Grimes"],
+    "Phoenix Suns": ["Devin Booker", "Kevin Durant", "Bradley Beal", "Nick Richards", "Royce O'Neale"],
+    "Portland Trail Blazers": ["Anfernee Simons", "Shaedon Sharpe", "Scoot Henderson", "Deandre Ayton", "Deni Avdija"],
+    "Sacramento Kings": ["De'Aaron Fox", "Domantas Sabonis", "Zach LaVine", "Malik Monk", "Keegan Murray"],
+    "San Antonio Spurs": ["Victor Wembanyama", "De'Aaron Fox", "Devin Vassell", "Jeremy Sochan", "Stephon Castle"],
+    "Toronto Raptors": ["Scottie Barnes", "Immanuel Quickley", "RJ Barrett", "Jakob Poeltl", "Gradey Dick"],
+    "Utah Jazz": ["Lauri Markkanen", "Collin Sexton", "John Collins", "Walker Kessler", "Keyonte George"],
+    "Washington Wizards": ["Jordan Poole", "Kyle Kuzma", "Bilal Coulibaly", "Alex Sarr", "Bub Carrington"]
 }
 
 # =============================================================================
@@ -328,28 +364,38 @@ def fetch_player_stats_and_injury(player_name: str, sport: str, market: str, num
     return stats, injury_status
 
 # =============================================================================
-# TEAM ROSTER FETCHER (NEW)
+# TEAM ROSTER FETCHER (ENHANCED WITH FALLBACK)
 # =============================================================================
 @st.cache_data(ttl=86400)  # cache for 24 hours
-def fetch_team_roster(sport: str, team: str) -> List[str]:
-    """Fetch current roster for a team from API-Sports."""
+def fetch_team_roster(sport: str, team: str) -> Tuple[List[str], bool]:
+    """
+    Fetch current roster for a team from API-Sports.
+    Returns (roster_list, is_fallback) where is_fallback=True if hardcoded fallback used.
+    """
+    if sport == "NBA" and team in FALLBACK_NBA_ROSTERS:
+        fallback_roster = FALLBACK_NBA_ROSTERS[team]
+    else:
+        fallback_roster = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
+    
     if sport not in ["NBA", "MLB", "NHL", "NFL"]:
-        return []
+        return fallback_roster, True
+    
     league_map = {"NBA": 12, "MLB": 1, "NHL": 5, "NFL": 1}
     league_id = league_map.get(sport)
     if not league_id:
-        return []
+        return fallback_roster, True
+    
     headers = {"x-apisports-key": API_SPORTS_KEY}
     try:
-        # First get team ID
+        # Get team ID
         url = "https://v1.api-sports.io/teams"
         params = {"league": league_id, "season": "2025-2026" if sport in ["NBA","NHL"] else "2025", "search": team}
         r = requests.get(url, headers=headers, params=params, timeout=10)
         if r.status_code != 200:
-            return []
+            return fallback_roster, True
         data = r.json().get("response", [])
         if not data:
-            return []
+            return fallback_roster, True
         team_id = data[0]["team"]["id"]
         
         # Get players for team
@@ -357,12 +403,15 @@ def fetch_team_roster(sport: str, team: str) -> List[str]:
         params = {"league": league_id, "season": "2025-2026" if sport in ["NBA","NHL"] else "2025", "team": team_id}
         r2 = requests.get(players_url, headers=headers, params=params, timeout=10)
         if r2.status_code != 200:
-            return []
+            return fallback_roster, True
         players_data = r2.json().get("response", [])
         roster = [p["player"]["name"] for p in players_data if p.get("player", {}).get("name")]
-        return sorted(roster) if roster else []
-    except:
-        return []
+        if roster:
+            return sorted(roster), False
+        else:
+            return fallback_roster, True
+    except Exception as e:
+        return fallback_roster, True
 
 # =============================================================================
 # SEASON CONTEXT ENGINE
@@ -436,7 +485,6 @@ class OddsAPIClientWrapper:
         return None
 
     def fetch_games(self, sports: List[str], date: str = None) -> List[Dict]:
-        """Fetch games for a specific date (YYYY-MM-DD) or today if None."""
         all_games = []
         for sport in sports:
             sport_key = self.sport_key_map.get(sport)
@@ -488,7 +536,7 @@ class OddsAPIClientWrapper:
         return all_games
 
 # =============================================================================
-# GAME SCANNER (UPDATED WITH DATE OPTION)
+# GAME SCANNER
 # =============================================================================
 class GameScanner:
     def __init__(self, api_key: str):
@@ -497,7 +545,6 @@ class GameScanner:
         self.new_odds_client = OddsAPIClientWrapper(ODDS_API_IO_KEY) if ODDS_API_IO_KEY else None
 
     def fetch_games_by_date(self, sports: List[str] = None, days_offset: int = 0) -> List[Dict]:
-        """Fetch games for a given day offset (0 = today, 1 = tomorrow)."""
         if sports is None:
             sports = ["NBA","MLB","NHL","NFL"]
         target_date = (datetime.now() + timedelta(days=days_offset)).strftime("%Y-%m-%d")
@@ -506,8 +553,6 @@ class GameScanner:
             games = self.new_odds_client.fetch_games(sports, date=target_date)
             if games:
                 return games
-        
-        # Fallback to The Odds API (does not support date parameter easily, so skip for non-today)
         if days_offset != 0:
             return []
         return self.fetch_todays_games(sports)
@@ -1003,13 +1048,14 @@ class Clarity18Elite:
                 "implied":round(self.implied_prob(odds),3),"edge":round(edge,4),"value":value,"action":action}
     def get_teams(self, sport): return HARDCODED_TEAMS.get(sport, ["Select a sport first"])
     def get_roster(self, sport, team):
-        """Get real roster from API-Sports if possible, else fallback."""
+        """Get real roster from API-Sports with fallback."""
         if sport in ["PGA","TENNIS","UFC"]:
             return self._get_individual_sport_players(sport)
         if team and sport in ["NBA","MLB","NHL","NFL"]:
-            roster = fetch_team_roster(sport, team)
-            if roster:
-                return roster
+            roster, is_fallback = fetch_team_roster(sport, team)
+            if is_fallback and sport == "NBA":
+                st.warning(f"⚠️ Using fallback roster for {team} (API unavailable)")
+            return roster
         return ["Player 1","Player 2","Player 3","Player 4","Player 5"]
     def _get_individual_sport_players(self, sport):
         if sport=="PGA": return ["Scottie Scheffler","Rory McIlroy","Jon Rahm","Ludvig Aberg","Xander Schauffele","Collin Morikawa"]
@@ -1206,7 +1252,7 @@ class BackgroundAutomation:
             time.sleep(1800)
 
 # =============================================================================
-# MULTI-TICKET SEGMENTED PARSER (unchanged)
+# MULTI-TICKET SEGMENTED PARSER
 # =============================================================================
 def segment_tickets(text: str) -> List[str]:
     lines = text.split('\n')
@@ -1329,7 +1375,6 @@ def run_dashboard():
         st.metric("Prob Bolt", f"{engine.prob_bolt:.2f}")
         st.metric("DTM Bolt", f"{engine.dtm_bolt:.3f}")
 
-    # NEW TAB ORDER: Game Markets, PrizePicks Scanner, Scanners & Accuracy, Player Props, Image Analysis, Auto-Tune
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🎮 GAME MARKETS", "🏆 PRIZEPICKS SCANNER", "📊 SCANNERS & ACCURACY", "🎯 PLAYER PROPS", "📸 IMAGE ANALYSIS", "🔧 AUTO-TUNE"
     ])
@@ -1337,7 +1382,7 @@ def run_dashboard():
     all_sports = ["NBA", "MLB", "NHL", "NFL", "SOCCER_EPL", "SOCCER_LALIGA", "COLLEGE_BASKETBALL", "COLLEGE_FOOTBALL", "ESPORTS_LOL", "ESPORTS_CS2"]
 
     # =========================================================================
-    # TAB 1: GAME MARKETS (with Tomorrow option)
+    # TAB 1: GAME MARKETS
     # =========================================================================
     with tab1:
         st.header("Game Markets")
@@ -1601,7 +1646,7 @@ def run_dashboard():
                 st.info(f"Value: {result['value']}")
 
     # =========================================================================
-    # TAB 2: PRIZEPICKS SCANNER (moved up)
+    # TAB 2: PRIZEPICKS SCANNER
     # =========================================================================
     with tab2:
         st.header("🏆 PrizePicks Scanner (CLARITY Approved Only)")
@@ -1679,7 +1724,7 @@ def run_dashboard():
                             st.caption("Reason: Insufficient edge")
 
     # =========================================================================
-    # TAB 3: SCANNERS & ACCURACY (moved up)
+    # TAB 3: SCANNERS & ACCURACY
     # =========================================================================
     with tab3:
         st.header("📊 Scanners & Accuracy Dashboard")
@@ -1756,7 +1801,7 @@ def run_dashboard():
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
 
     # =========================================================================
-    # TAB 4: PLAYER PROPS (now with real rosters)
+    # TAB 4: PLAYER PROPS (REAL ROSTERS)
     # =========================================================================
     with tab4:
         st.header("Manual Player Prop Analyzer (Real Rosters)")
@@ -1808,7 +1853,7 @@ def run_dashboard():
                     if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
 
     # =========================================================================
-    # TAB 5: IMAGE ANALYSIS (unchanged)
+    # TAB 5: IMAGE ANALYSIS
     # =========================================================================
     with tab5:
         st.header("📸 Screenshot Analyzer")
@@ -1837,153 +1882,4 @@ def run_dashboard():
                             else:
                                 st.success(f"Found {len(bets)} potential bets.")
                                 approved, rejected = [], []
-                                for bet in bets:
-                                    sport = "NBA"
-                                    if bet["type"] == "moneyline":
-                                        res = engine.analyze_moneyline(bet["home"], bet["away"], sport, bet["home_odds"], bet["away_odds"])
-                                    elif bet["type"] == "spread":
-                                        res = engine.analyze_spread(bet["team"], "Opponent", bet["spread"], bet["team"], sport, bet["odds"])
-                                    elif bet["type"] == "total":
-                                        res = engine.analyze_total("Home", "Away", bet["total"], bet["pick"], sport, bet["odds"])
-                                    else:
-                                        res = engine.analyze_prop(bet["player"], bet["market"], bet["line"], bet["pick"], [],
-                                                                   sport, bet.get("odds",-110), None, "HEALTHY")
-                                    if res.get("units",0) > 0:
-                                        approved.append((bet, res))
-                                    else:
-                                        rejected.append((bet, res))
-                                if approved:
-                                    st.subheader("✅ CLARITY APPROVED")
-                                    for bet, res in approved:
-                                        st.markdown(f"**{bet.get('description', bet)}**")
-                                        edge = res.get('edge', res.get('raw_edge',0))
-                                        st.caption(f"Edge: {edge:.1%} | Units: {res.get('units',0)}")
-                                if rejected:
-                                    with st.expander(f"❌ REJECTED ({len(rejected)})"):
-                                        for bet, res in rejected:
-                                            st.markdown(f"**{bet.get('description', bet)}**")
-                                            if res.get('reject_reason'):
-                                                st.caption(f"Reason: {res['reject_reason']}")
-
-    # =========================================================================
-    # TAB 6: AUTO-TUNE (unchanged)
-    # =========================================================================
-    with tab6:
-        st.header("Auto-Tune History (ROI-based)")
-        
-        conn = sqlite3.connect(engine.db_path)
-        df = pd.read_sql_query("SELECT * FROM tuning_log ORDER BY id DESC", conn)
-        conn.close()
-        if df.empty:
-            st.info("No tuning events yet. After 50+ settled bets, auto-tune will run weekly.")
-        else:
-            st.dataframe(df)
-        
-        st.markdown("---")
-        st.subheader("📥 IMPORT BETS FROM TICKETS")
-        st.markdown("""
-        **Paste multiple tickets at once.** Each ticket's WIN/LOSS is detected separately.
-        Supported formats:
-        - Moneyline: `New York Mets (+178)`, `Dallas Stars -111`
-        - Spread/Run Line: `Toronto Blue Jays (-1.5)`
-        - Tennis Handicap: `Sonmez, Zeynep (+4.5)` followed by odds `+105`
-        """)
-        
-        raw_text = st.text_area("Paste ticket text here", height=300)
-        if st.button("🔍 Extract Bets", type="primary"):
-            if raw_text.strip():
-                imported_bets = parse_raw_odds_board(raw_text)
-                if imported_bets:
-                    st.success(f"Found {len(imported_bets)} bets across multiple tickets")
-                    st.subheader("📋 Bets to import")
-                    
-                    for bet in imported_bets:
-                        if bet.get("type") == "moneyline":
-                            st.write(f"💰 {bet['team']} ML {bet.get('odds','?')} | Sport: {bet.get('sport','?')} | Result: {bet.get('result','?')}")
-                        elif bet.get("type") == "spread":
-                            if bet.get("player"):
-                                st.write(f"🎾 {bet['player']} {bet['line']:+.1f} {bet.get('odds','?')} | Result: {bet.get('result','?')}")
-                            else:
-                                st.write(f"📊 {bet['team']} {bet['line']:+.1f} {bet.get('odds','?')} | Sport: {bet.get('sport','?')} | Result: {bet.get('result','?')}")
-                    
-                    if st.button("✅ IMPORT ALL EXTRACTED BETS"):
-                        imported_count = 0
-                        for bet in imported_bets:
-                            conn = sqlite3.connect(engine.db_path)
-                            c = conn.cursor()
-                            bet_id = hashlib.md5(f"{str(bet)}{datetime.now()}".encode()).hexdigest()[:12]
-                            
-                            result = bet.get("result", "PENDING")
-                            profit = 0
-                            if result == "WIN":
-                                profit = 100
-                            elif result == "LOSS":
-                                profit = -100
-                            
-                            player = bet.get("team") or bet.get("player") or "Unknown"
-                            sport = bet.get("sport", "MLB")
-                            market = bet.get("type", "moneyline")
-                            line = bet.get("line", 0)
-                            odds = bet.get("odds", -110)
-                            
-                            c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date, settled_date, bolt_signal, profit)
-                                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                      (bet_id, player, sport, market, line, '', odds, 0, result,
-                                       datetime.now().strftime("%Y-%m-%d"),
-                                       datetime.now().strftime("%Y-%m-%d") if result != "PENDING" else None,
-                                       "IMPORTED", profit))
-                            conn.commit()
-                            conn.close()
-                            imported_count += 1
-                        
-                        st.success(f"✅ Imported {imported_count} bets successfully!")
-                        engine._calibrate_sem()
-                        engine.auto_tune_thresholds()
-                        engine._auto_retrain_ml()
-                        st.rerun()
-                else:
-                    st.warning("No bets found. Try pasting a larger section.")
-            else:
-                st.warning("Please paste some text.")
-        
-        st.markdown("---")
-        st.subheader("📋 Pending Bets")
-        conn = sqlite3.connect(engine.db_path)
-        pending_df = pd.read_sql_query("SELECT id, player, sport, market, line, pick, odds, date FROM bets WHERE result = 'PENDING' ORDER BY date DESC", conn)
-        conn.close()
-        if pending_df.empty:
-            st.info("No pending bets.")
-        else:
-            st.dataframe(pending_df)
-            st.subheader("Settle a Pending Bet")
-            bet_ids = pending_df['id'].tolist()
-            selected_bet_id = st.selectbox("Select bet to settle", bet_ids, format_func=lambda x: pending_df[pending_df['id']==x]['player'].iloc[0])
-            actual_result = st.number_input("Actual result", value=0.0, step=0.5)
-            if st.button("Settle Selected Bet"):
-                conn = sqlite3.connect(engine.db_path)
-                c = conn.cursor()
-                c.execute("SELECT line, pick, odds FROM bets WHERE id = ?", (selected_bet_id,))
-                row = c.fetchone()
-                if row:
-                    line, pick, odds = row
-                    if pick and line:
-                        won = (actual_result > line) if pick == "OVER" else (actual_result < line)
-                        result = "WIN" if won else "LOSS"
-                        profit = (abs(odds)/100 * 100) if won else -100
-                        if odds > 0:
-                            profit = (odds/100 * 100) if won else -100
-                        c.execute("UPDATE bets SET result = ?, actual = ?, settled_date = ?, profit = ? WHERE id = ?",
-                                  (result, actual_result, datetime.now().strftime("%Y-%m-%d"), profit, selected_bet_id))
-                    else:
-                        c.execute("UPDATE bets SET result = ?, settled_date = ? WHERE id = ?",
-                                  ("SETTLED", datetime.now().strftime("%Y-%m-%d"), selected_bet_id))
-                    conn.commit()
-                    st.success(f"Bet settled")
-                    engine._calibrate_sem()
-                    engine.auto_tune_thresholds()
-                    engine._auto_retrain_ml()
-                    st.rerun()
-                conn.close()
-
-if __name__ == "__main__":
-    run_dashboard()
+                                for bet
