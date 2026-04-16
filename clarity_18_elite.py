@@ -1,11 +1,10 @@
 """
-CLARITY 18.0 ELITE – ENHANCED WITH ESPN & ODDS-API.IO
-- Opponent Strength Adjustment (defensive ratings)
-- Robust Injury & Rest Logic (back‑to‑back fade)
-- Automated Bet Slip OCR (import wagers from screenshots)
-- ESPN Public API integration (schedules, stats, injuries)
-- Odds-API.io integration (real-time odds from 250+ bookmakers)
-- No extra installations required – just copy and run
+CLARITY 18.0 ELITE – LEAN (Redundancies Removed)
+- Odds-API.io primary, The Odds API fallback (kept for reliability)
+- Opponent Strength Adjustment
+- Rest/Injury Fade Logic
+- Bet Slip OCR Import
+- All Tabs Restored
 """
 
 import numpy as np
@@ -14,7 +13,6 @@ from scipy.stats import poisson, norm, nbinom
 import streamlit as st
 from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional, Any
-import json
 import sqlite3
 import re
 import time
@@ -24,8 +22,6 @@ import threading
 import warnings
 import pickle
 import os
-from collections import defaultdict
-import statistics
 
 # Optional LightGBM
 try:
@@ -41,23 +37,21 @@ warnings.filterwarnings('ignore')
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
-ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"  # The Odds API
+ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"  # The Odds API (fallback)
 OCR_SPACE_API_KEY = "K89641020988957"
-ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"  # New Odds-API.io key
+ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"  # Odds-API.io (primary)
 
-VERSION = "18.0 Elite (ESPN + Odds-API.io)"
+VERSION = "18.0 Elite (Lean)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
 ODDS_API_IO_BASE = "https://api.odds-api.io/v4"
-ESPN_BASE = "https://site.api.espn.com/apis/site/v2/sports"
 
 # =============================================================================
-# SPORT MODELS (extended)
+# SPORT MODELS
 # =============================================================================
 SPORT_MODELS = {
-    # Existing
     "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "avg_total": 228.5, "home_advantage": 3.0},
     "MLB": {"distribution": "poisson", "variance_factor": 1.08, "avg_total": 8.5, "home_advantage": 0.12},
     "NHL": {"distribution": "poisson", "variance_factor": 1.12, "avg_total": 6.0, "home_advantage": 0.15},
@@ -65,7 +59,6 @@ SPORT_MODELS = {
     "PGA": {"distribution": "nbinom", "variance_factor": 1.10, "avg_total": 70.5, "home_advantage": 0.0},
     "TENNIS": {"distribution": "poisson", "variance_factor": 1.05, "avg_total": 22.0, "home_advantage": 0.0},
     "UFC": {"distribution": "poisson", "variance_factor": 1.20, "avg_total": 2.5, "home_advantage": 0.0},
-    # New sports
     "SOCCER_EPL": {"distribution": "poisson", "variance_factor": 1.10, "avg_total": 2.5, "home_advantage": 0.3},
     "SOCCER_LALIGA": {"distribution": "poisson", "variance_factor": 1.10, "avg_total": 2.5, "home_advantage": 0.3},
     "COLLEGE_BASKETBALL": {"distribution": "nbinom", "variance_factor": 1.15, "avg_total": 145.5, "home_advantage": 3.5},
@@ -75,7 +68,6 @@ SPORT_MODELS = {
 }
 
 SPORT_CATEGORIES = {
-    # Existing
     "NBA": ["PTS", "REB", "AST", "STL", "BLK", "THREES", "PRA", "PR", "PA"],
     "MLB": ["OUTS", "KS", "HITS", "TB", "HR", "RBI", "H+R+RBI", "HITTER_FS", "PITCHER_FS"],
     "NHL": ["SOG", "SAVES", "GOALS", "ASSISTS", "HITS", "BLK_SHOTS"],
@@ -83,7 +75,6 @@ SPORT_CATEGORIES = {
     "PGA": ["STROKES", "BIRDIES", "BOGEYS", "EAGLES", "DRIVING_DISTANCE", "GIR"],
     "TENNIS": ["ACES", "DOUBLE_FAULTS", "GAMES_WON", "TOTAL_GAMES", "BREAK_PTS"],
     "UFC": ["SIGNIFICANT_STRIKES", "TAKEDOWNS", "FIGHT_TIME", "SUB_ATTEMPTS"],
-    # New sports categories
     "SOCCER_EPL": ["GOALS", "ASSISTS", "SHOTS", "SHOTS_ON_TARGET", "PASSES"],
     "SOCCER_LALIGA": ["GOALS", "ASSISTS", "SHOTS", "SHOTS_ON_TARGET", "PASSES"],
     "COLLEGE_BASKETBALL": ["PTS", "REB", "AST", "STL", "BLK", "PRA"],
@@ -159,7 +150,6 @@ HARDCODED_TEAMS = {
     "PGA": ["PGA Tour"],
     "TENNIS": ["ATP", "WTA"],
     "UFC": ["UFC"],
-    # Placeholder for new sports
     "SOCCER_EPL": ["Arsenal", "Aston Villa", "Bournemouth", "Brentford", "Brighton", "Chelsea", "Crystal Palace",
                    "Everton", "Fulham", "Leeds United", "Leicester City", "Liverpool", "Manchester City",
                    "Manchester United", "Newcastle United", "Nottingham Forest", "Southampton", "Tottenham",
@@ -172,156 +162,6 @@ HARDCODED_TEAMS = {
     "ESPORTS_LOL": ["T1", "Gen.G", "G2 Esports", "Fnatic", "Cloud9", "DWG KIA"],
     "ESPORTS_CS2": ["NAVI", "FaZe Clan", "G2", "Vitality", "ENCE", "MOUZ"]
 }
-
-NBA_ROSTERS = {}
-MLB_ROSTERS = {}
-NHL_ROSTERS = {}
-
-# =============================================================================
-# ESPN CLIENT (NEW)
-# =============================================================================
-class ESPNClient:
-    """Fetches data from ESPN's public API using requests."""
-    BASE_URL = ESPN_BASE
-
-    def __init__(self):
-        self.session = requests.Session()
-        self.sport_league_map = {
-            "NBA": ("basketball", "nba"),
-            "MLB": ("baseball", "mlb"),
-            "NHL": ("hockey", "nhl"),
-            "NFL": ("football", "nfl"),
-            "SOCCER_EPL": ("soccer", "eng.1"),
-            "SOCCER_LALIGA": ("soccer", "esp.1"),
-            "COLLEGE_BASKETBALL": ("basketball", "mens-college-basketball"),
-            "COLLEGE_FOOTBALL": ("football", "college-football"),
-        }
-
-    def _get(self, endpoint: str) -> Optional[Dict]:
-        url = f"{self.BASE_URL}/{endpoint}"
-        try:
-            resp = self.session.get(url, timeout=10)
-            if resp.status_code == 200:
-                return resp.json()
-        except:
-            pass
-        return None
-
-    def get_upcoming_games(self, sport: str) -> List[Dict]:
-        """Fetch today's games from ESPN scoreboard."""
-        if sport not in self.sport_league_map:
-            return []
-        sport_slug, league_slug = self.sport_league_map[sport]
-        endpoint = f"{sport_slug}/{league_slug}/scoreboard"
-        data = self._get(endpoint)
-        if not data:
-            return []
-        games = []
-        for event in data.get('events', []):
-            comps = event.get('competitions', [])
-            if not comps:
-                continue
-            comp = comps[0]
-            home, away = None, None
-            for competitor in comp.get('competitors', []):
-                if competitor.get('homeAway') == 'home':
-                    home = competitor.get('team', {}).get('displayName')
-                else:
-                    away = competitor.get('team', {}).get('displayName')
-            if home and away:
-                games.append({
-                    'home': home,
-                    'away': away,
-                    'date': event.get('date'),
-                    'id': event.get('id')
-                })
-        return games
-
-    def get_team_injuries(self, sport: str, team: str) -> List[str]:
-        """Return list of injured players for a team. (Simplified)"""
-        # ESPN injury data requires team ID lookup. For simplicity, we'll return empty for now.
-        return []
-
-    def get_player_game_logs(self, sport: str, player: str, num_games: int = 8) -> List[float]:
-        """Return recent game stats for a player. (Simplified)"""
-        return []
-
-# =============================================================================
-# ODDS-API.IO CLIENT (NEW)
-# =============================================================================
-class OddsAPIClientWrapper:
-    """Direct HTTP requests to Odds-API.io using your key."""
-    BASE_URL = ODDS_API_IO_BASE
-
-    def __init__(self, api_key: str):
-        self.api_key = api_key
-        self.sport_key_map = {
-            "NBA": "basketball_nba",
-            "MLB": "baseball_mlb",
-            "NHL": "icehockey_nhl",
-            "NFL": "americanfootball_nfl",
-            "SOCCER_EPL": "soccer_epl",
-            "SOCCER_LALIGA": "soccer_spain_la_liga",
-            "COLLEGE_BASKETBALL": "basketball_ncaab",
-            "COLLEGE_FOOTBALL": "americanfootball_ncaaf",
-        }
-
-    def _request(self, endpoint: str, params: dict) -> Optional[Dict]:
-        params['apiKey'] = self.api_key
-        try:
-            resp = requests.get(f"{self.BASE_URL}/{endpoint}", params=params, timeout=10)
-            if resp.status_code == 200:
-                return resp.json()
-        except:
-            pass
-        return None
-
-    def fetch_todays_games(self, sports: List[str]) -> List[Dict]:
-        all_games = []
-        for sport in sports:
-            sport_key = self.sport_key_map.get(sport)
-            if not sport_key:
-                continue
-            events_data = self._request(f"sports/{sport_key}/events", {})
-            if not events_data or 'data' not in events_data:
-                continue
-            for event in events_data['data'][:5]:  # limit for performance
-                event_id = event['id']
-                odds_data = self._request(f"sports/{sport_key}/events/{event_id}/odds",
-                                          {"regions": "us", "markets": "h2h,spreads,totals", "oddsFormat": "american"})
-                if not odds_data or 'data' not in odds_data or not odds_data['data'].get('bookmakers'):
-                    continue
-                bookmakers = odds_data['data']['bookmakers']
-                if not bookmakers:
-                    continue
-                bm = bookmakers[0]  # Use first bookmaker
-                game = {
-                    "sport": sport,
-                    "home": event['home_team'],
-                    "away": event['away_team'],
-                    "bookmakers": bookmakers
-                }
-                for market in bm.get('markets', []):
-                    if market['key'] == 'h2h':
-                        for outcome in market['outcomes']:
-                            if outcome['name'] == game['home']:
-                                game['home_ml'] = outcome['price']
-                            elif outcome['name'] == game['away']:
-                                game['away_ml'] = outcome['price']
-                    elif market['key'] == 'spreads':
-                        for outcome in market['outcomes']:
-                            if outcome['name'] == game['home']:
-                                game['spread'] = outcome['point']
-                                game['spread_odds'] = outcome['price']
-                    elif market['key'] == 'totals':
-                        game['total'] = market['outcomes'][0]['point']
-                        for outcome in market['outcomes']:
-                            if outcome['name'] == 'Over':
-                                game['over_odds'] = outcome['price']
-                            elif outcome['name'] == 'Under':
-                                game['under_odds'] = outcome['price']
-                all_games.append(game)
-        return all_games
 
 # =============================================================================
 # OPPONENT STRENGTH CACHE
@@ -533,7 +373,83 @@ class SeasonContextEngine:
         return result
 
 # =============================================================================
-# GAME SCANNER (UPDATED TO USE ODDS-API.IO)
+# ODDS-API.IO CLIENT (PRIMARY)
+# =============================================================================
+class OddsAPIClientWrapper:
+    BASE_URL = ODDS_API_IO_BASE
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+        self.sport_key_map = {
+            "NBA": "basketball_nba",
+            "MLB": "baseball_mlb",
+            "NHL": "icehockey_nhl",
+            "NFL": "americanfootball_nfl",
+            "SOCCER_EPL": "soccer_epl",
+            "SOCCER_LALIGA": "soccer_spain_la_liga",
+            "COLLEGE_BASKETBALL": "basketball_ncaab",
+            "COLLEGE_FOOTBALL": "americanfootball_ncaaf",
+        }
+
+    def _request(self, endpoint: str, params: dict) -> Optional[Dict]:
+        params['apiKey'] = self.api_key
+        try:
+            resp = requests.get(f"{self.BASE_URL}/{endpoint}", params=params, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+        except:
+            pass
+        return None
+
+    def fetch_todays_games(self, sports: List[str]) -> List[Dict]:
+        all_games = []
+        for sport in sports:
+            sport_key = self.sport_key_map.get(sport)
+            if not sport_key:
+                continue
+            events_data = self._request(f"sports/{sport_key}/events", {})
+            if not events_data or 'data' not in events_data:
+                continue
+            for event in events_data['data'][:5]:
+                event_id = event['id']
+                odds_data = self._request(f"sports/{sport_key}/events/{event_id}/odds",
+                                          {"regions": "us", "markets": "h2h,spreads,totals", "oddsFormat": "american"})
+                if not odds_data or 'data' not in odds_data or not odds_data['data'].get('bookmakers'):
+                    continue
+                bookmakers = odds_data['data']['bookmakers']
+                if not bookmakers:
+                    continue
+                bm = bookmakers[0]
+                game = {
+                    "sport": sport,
+                    "home": event['home_team'],
+                    "away": event['away_team'],
+                    "bookmakers": bookmakers
+                }
+                for market in bm.get('markets', []):
+                    if market['key'] == 'h2h':
+                        for outcome in market['outcomes']:
+                            if outcome['name'] == game['home']:
+                                game['home_ml'] = outcome['price']
+                            elif outcome['name'] == game['away']:
+                                game['away_ml'] = outcome['price']
+                    elif market['key'] == 'spreads':
+                        for outcome in market['outcomes']:
+                            if outcome['name'] == game['home']:
+                                game['spread'] = outcome['point']
+                                game['spread_odds'] = outcome['price']
+                    elif market['key'] == 'totals':
+                        game['total'] = market['outcomes'][0]['point']
+                        for outcome in market['outcomes']:
+                            if outcome['name'] == 'Over':
+                                game['over_odds'] = outcome['price']
+                            elif outcome['name'] == 'Under':
+                                game['under_odds'] = outcome['price']
+                all_games.append(game)
+        return all_games
+
+# =============================================================================
+# GAME SCANNER (USES ODDS-API.IO PRIMARY, THE ODDS API FALLBACK)
 # =============================================================================
 class GameScanner:
     def __init__(self, api_key: str):
@@ -544,7 +460,7 @@ class GameScanner:
     def fetch_todays_games(self, sports: List[str] = None) -> List[Dict]:
         if sports is None:
             sports = ["NBA","MLB","NHL","NFL"]
-        # Try the new API first
+        # Try new API first
         if self.new_odds_client:
             games = self.new_odds_client.fetch_todays_games(sports)
             if games:
@@ -800,12 +716,10 @@ class EnsemblePredictor:
 ensemble = EnsemblePredictor()
 
 # =============================================================================
-# CLARITY ENGINE (with opponent strength, rest logic, OCR bet slip import)
+# CLARITY ENGINE (LEAN)
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
-        self.espn_client = ESPNClient()
-        self.odds_api_client = OddsAPIClientWrapper(ODDS_API_IO_KEY) if ODDS_API_IO_KEY else None
         self.game_scanner = GameScanner(ODDS_API_KEY)
         self.prop_scanner = PropScanner()
         self.season_context = SeasonContextEngine()
@@ -1036,10 +950,7 @@ class Clarity18Elite:
                 "implied":round(self.implied_prob(odds),3),"edge":round(edge,4),"value":value,"action":action}
     def get_teams(self, sport): return HARDCODED_TEAMS.get(sport, ["Select a sport first"])
     def get_roster(self, sport, team):
-        if sport=="NBA" and team in NBA_ROSTERS: return NBA_ROSTERS[team]
-        elif sport=="MLB" and team in MLB_ROSTERS: return MLB_ROSTERS[team]
-        elif sport=="NHL" and team in NHL_ROSTERS: return NHL_ROSTERS[team]
-        elif sport in ["PGA","TENNIS","UFC"]: return self._get_individual_sport_players(sport)
+        if sport in ["PGA","TENNIS","UFC"]: return self._get_individual_sport_players(sport)
         return ["Player 1","Player 2","Player 3","Player 4","Player 5"]
     def _get_individual_sport_players(self, sport):
         if sport=="PGA": return ["Scottie Scheffler","Rory McIlroy","Jon Rahm","Ludvig Aberg","Xander Schauffele","Collin Morikawa"]
@@ -1268,22 +1179,12 @@ def parse_chat_transcript(text: str) -> List[Dict]:
             })
     return bets
 
-def parse_ocr_text(text: str) -> List[Dict]:
-    lines = text.split('\n')
-    bets = []
-    for line in lines:
-        bet = parse_chat_transcript(line)
-        if bet:
-            bets.extend(bet)
-    return bets
-
 def auto_parse_bets(text: str) -> List[Dict]:
     text = text.upper()
     text = text.replace("0VER","OVER")
     bets = []
     wager_pattern = re.compile(r"WAGER:?\s*\$?(\d+\.?\d*)", re.IGNORECASE)
     odds_pattern = re.compile(r"ODDS:?\s*([+-]\d+)", re.IGNORECASE)
-    payout_pattern = re.compile(r"PAYOUT:?\s*\$?(\d+\.?\d*)", re.IGNORECASE)
     prop_pattern = re.compile(r"([A-Z][A-Za-z\.\-' ]+?)\s+(OVER|UNDER)\s+(\d+\.?\d*)\s*([A-Z]{2,})?")
     for match in prop_pattern.finditer(text):
         player = match.group(1).strip()
@@ -1327,31 +1228,26 @@ def auto_parse_bets(text: str) -> List[Dict]:
     return unique
 
 # =============================================================================
-# STREAMLIT DASHBOARD (ALL TABS RESTORED)
+# STREAMLIT DASHBOARD
 # =============================================================================
 engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Enhanced: ESPN + Odds-API.io | Version: {VERSION}**")
+    st.markdown(f"**Lean Version | {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
-        st.success("✅ ESPN Public API")
-        st.success("✅ Odds-API.io (250+ bookmakers)")
-        st.success("✅ Opponent Strength Adjustment")
-        st.success("✅ Rest/Injury Fade Logic")
-        st.success("✅ Bet Slip OCR Import")
+        st.success("✅ Odds-API.io (primary)")
+        st.success("✅ The Odds API (fallback)")
+        st.success("✅ Opponent Strength")
+        st.success("✅ Rest/Injury Fade")
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("Daily Loss Left", f"${max(0, engine.daily_loss_limit - engine.daily_loss_today):.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
         st.metric("Prob Bolt", f"{engine.prob_bolt:.2f}")
         st.metric("DTM Bolt", f"{engine.dtm_bolt:.3f}")
-        st.markdown("---")
-        st.caption("💡 **Quick Tips:**")
-        st.caption("• ESPN provides free schedules and stats")
-        st.caption("• Odds-API.io scans 250+ sportsbooks")
 
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "🎮 GAME MARKETS", "🎯 PLAYER PROPS", "🏆 PRIZEPICKS SCANNER", "📊 SCANNERS & ACCURACY", "📸 IMAGE ANALYSIS", "🔧 AUTO-TUNE"
@@ -1394,7 +1290,6 @@ def run_dashboard():
                 recommendations_found = False
                 approved_bets_for_parlay = []
                 
-                # Moneyline
                 if game.get("home_ml") and game.get("away_ml"):
                     ml_result = engine.analyze_moneyline(home, away, sport, game["home_ml"], game["away_ml"])
                     if ml_result.get('units', 0) > 0:
@@ -1410,7 +1305,6 @@ def run_dashboard():
                     else:
                         st.info(f"❌ Moneyline not approved – {ml_result.get('reject_reason', 'Insufficient edge')}")
                 
-                # Standard Spread
                 if game.get("spread") and game.get("spread_odds"):
                     spread_approved = False
                     for pick_side in [home, away]:
@@ -1429,7 +1323,6 @@ def run_dashboard():
                     if not spread_approved:
                         st.info(f"❌ Spread not approved – No significant edge")
                 
-                # Standard Total
                 if game.get("total"):
                     total_approved = False
                     for pick_side, odds in [("OVER", game.get("over_odds", -110)), ("UNDER", game.get("under_odds", -110))]:
@@ -1448,7 +1341,6 @@ def run_dashboard():
                     if not total_approved:
                         st.info(f"❌ Total not approved – No significant edge")
                 
-                # Alternate Lines
                 st.markdown("---")
                 st.subheader("🔄 Best Alternate Lines")
                 alt_found = False
@@ -1483,7 +1375,6 @@ def run_dashboard():
                 if not recommendations_found and not alt_found:
                     st.warning("⚠️ No CLARITY approved bets found for this game.")
                 
-                # Parlay Builder
                 st.markdown("---")
                 st.subheader("🎯 CLARITY SUGGESTED PARLAYS")
                 if "auto_games_analyzed" not in st.session_state or st.session_state["auto_games_analyzed"] is None:
@@ -1533,7 +1424,6 @@ def run_dashboard():
                 else:
                     st.info("Need at least 2 approved bets from different games to build a parlay.")
         
-        # Manual Entry
         st.markdown("---")
         st.subheader("✏️ Manual Entry")
         game_tab1, game_tab2, game_tab3, game_tab4 = st.tabs(["💰 Moneyline", "📊 Spread", "📈 Totals", "🔄 Alt Lines"])
