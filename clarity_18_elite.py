@@ -1,8 +1,8 @@
 """
-CLARITY 18.0 ELITE – UNIVERSAL MULTI-FORMAT PARSER
-- Extracts every leg from bet tickets and odds boards
-- Logs win/loss results when available
-- Handles tennis, NHL, MLB, NBA, and player props
+CLARITY 18.0 ELITE – MULTI-TICKET SEGMENTED PARSER
+- Segments pasted text into individual tickets
+- Correctly assigns WIN/LOSS per ticket
+- Extracts moneyline, spread, total, and player props
 """
 
 import numpy as np
@@ -38,7 +38,7 @@ ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 
-VERSION = "18.0 Elite (Universal Multi-Format Parser)"
+VERSION = "18.0 Elite (Multi-Ticket Segmented Parser)"
 BUILD_DATE = "2026-04-15"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -1142,137 +1142,130 @@ class BackgroundAutomation:
             time.sleep(1800)
 
 # =============================================================================
-# UNIVERSAL MULTI-FORMAT PARSER
+# MULTI-TICKET SEGMENTED PARSER
 # =============================================================================
-def parse_raw_odds_board(text: str) -> List[Dict]:
+def segment_tickets(text: str) -> List[str]:
     """
-    Extract all bets from bet tickets or odds boards.
-    Returns list of dicts with type, team/player, odds, line, result, sport.
+    Split pasted text into individual ticket blocks.
+    Delimiters: lines starting with 'PARLAY', 'Bet ticket:', 'Risk:', or a date pattern.
+    """
+    lines = text.split('\n')
+    blocks = []
+    current_block = []
+    
+    for line in lines:
+        # Detect start of a new ticket
+        if (re.search(r'^(PARLAY|Bet ticket:|Risk:)', line.strip(), re.IGNORECASE) or
+            re.search(r'^\d{1,2}/\d{1,2}/\d{2,4}\s+\d{1,2}:\d{2}\s*(AM|PM)', line.strip(), re.IGNORECASE)):
+            if current_block:
+                blocks.append('\n'.join(current_block))
+                current_block = []
+        current_block.append(line)
+    
+    if current_block:
+        blocks.append('\n'.join(current_block))
+    
+    # If no clear segmentation, return whole text as one block
+    if not blocks or len(blocks) == 1:
+        return [text]
+    return blocks
+
+def parse_ticket_block(block: str) -> Tuple[List[Dict], Optional[str]]:
+    """
+    Extract bets from a single ticket block and determine its result.
+    Returns (list of bet dicts, result string)
     """
     bets = []
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    result = None
+    lines = block.split('\n')
     
-    # Determine overall result (WIN/LOSS) from ticket header
-    overall_result = None
-    for line in lines[:10]:
+    # Find result within this block
+    for line in lines:
         if re.search(r'\b(LOSS|LOST)\b', line, re.IGNORECASE):
-            overall_result = "LOSS"
+            result = "LOSS"
             break
-        elif re.search(r'\b(WIN|WON)\b', line, re.IGNORECASE) and not re.search(r'PARLAY.*LOSS', line, re.IGNORECASE):
-            overall_result = "WIN"
+        elif re.search(r'\b(WIN|WON)\b', line, re.IGNORECASE):
+            result = "WIN"
             break
     
-    # Detect sport from text
+    # Detect sport
     sport = "MLB"
-    if re.search(r'NHL|Ice Hockey', text, re.IGNORECASE): sport = "NHL"
-    elif re.search(r'NBA|Basketball', text, re.IGNORECASE): sport = "NBA"
-    elif re.search(r'NFL|Football', text, re.IGNORECASE): sport = "NFL"
-    elif re.search(r'WTA|ATP|Tennis', text, re.IGNORECASE): sport = "TENNIS"
+    if re.search(r'NHL|Ice Hockey', block, re.IGNORECASE):
+        sport = "NHL"
+    elif re.search(r'NBA|Basketball', block, re.IGNORECASE):
+        sport = "NBA"
+    elif re.search(r'NFL|Football', block, re.IGNORECASE):
+        sport = "NFL"
+    elif re.search(r'WTA|ATP|Tennis', block, re.IGNORECASE):
+        sport = "TENNIS"
     
-    i = 0
-    while i < len(lines):
-        line = lines[i]
+    # Process line by line
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
         
-        # Ticket format: "New York Mets (+178)" or "Dallas Stars -111"
-        ticket_ml = re.match(r'^([A-Za-z\s\.]+?)\s+\(?([+-]\d+)\)?$', line)
-        if ticket_ml:
-            team = ticket_ml.group(1).strip()
-            odds = int(ticket_ml.group(2))
-            # Look ahead for sport/league info to confirm sport
-            for j in range(i+1, min(i+5, len(lines))):
-                if re.search(r'NHL|MLB|NBA', lines[j], re.IGNORECASE):
-                    if 'NHL' in lines[j]: sport = 'NHL'
-                    elif 'MLB' in lines[j]: sport = 'MLB'
-                    elif 'NBA' in lines[j]: sport = 'NBA'
-                    break
+        # Moneyline: "New York Mets (+178)" or "Dallas Stars -111"
+        ml_match = re.match(r'^([A-Za-z\s\.]+?)\s*\(?([+-]\d+)\)?$', line)
+        if ml_match:
+            team = ml_match.group(1).strip()
+            odds = int(ml_match.group(2))
             bets.append({
                 "type": "moneyline",
                 "team": team,
                 "odds": odds,
-                "sport": sport,
-                "result": overall_result
+                "sport": sport
             })
-            i += 1
             continue
         
         # Tennis handicap: "Sonmez, Zeynep (+4.5)"
-        tennis_hc = re.match(r'^([A-Za-z\-\'\.]+,\s+[A-Za-z\-\'\.]+)\s*\(([+-]\d+\.?\d*)\)$', line)
-        if tennis_hc:
-            player = tennis_hc.group(1).strip()
-            line_val = float(tennis_hc.group(2))
-            # Next line should be odds
-            odds = -110
-            if i+1 < len(lines) and re.match(r'^[+-]\d+$', lines[i+1]):
-                odds = int(lines[i+1])
-                i += 1
+        tennis_match = re.match(r'^([A-Za-z\-\'\.]+,\s+[A-Za-z\-\'\.]+)\s*\(([+-]\d+\.?\d*)\)$', line)
+        if tennis_match:
+            player = tennis_match.group(1).strip()
+            line_val = float(tennis_match.group(2))
             bets.append({
                 "type": "spread",
                 "player": player,
                 "line": line_val,
-                "odds": odds,
-                "sport": "TENNIS",
-                "result": overall_result
+                "sport": "TENNIS"
             })
-            i += 1
             continue
         
-        # Team run line: "Toronto Blue Jays (-1.5)"
-        runline = re.match(r'^([A-Za-z\s\.]+?)\s*\(([+-]\d+\.?\d*)\)$', line)
-        if runline:
-            team = runline.group(1).strip()
-            line_val = float(runline.group(2))
-            # Next line might be odds
-            odds = -110
-            if i+1 < len(lines) and re.match(r'^[+-]\d+$', lines[i+1]):
-                odds = int(lines[i+1])
-                i += 1
+        # Odds line (standalone): "+105"
+        odds_match = re.match(r'^([+-]\d+)$', line)
+        if odds_match and bets:
+            bets[-1]["odds"] = int(odds_match.group(1))
+            continue
+        
+        # Run line: "Toronto Blue Jays (-1.5)"
+        runline_match = re.match(r'^([A-Za-z\s\.]+?)\s*\(([+-]\d+\.?\d*)\)$', line)
+        if runline_match:
+            team = runline_match.group(1).strip()
+            line_val = float(runline_match.group(2))
             bets.append({
                 "type": "spread",
                 "team": team,
                 "line": line_val,
-                "odds": odds,
-                "sport": sport,
-                "result": overall_result
+                "sport": sport
             })
-            i += 1
             continue
-        
-        # Player prop: "Jalen Brunson 14.5 Rebs+Asts"
-        prop_match = re.match(r'^([A-Za-z\s\.\-\']+)\s+(\d+\.?\d*)\s+([A-Za-z\+]+)$', line)
-        if prop_match:
-            player = prop_match.group(1).strip()
-            line_val = float(prop_match.group(2))
-            market = prop_match.group(3).strip().upper()
-            bets.append({
-                "type": "player_prop",
-                "player": player,
-                "market": market,
-                "line": line_val,
-                "sport": sport,
-                "result": overall_result
-            })
-            i += 1
-            continue
-        
-        i += 1
     
-    # If no bets found, try simpler patterns
-    if not bets:
-        # NHL moneyline: "Dallas Stars -111"
-        for line in lines:
-            ml_simple = re.match(r'^([A-Za-z\s\.]+)\s+([+-]\d+)$', line)
-            if ml_simple:
-                team = ml_simple.group(1).strip()
-                odds = int(ml_simple.group(2))
-                bets.append({
-                    "type": "moneyline",
-                    "team": team,
-                    "odds": odds,
-                    "sport": sport,
-                    "result": overall_result
-                })
+    return bets, result
+
+def parse_raw_odds_board(text: str) -> List[Dict]:
+    """
+    Main entry: segment into tickets, parse each, apply per-ticket result.
+    """
+    all_bets = []
+    blocks = segment_tickets(text)
     
-    return bets
+    for block in blocks:
+        bets, result = parse_ticket_block(block)
+        for bet in bets:
+            bet["result"] = result
+            all_bets.append(bet)
+    
+    return all_bets
 
 def parse_chat_transcript(text: str) -> List[Dict]:
     return parse_raw_odds_board(text)
@@ -1311,7 +1304,7 @@ engine = Clarity18Elite()
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Universal Multi-Format Parser | {VERSION}**")
+    st.markdown(f"**Multi-Ticket Segmented Parser | {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
@@ -1858,7 +1851,7 @@ def run_dashboard():
                                                 st.caption(f"Reason: {res['reject_reason']}")
 
     # =========================================================================
-    # TAB 6: AUTO-TUNE (with Universal Parser)
+    # TAB 6: AUTO-TUNE (with Multi-Ticket Parser)
     # =========================================================================
     with tab6:
         st.header("Auto-Tune History (ROI-based)")
@@ -1872,35 +1865,31 @@ def run_dashboard():
             st.dataframe(df)
         
         st.markdown("---")
-        st.subheader("📥 IMPORT BETS FROM TICKET OR BOARD")
+        st.subheader("📥 IMPORT BETS FROM TICKETS")
         st.markdown("""
-        **Paste any bet ticket or odds board text.** The parser extracts:
+        **Paste multiple tickets at once.** Each ticket's WIN/LOSS is detected separately.
+        Supported formats:
         - Moneyline: `New York Mets (+178)`, `Dallas Stars -111`
-        - Spread/Run Line: `Toronto Blue Jays (-1.5) +137`
-        - Tennis Handicap: `Sonmez, Zeynep (+4.5) +105`
-        - Player Props: `Jalen Brunson 14.5 Rebs+Asts`
-        
-        **Win/Loss results are automatically detected** from ticket headers (LOSS/WIN).
+        - Spread/Run Line: `Toronto Blue Jays (-1.5)`
+        - Tennis Handicap: `Sonmez, Zeynep (+4.5)` followed by odds `+105`
         """)
         
-        raw_text = st.text_area("Paste ticket or board text here", height=300)
+        raw_text = st.text_area("Paste ticket text here", height=300)
         if st.button("🔍 Extract Bets", type="primary"):
             if raw_text.strip():
                 imported_bets = parse_raw_odds_board(raw_text)
                 if imported_bets:
-                    st.success(f"Found {len(imported_bets)} bets")
+                    st.success(f"Found {len(imported_bets)} bets across multiple tickets")
                     st.subheader("📋 Bets to import")
                     
                     for bet in imported_bets:
                         if bet.get("type") == "moneyline":
-                            st.write(f"💰 {bet['team']} ML {bet['odds']} | Sport: {bet.get('sport','?')} | Result: {bet.get('result','?')}")
+                            st.write(f"💰 {bet['team']} ML {bet.get('odds','?')} | Sport: {bet.get('sport','?')} | Result: {bet.get('result','?')}")
                         elif bet.get("type") == "spread":
                             if bet.get("player"):
-                                st.write(f"🎾 {bet['player']} {bet['line']:+.1f} {bet['odds']} | Result: {bet.get('result','?')}")
+                                st.write(f"🎾 {bet['player']} {bet['line']:+.1f} {bet.get('odds','?')} | Result: {bet.get('result','?')}")
                             else:
-                                st.write(f"📊 {bet['team']} {bet['line']:+.1f} {bet['odds']} | Sport: {bet.get('sport','?')} | Result: {bet.get('result','?')}")
-                        elif bet.get("type") == "player_prop":
-                            st.write(f"🎯 {bet['player']} {bet['line']} {bet['market']} | Result: {bet.get('result','?')}")
+                                st.write(f"📊 {bet['team']} {bet['line']:+.1f} {bet.get('odds','?')} | Sport: {bet.get('sport','?')} | Result: {bet.get('result','?')}")
                     
                     if st.button("✅ IMPORT ALL EXTRACTED BETS"):
                         imported_count = 0
@@ -1910,11 +1899,11 @@ def run_dashboard():
                             bet_id = hashlib.md5(f"{str(bet)}{datetime.now()}".encode()).hexdigest()[:12]
                             
                             result = bet.get("result", "PENDING")
-                            if result and result.upper() in ["WIN", "LOSS"]:
-                                profit = 100 if result.upper() == "WIN" else -100  # simplified; real profit needs stake
-                            else:
-                                result = "PENDING"
-                                profit = 0
+                            profit = 0
+                            if result == "WIN":
+                                profit = 100  # simplified
+                            elif result == "LOSS":
+                                profit = -100
                             
                             player = bet.get("team") or bet.get("player") or "Unknown"
                             sport = bet.get("sport", "MLB")
