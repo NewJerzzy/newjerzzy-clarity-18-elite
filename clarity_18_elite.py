@@ -1,8 +1,9 @@
 """
-CLARITY 18.0 ELITE – ROSTER FIX (Real Players)
-- Improved fetch_team_roster with fallback to actual NBA players
-- Warning shown when fallback is used
-- Poisson models NOT yet integrated (evaluation only)
+CLARITY 18.0 ELITE – PASTE PROPS BOARD + SCREENSHOT OCR
+- PrizePicks Scanner tab now includes a "Paste Props" section
+- Parses player, line, market from pasted text or uploaded screenshots
+- Analyzes using real stats and shows approved plays
+- Live API scanner remains as fallback
 """
 
 import numpy as np
@@ -38,8 +39,8 @@ ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 
-VERSION = "18.0 Elite (Roster Fix)"
-BUILD_DATE = "2026-04-15"
+VERSION = "18.0 Elite (Paste Props + Screenshot)"
+BUILD_DATE = "2026-04-16"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
@@ -161,7 +162,7 @@ HARDCODED_TEAMS = {
 }
 
 # =============================================================================
-# FALLBACK NBA ROSTERS (top players per team)
+# FALLBACK NBA ROSTERS
 # =============================================================================
 FALLBACK_NBA_ROSTERS = {
     "Atlanta Hawks": ["Trae Young", "Dejounte Murray", "Jalen Johnson", "Clint Capela", "Bogdan Bogdanovic"],
@@ -364,30 +365,22 @@ def fetch_player_stats_and_injury(player_name: str, sport: str, market: str, num
     return stats, injury_status
 
 # =============================================================================
-# TEAM ROSTER FETCHER (ENHANCED WITH FALLBACK)
+# TEAM ROSTER FETCHER
 # =============================================================================
-@st.cache_data(ttl=86400)  # cache for 24 hours
+@st.cache_data(ttl=86400)
 def fetch_team_roster(sport: str, team: str) -> Tuple[List[str], bool]:
-    """
-    Fetch current roster for a team from API-Sports.
-    Returns (roster_list, is_fallback) where is_fallback=True if hardcoded fallback used.
-    """
     if sport == "NBA" and team in FALLBACK_NBA_ROSTERS:
         fallback_roster = FALLBACK_NBA_ROSTERS[team]
     else:
         fallback_roster = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"]
-    
     if sport not in ["NBA", "MLB", "NHL", "NFL"]:
         return fallback_roster, True
-    
     league_map = {"NBA": 12, "MLB": 1, "NHL": 5, "NFL": 1}
     league_id = league_map.get(sport)
     if not league_id:
         return fallback_roster, True
-    
     headers = {"x-apisports-key": API_SPORTS_KEY}
     try:
-        # Get team ID
         url = "https://v1.api-sports.io/teams"
         params = {"league": league_id, "season": "2025-2026" if sport in ["NBA","NHL"] else "2025", "search": team}
         r = requests.get(url, headers=headers, params=params, timeout=10)
@@ -397,8 +390,6 @@ def fetch_team_roster(sport: str, team: str) -> Tuple[List[str], bool]:
         if not data:
             return fallback_roster, True
         team_id = data[0]["team"]["id"]
-        
-        # Get players for team
         players_url = "https://v1.api-sports.io/players"
         params = {"league": league_id, "season": "2025-2026" if sport in ["NBA","NHL"] else "2025", "team": team_id}
         r2 = requests.get(players_url, headers=headers, params=params, timeout=10)
@@ -410,7 +401,7 @@ def fetch_team_roster(sport: str, team: str) -> Tuple[List[str], bool]:
             return sorted(roster), False
         else:
             return fallback_roster, True
-    except Exception as e:
+    except:
         return fallback_roster, True
 
 # =============================================================================
@@ -456,7 +447,7 @@ class SeasonContextEngine:
         return result
 
 # =============================================================================
-# ODDS-API.IO CLIENT (PRIMARY)
+# ODDS-API.IO CLIENT
 # =============================================================================
 class OddsAPIClientWrapper:
     BASE_URL = ODDS_API_IO_BASE
@@ -548,7 +539,6 @@ class GameScanner:
         if sports is None:
             sports = ["NBA","MLB","NHL","NFL"]
         target_date = (datetime.now() + timedelta(days=days_offset)).strftime("%Y-%m-%d")
-        
         if self.new_odds_client:
             games = self.new_odds_client.fetch_games(sports, date=target_date)
             if games:
@@ -1048,9 +1038,7 @@ class Clarity18Elite:
                 "implied":round(self.implied_prob(odds),3),"edge":round(edge,4),"value":value,"action":action}
     def get_teams(self, sport): return HARDCODED_TEAMS.get(sport, ["Select a sport first"])
     def get_roster(self, sport, team):
-        """Get real roster from API-Sports with fallback."""
-        if sport in ["PGA","TENNIS","UFC"]:
-            return self._get_individual_sport_players(sport)
+        if sport in ["PGA","TENNIS","UFC"]: return self._get_individual_sport_players(sport)
         if team and sport in ["NBA","MLB","NHL","NFL"]:
             roster, is_fallback = fetch_team_roster(sport, team)
             if is_fallback and sport == "NBA":
@@ -1252,7 +1240,104 @@ class BackgroundAutomation:
             time.sleep(1800)
 
 # =============================================================================
-# MULTI-TICKET SEGMENTED PARSER
+# PROP PARSER FOR PASTED TEXT / SCREENSHOTS
+# =============================================================================
+def parse_pasted_props(text: str) -> List[Dict]:
+    """
+    Extract player props from pasted PrizePicks-style text.
+    Looks for:
+      - Player name (e.g., "Anthony Edwards")
+      - Line (e.g., "5" or "5.5")
+      - Market (e.g., "Rebounds", "PRA", "Points")
+      - Direction: "More" → OVER, "Less" → UNDER
+    """
+    bets = []
+    lines = text.split('\n')
+    
+    # Regex to find a player name (at least two capitalized words)
+    player_pattern = re.compile(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)')
+    # Market pattern: common stat names
+    market_pattern = re.compile(r'\b(Rebounds|Points|Assists|PRA|Rebs\+Asts|Threes|Blocks|Steals|Pts\+Rebs\+Asts|PR|PA)\b', re.IGNORECASE)
+    # Line pattern: decimal or integer
+    line_pattern = re.compile(r'\b(\d+\.?\d*)\b')
+    
+    current_player = None
+    current_market = None
+    current_line = None
+    current_pick = "OVER"  # default
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Check for "More" or "Less" to determine pick
+        if re.search(r'\bMore\b', line, re.IGNORECASE):
+            current_pick = "OVER"
+        elif re.search(r'\bLess\b', line, re.IGNORECASE):
+            current_pick = "UNDER"
+        
+        # Look for player name
+        player_match = player_pattern.match(line)
+        if player_match:
+            current_player = player_match.group(1).strip()
+        
+        # Look for market
+        market_match = market_pattern.search(line)
+        if market_match:
+            raw_market = market_match.group(1).upper()
+            # Normalize market names
+            market_map = {
+                "REBOUNDS": "REB", "POINTS": "PTS", "ASSISTS": "AST",
+                "PRA": "PRA", "PR": "PR", "PA": "PA",
+                "REBS+ASTS": "PRA", "THREES": "3PT", "BLOCKS": "BLK", "STEALS": "STL",
+                "PTS+REBS+ASTS": "PRA"
+            }
+            current_market = market_map.get(raw_market, raw_market)
+        
+        # Look for line (if we already have a player and market)
+        if current_player and current_market:
+            line_match = line_pattern.search(line)
+            if line_match:
+                current_line = float(line_match.group(1))
+                # Only add if we haven't already added this exact combo
+                bet_key = f"{current_player}|{current_market}|{current_line}|{current_pick}"
+                if not hasattr(parse_pasted_props, "seen") or bet_key not in parse_pasted_props.seen:
+                    if not hasattr(parse_pasted_props, "seen"):
+                        parse_pasted_props.seen = set()
+                    parse_pasted_props.seen.add(bet_key)
+                    bets.append({
+                        "player": current_player,
+                        "market": current_market,
+                        "line": current_line,
+                        "pick": current_pick,
+                        "sport": "NBA"  # default; could be inferred from context
+                    })
+                # Reset for next prop (but keep player if same)
+                current_market = None
+                current_line = None
+    
+    return bets
+
+def parse_props_from_image(image_bytes, filename, filetype):
+    """Extract props from an uploaded screenshot using OCR.space."""
+    try:
+        files = {"file": (filename, image_bytes, filetype)}
+        data = {"apikey": OCR_SPACE_API_KEY, "language": "eng", "isOverlayRequired": False,
+                "filetype": filetype.split("/")[-1] if filetype else "PNG"}
+        response = requests.post("https://api.ocr.space/parse/image", files=files, data=data, timeout=30)
+        if response.status_code != 200:
+            return []
+        result = response.json()
+        if result.get("IsErroredOnProcessing", True):
+            return []
+        extracted_text = result["ParsedResults"][0]["ParsedText"]
+        return parse_pasted_props(extracted_text)
+    except:
+        return []
+
+# =============================================================================
+# MULTI-TICKET SEGMENTED PARSER (unchanged)
 # =============================================================================
 def segment_tickets(text: str) -> List[str]:
     lines = text.split('\n')
@@ -1354,14 +1439,14 @@ def auto_parse_bets(text: str) -> List[Dict]:
     return bets
 
 # =============================================================================
-# STREAMLIT DASHBOARD (TABS REORDERED)
+# STREAMLIT DASHBOARD
 # =============================================================================
 engine = Clarity18Elite()
 
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Real Rosters + Tomorrow Games | {VERSION}**")
+    st.markdown(f"**Paste Props + Screenshot | {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
@@ -1369,6 +1454,7 @@ def run_dashboard():
         st.success("✅ The Odds API (fallback)")
         st.success("✅ Real Team Rosters")
         st.success("✅ Tomorrow's Games Supported")
+        st.success("✅ Paste Props Board")
         st.metric("Bankroll", f"${engine.bankroll:,.0f}")
         st.metric("Daily Loss Left", f"${max(0, engine.daily_loss_limit - engine.daily_loss_today):.0f}")
         st.metric("SEM Score", f"{engine.sem_score}/100")
@@ -1646,21 +1732,91 @@ def run_dashboard():
                 st.info(f"Value: {result['value']}")
 
     # =========================================================================
-    # TAB 2: PRIZEPICKS SCANNER
+    # TAB 2: PRIZEPICKS SCANNER (with new Paste Props section)
     # =========================================================================
     with tab2:
-        st.header("🏆 PrizePicks Scanner (CLARITY Approved Only)")
+        st.header("🏆 PrizePicks Scanner")
+        
+        # --- NEW: Paste Props Board ---
+        st.subheader("📋 Paste Props Board (Text or Screenshot)")
+        st.markdown("Paste a list of player props in PrizePicks format, or upload a screenshot.")
+        
+        input_method = st.radio("Input method:", ["📝 Paste Text", "📸 Upload Screenshot"], key="pp_input_method")
+        
+        pasted_props = []
+        
+        if input_method == "📝 Paste Text":
+            pasted_text = st.text_area("Paste props here", height=200, 
+                                       placeholder="Example:\nAnthony Edwards\nMIN - G\n@ DEN Sat 12:40pm\n\n5\nRebounds\nMore\n\nChristian Braun\nDEN - G\nvs MIN Sat 12:40pm\n\n4.5\nRebounds\nLess")
+            if st.button("🔍 Analyze Pasted Props", type="primary", key="paste_analyze"):
+                if pasted_text.strip():
+                    with st.spinner("Analyzing pasted props..."):
+                        pasted_props = parse_pasted_props(pasted_text)
+                        if pasted_props:
+                            st.success(f"Found {len(pasted_props)} props")
+                        else:
+                            st.warning("No props recognized. Check format.")
+        
+        elif input_method == "📸 Upload Screenshot":
+            uploaded_file = st.file_uploader("Choose a screenshot", type=["png","jpg","jpeg"], key="pp_screenshot")
+            if uploaded_file and st.button("🔍 Analyze Screenshot", type="primary", key="ss_analyze"):
+                with st.spinner("Extracting text via OCR..."):
+                    pasted_props = parse_props_from_image(
+                        uploaded_file.getvalue(),
+                        uploaded_file.name,
+                        uploaded_file.type
+                    )
+                    if pasted_props:
+                        st.success(f"Found {len(pasted_props)} props from screenshot")
+                    else:
+                        st.warning("No props found in image.")
+        
+        if pasted_props:
+            st.markdown("---")
+            st.subheader("✅ CLARITY APPROVED (Pasted)")
+            approved_pasted = []
+            rejected_pasted = []
+            for prop in pasted_props:
+                # Assume odds -110 for PrizePicks-style props
+                result = engine.analyze_prop(
+                    prop["player"], prop["market"], prop["line"], prop["pick"],
+                    [], prop.get("sport", "NBA"), -110, None, "HEALTHY"
+                )
+                if result.get('units', 0) > 0:
+                    approved_pasted.append((prop, result))
+                else:
+                    rejected_pasted.append((prop, result))
+            
+            if approved_pasted:
+                for prop, res in approved_pasted:
+                    st.markdown(f"**{prop['player']} {prop['pick']} {prop['line']} {prop['market']}**")
+                    st.caption(f"Edge: {res['raw_edge']:.1%} | Prob: {res['probability']:.1%} | Units: {res['units']} | Tier: {res['tier']}")
+                    if res.get('season_warning'):
+                        st.warning(res['season_warning'])
+            else:
+                st.info("No approved props found in pasted data.")
+            
+            if rejected_pasted:
+                with st.expander(f"❌ REJECTED PROPS ({len(rejected_pasted)})"):
+                    for prop, res in rejected_pasted:
+                        st.markdown(f"**{prop['player']} {prop['pick']} {prop['line']} {prop['market']}**")
+                        st.caption(f"Reason: {res.get('reject_reason', 'Insufficient edge')}")
+        
+        st.markdown("---")
+        st.subheader("🔍 Live PrizePicks API Scanner")
         col1, col2 = st.columns([2,1])
         with col1:
             selected_sports_pp = st.multiselect("Select sports", list(PropScanner.LEAGUE_IDS.keys()), default=["NBA","MLB"], key="pp_sports")
         with col2:
             scan_button = st.button("🔍 SCAN PRIZEPICKS", type="primary", use_container_width=True)
             stop_button = st.button("⏹️ STOP SCAN", use_container_width=True)
+        
         if "scan_running" not in st.session_state:
             st.session_state.scan_running = False
             st.session_state.stop_event = threading.Event()
             st.session_state.scan_results = {"props":[],"games":[],"rejected":[]}
             st.session_state.scan_status = ""
+        
         if scan_button:
             st.session_state.scan_running = True
             st.session_state.stop_event.clear()
@@ -1672,6 +1828,7 @@ def run_dashboard():
             st.session_state.scan_running = False
             st.session_state.scan_status = "Scan stopped by user."
             st.rerun()
+        
         if st.session_state.scan_running:
             status_placeholder = st.empty()
             def update_status(msg):
@@ -1691,6 +1848,7 @@ def run_dashboard():
             st.session_state.scan_running = False
             st.session_state.scan_status = "Scan complete!"
             st.rerun()
+        
         if not st.session_state.scan_running:
             if st.session_state.scan_status:
                 st.info(st.session_state.scan_status)
@@ -1698,14 +1856,14 @@ def run_dashboard():
             games = st.session_state.scan_results.get("games", [])
             rejected = st.session_state.scan_results.get("rejected", [])
             if props:
-                st.subheader("✅ CLARITY APPROVED PLAYER PROPS")
+                st.subheader("✅ CLARITY APPROVED PLAYER PROPS (Live)")
                 for i, bet in enumerate(props[:10],1):
                     st.markdown(f"**{i}. {bet['bet_line']}**")
                     st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
                     if bet.get('season_warning'):
                         st.warning(bet['season_warning'])
             elif games:
-                st.subheader("✅ CLARITY APPROVED GAME BETS")
+                st.subheader("✅ CLARITY APPROVED GAME BETS (Live)")
                 for i, bet in enumerate(games[:10],1):
                     st.markdown(f"**{i}. {bet['bet_line']}**")
                     st.caption(f"Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
@@ -1801,7 +1959,7 @@ def run_dashboard():
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
 
     # =========================================================================
-    # TAB 4: PLAYER PROPS (REAL ROSTERS)
+    # TAB 4: PLAYER PROPS
     # =========================================================================
     with tab4:
         st.header("Manual Player Prop Analyzer (Real Rosters)")
