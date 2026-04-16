@@ -1882,4 +1882,153 @@ def run_dashboard():
                             else:
                                 st.success(f"Found {len(bets)} potential bets.")
                                 approved, rejected = [], []
-                                for bet
+                                for bet in bets:
+                                    sport = "NBA"
+                                    if bet["type"] == "moneyline":
+                                        res = engine.analyze_moneyline(bet["home"], bet["away"], sport, bet["home_odds"], bet["away_odds"])
+                                    elif bet["type"] == "spread":
+                                        res = engine.analyze_spread(bet["team"], "Opponent", bet["spread"], bet["team"], sport, bet["odds"])
+                                    elif bet["type"] == "total":
+                                        res = engine.analyze_total("Home", "Away", bet["total"], bet["pick"], sport, bet["odds"])
+                                    else:
+                                        res = engine.analyze_prop(bet["player"], bet["market"], bet["line"], bet["pick"], [],
+                                                                   sport, bet.get("odds",-110), None, "HEALTHY")
+                                    if res.get("units",0) > 0:
+                                        approved.append((bet, res))
+                                    else:
+                                        rejected.append((bet, res))
+                                if approved:
+                                    st.subheader("✅ CLARITY APPROVED")
+                                    for bet, res in approved:
+                                        st.markdown(f"**{bet.get('description', bet)}**")
+                                        edge = res.get('edge', res.get('raw_edge',0))
+                                        st.caption(f"Edge: {edge:.1%} | Units: {res.get('units',0)}")
+                                if rejected:
+                                    with st.expander(f"❌ REJECTED ({len(rejected)})"):
+                                        for bet, res in rejected:
+                                            st.markdown(f"**{bet.get('description', bet)}**")
+                                            if res.get('reject_reason'):
+                                                st.caption(f"Reason: {res['reject_reason']}")
+
+    # =========================================================================
+    # TAB 6: AUTO-TUNE
+    # =========================================================================
+    with tab6:
+        st.header("Auto-Tune History (ROI-based)")
+        
+        conn = sqlite3.connect(engine.db_path)
+        df = pd.read_sql_query("SELECT * FROM tuning_log ORDER BY id DESC", conn)
+        conn.close()
+        if df.empty:
+            st.info("No tuning events yet. After 50+ settled bets, auto-tune will run weekly.")
+        else:
+            st.dataframe(df)
+        
+        st.markdown("---")
+        st.subheader("📥 IMPORT BETS FROM TICKETS")
+        st.markdown("""
+        **Paste multiple tickets at once.** Each ticket's WIN/LOSS is detected separately.
+        Supported formats:
+        - Moneyline: `New York Mets (+178)`, `Dallas Stars -111`
+        - Spread/Run Line: `Toronto Blue Jays (-1.5)`
+        - Tennis Handicap: `Sonmez, Zeynep (+4.5)` followed by odds `+105`
+        """)
+        
+        raw_text = st.text_area("Paste ticket text here", height=300)
+        if st.button("🔍 Extract Bets", type="primary"):
+            if raw_text.strip():
+                imported_bets = parse_raw_odds_board(raw_text)
+                if imported_bets:
+                    st.success(f"Found {len(imported_bets)} bets across multiple tickets")
+                    st.subheader("📋 Bets to import")
+                    
+                    for bet in imported_bets:
+                        if bet.get("type") == "moneyline":
+                            st.write(f"💰 {bet['team']} ML {bet.get('odds','?')} | Sport: {bet.get('sport','?')} | Result: {bet.get('result','?')}")
+                        elif bet.get("type") == "spread":
+                            if bet.get("player"):
+                                st.write(f"🎾 {bet['player']} {bet['line']:+.1f} {bet.get('odds','?')} | Result: {bet.get('result','?')}")
+                            else:
+                                st.write(f"📊 {bet['team']} {bet['line']:+.1f} {bet.get('odds','?')} | Sport: {bet.get('sport','?')} | Result: {bet.get('result','?')}")
+                    
+                    if st.button("✅ IMPORT ALL EXTRACTED BETS"):
+                        imported_count = 0
+                        for bet in imported_bets:
+                            conn = sqlite3.connect(engine.db_path)
+                            c = conn.cursor()
+                            bet_id = hashlib.md5(f"{str(bet)}{datetime.now()}".encode()).hexdigest()[:12]
+                            
+                            result = bet.get("result", "PENDING")
+                            profit = 0
+                            if result == "WIN":
+                                profit = 100
+                            elif result == "LOSS":
+                                profit = -100
+                            
+                            player = bet.get("team") or bet.get("player") or "Unknown"
+                            sport = bet.get("sport", "MLB")
+                            market = bet.get("type", "moneyline")
+                            line = bet.get("line", 0)
+                            odds = bet.get("odds", -110)
+                            
+                            c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, date, settled_date, bolt_signal, profit)
+                                         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                      (bet_id, player, sport, market, line, '', odds, 0, result,
+                                       datetime.now().strftime("%Y-%m-%d"),
+                                       datetime.now().strftime("%Y-%m-%d") if result != "PENDING" else None,
+                                       "IMPORTED", profit))
+                            conn.commit()
+                            conn.close()
+                            imported_count += 1
+                        
+                        st.success(f"✅ Imported {imported_count} bets successfully!")
+                        engine._calibrate_sem()
+                        engine.auto_tune_thresholds()
+                        engine._auto_retrain_ml()
+                        st.rerun()
+                else:
+                    st.warning("No bets found. Try pasting a larger section.")
+            else:
+                st.warning("Please paste some text.")
+        
+        st.markdown("---")
+        st.subheader("📋 Pending Bets")
+        conn = sqlite3.connect(engine.db_path)
+        pending_df = pd.read_sql_query("SELECT id, player, sport, market, line, pick, odds, date FROM bets WHERE result = 'PENDING' ORDER BY date DESC", conn)
+        conn.close()
+        if pending_df.empty:
+            st.info("No pending bets.")
+        else:
+            st.dataframe(pending_df)
+            st.subheader("Settle a Pending Bet")
+            bet_ids = pending_df['id'].tolist()
+            selected_bet_id = st.selectbox("Select bet to settle", bet_ids, format_func=lambda x: pending_df[pending_df['id']==x]['player'].iloc[0])
+            actual_result = st.number_input("Actual result", value=0.0, step=0.5)
+            if st.button("Settle Selected Bet"):
+                conn = sqlite3.connect(engine.db_path)
+                c = conn.cursor()
+                c.execute("SELECT line, pick, odds FROM bets WHERE id = ?", (selected_bet_id,))
+                row = c.fetchone()
+                if row:
+                    line, pick, odds = row
+                    if pick and line:
+                        won = (actual_result > line) if pick == "OVER" else (actual_result < line)
+                        result = "WIN" if won else "LOSS"
+                        profit = (abs(odds)/100 * 100) if won else -100
+                        if odds > 0:
+                            profit = (odds/100 * 100) if won else -100
+                        c.execute("UPDATE bets SET result = ?, actual = ?, settled_date = ?, profit = ? WHERE id = ?",
+                                  (result, actual_result, datetime.now().strftime("%Y-%m-%d"), profit, selected_bet_id))
+                    else:
+                        c.execute("UPDATE bets SET result = ?, settled_date = ? WHERE id = ?",
+                                  ("SETTLED", datetime.now().strftime("%Y-%m-%d"), selected_bet_id))
+                    conn.commit()
+                    st.success(f"Bet settled")
+                    engine._calibrate_sem()
+                    engine.auto_tune_thresholds()
+                    engine._auto_retrain_ml()
+                    st.rerun()
+                conn.close()
+
+if __name__ == "__main__":
+    run_dashboard()
