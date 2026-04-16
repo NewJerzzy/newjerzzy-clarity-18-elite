@@ -1957,3 +1957,256 @@ def run_dashboard():
                         st.success(f"Found {len(arbs)} arbitrage opportunities!")
                         for arb in arbs:
                             st.markdown(f"**{arb['Player']} - {arb['Market']}**")
+                            st.caption(f"{arb['Bet 1']} | {arb['Bet 2']}")
+                            st.metric("Arbitrage %", f"{arb['Arb %']}%")
+                    else:
+                        st.info("No arbitrage opportunities found.")
+        with scanner_tabs[2]:
+            st.header("Middle Hunter")
+            if st.button("🔍 HUNT FOR MIDDLES", type="primary"):
+                with st.spinner("Hunting..."):
+                    if not engine.scanned_bets.get("best_odds"):
+                        engine.run_best_odds_scan(["NBA"])
+                    middles = engine.scanned_bets.get("middles", [])
+                    if middles:
+                        st.success(f"Found {len(middles)} middle opportunities!")
+                        for mid in middles:
+                            st.markdown(f"**{mid['Player']} - {mid['Market']}**")
+                            st.caption(f"Window: {mid['Middle Window']} (Size: {mid['Window Size']})")
+                            st.caption(f"{mid['Leg 1']} | {mid['Leg 2']}")
+                    else:
+                        st.info("No middle opportunities found.")
+        with scanner_tabs[3]:
+            st.header("Public Accuracy Dashboard")
+            accuracy = engine.get_accuracy_dashboard()
+            col1, col2, col3, col4 = st.columns(4)
+            with col1: st.metric("Total Bets", accuracy['total_bets'])
+            with col2: st.metric("Win Rate", f"{accuracy['win_rate']}%")
+            with col3: st.metric("ROI", f"{accuracy['roi']}%")
+            with col4: st.metric("Units Profit", f"+{accuracy['units_profit']}" if accuracy['units_profit']>0 else str(accuracy['units_profit']))
+            st.subheader("By Sport")
+            if accuracy['by_sport']:
+                sport_df = pd.DataFrame(accuracy['by_sport']).T
+                st.dataframe(sport_df)
+            else:
+                st.info("No settled bets by sport yet.")
+            st.subheader("By Tier")
+            if accuracy['by_tier']:
+                tier_df = pd.DataFrame(accuracy['by_tier']).T
+                st.dataframe(tier_df)
+            else:
+                st.info("No settled bets by tier yet.")
+            st.metric("SEM Score", f"{accuracy['sem_score']}/100")
+
+    # =========================================================================
+    # TAB 4: PLAYER PROPS
+    # =========================================================================
+    with tab4:
+        st.header("Manual Player Prop Analyzer (Real Rosters)")
+        c1, c2 = st.columns(2)
+        with c1:
+            sport = st.selectbox("Sport", all_sports, key="prop_sport")
+            teams = engine.get_teams(sport)
+            team = st.selectbox("Team (for context)", [""] + teams, key="prop_team") if sport in ["NBA","MLB","NHL","NFL","SOCCER_EPL","SOCCER_LALIGA","COLLEGE_BASKETBALL","COLLEGE_FOOTBALL"] else ""
+            roster = engine.get_roster(sport, team) if team else engine._get_individual_sport_players(sport)
+            player = st.selectbox("Player", roster, key="prop_player")
+            available_markets = SPORT_CATEGORIES.get(sport, ["PTS"])
+            market = st.selectbox("Market", available_markets, key="prop_market")
+            line = st.number_input("Line", 0.5, 200.0, 0.5, key="prop_line")
+            pick = st.selectbox("Pick", ["OVER","UNDER"], key="prop_pick")
+            opponent = st.selectbox("Opponent (optional)", [""] + teams, key="prop_opponent") if teams else ""
+        with c2:
+            use_real_stats = st.checkbox("Fetch real stats & injuries (API-Sports)", value=True)
+            odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
+        if st.button("🚀 ANALYZE PROP", type="primary", key="prop_button"):
+            if not player or player == "Select team first" or player.startswith("Player "):
+                st.error("Please select a valid player.")
+            else:
+                if use_real_stats:
+                    with st.spinner("Fetching real stats and injury status..."):
+                        real_stats, injury = fetch_player_stats_and_injury(player, sport, market)
+                        if real_stats:
+                            st.info(f"Fetched {len(real_stats)} recent games for {player}. Injury status: {injury}")
+                        else:
+                            st.warning("No real stats found – using fallback dummy data.")
+                        data = real_stats
+                        injury_status = injury
+                else:
+                    data = [line * 0.9] * 5
+                    injury_status = "HEALTHY"
+                opp = opponent if opponent else None
+                result = engine.analyze_prop(player, market, line, pick, data, sport, odds, team if team else None, injury_status, opp)
+                if result.get('units',0) > 0:
+                    st.success(f"### {result['signal']}")
+                    if result.get('season_warning'): st.warning(result['season_warning'])
+                    if result.get('injury') != "HEALTHY": st.error(f"⚠️ Injury flag: {result['injury']}")
+                    c1, c2, c3 = st.columns(3)
+                    with c1: st.metric("Projection", f"{result['projection']:.1f}")
+                    with c2: st.metric("Probability", f"{result['probability']:.1%}")
+                    with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
+                    st.metric("Tier", result['tier'])
+                    st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
+                else:
+                    st.error(f"### {result['signal']}")
+                    if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
+
+    # =========================================================================
+    # TAB 5: IMAGE ANALYSIS
+    # =========================================================================
+    with tab5:
+        st.header("📸 Screenshot Analyzer")
+        uploaded_file = st.file_uploader("Choose an image...", type=["png","jpg","jpeg"])
+        if uploaded_file is not None:
+            st.image(uploaded_file, caption="Uploaded Screenshot", use_column_width=True)
+            if st.button("🔍 ANALYZE SCREENSHOT", type="primary"):
+                with st.spinner("Extracting text via OCR..."):
+                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                    data = {"apikey": OCR_SPACE_API_KEY, "language": "eng", "isOverlayRequired": False,
+                            "filetype": uploaded_file.type.split("/")[-1] if uploaded_file.type else "PNG"}
+                    response = requests.post("https://api.ocr.space/parse/image", files=files, data=data, timeout=30)
+                    if response.status_code != 200:
+                        st.error("OCR service failed. Try again.")
+                    else:
+                        result = response.json()
+                        if result.get("IsErroredOnProcessing", True):
+                            st.error(f"OCR Error: {result.get('ErrorMessage', 'Unknown')}")
+                        else:
+                            extracted_text = result["ParsedResults"][0]["ParsedText"]
+                            st.subheader("📝 Extracted Text")
+                            st.text(extracted_text)
+                            bets = auto_parse_bets(extracted_text)
+                            if not bets:
+                                st.warning("No recognizable bets found in the image.")
+                            else:
+                                st.success(f"Found {len(bets)} potential bets.")
+                                approved, rejected = [], []
+                                for bet in bets:
+                                    sport = "NBA"
+                                    if bet["type"] == "moneyline":
+                                        res = engine.analyze_moneyline(bet["home"], bet["away"], sport, bet["home_odds"], bet["away_odds"])
+                                    elif bet["type"] == "spread":
+                                        res = engine.analyze_spread(bet["team"], "Opponent", bet["spread"], bet["team"], sport, bet["odds"])
+                                    elif bet["type"] == "total":
+                                        res = engine.analyze_total("Home", "Away", bet["total"], bet["pick"], sport, bet["odds"])
+                                    else:
+                                        res = engine.analyze_prop(bet["player"], bet["market"], bet["line"], bet["pick"], [],
+                                                                   sport, bet.get("odds",-110), None, "HEALTHY")
+                                    if res.get("units",0) > 0:
+                                        approved.append((bet, res))
+                                    else:
+                                        rejected.append((bet, res))
+                                if approved:
+                                    st.subheader("✅ CLARITY APPROVED")
+                                    for bet, res in approved:
+                                        st.markdown(f"**{bet.get('description', bet)}**")
+                                        edge = res.get('edge', res.get('raw_edge',0))
+                                        st.caption(f"Edge: {edge:.1%} | Units: {res.get('units',0)}")
+                                if rejected:
+                                    with st.expander(f"❌ REJECTED ({len(rejected)})"):
+                                        for bet, res in rejected:
+                                            st.markdown(f"**{bet.get('description', bet)}**")
+                                            if res.get('reject_reason'):
+                                                st.caption(f"Reason: {res['reject_reason']}")
+
+    # =========================================================================
+    # TAB 6: AUTO-TUNE (with Auto-Settle Player Props)
+    # =========================================================================
+    with tab6:
+        st.header("Auto-Tune History (ROI-based)")
+        conn = sqlite3.connect(engine.db_path)
+        df = pd.read_sql_query("SELECT * FROM tuning_log ORDER BY id DESC", conn)
+        conn.close()
+        if df.empty:
+            st.info("No tuning events yet. After 50+ settled bets, auto-tune will run weekly.")
+        else:
+            st.dataframe(df)
+        st.markdown("---")
+        st.subheader("📥 IMPORT PLAYER PROPS (Auto-Settle)")
+        st.markdown("""
+        **Paste player props in numbered format.** Clarity will automatically fetch actual stats and mark WIN/LOSS.
+        Example:
+1
+Brandin Podziemski
+GSW vs LAC · PRA
+22.5
+NONE
+REVERSE
+0.0
+        """)
+        prop_text = st.text_area("Paste player props here", height=250)
+        game_date_input = st.date_input("Game date (default: yesterday)", value=datetime.now() - timedelta(days=1))
+        if st.button("🔍 Import & Auto-Settle Props", type="primary"):
+            if prop_text.strip():
+                with st.spinner("Parsing and settling props..."):
+                    props = parse_pasted_props(prop_text, default_date=game_date_input.strftime("%Y-%m-%d"))
+                    if not props:
+                        st.warning("No props recognized. Check format.")
+                    else:
+                        imported_count = 0
+                        for prop in props:
+                            result, actual = auto_settle_prop(
+                                prop["player"], prop["market"], prop["line"], prop["pick"],
+                                prop.get("sport", "NBA"), prop.get("opponent", ""), prop["game_date"]
+                            )
+                            odds = -110
+                            profit = (abs(odds)/100 * 100) if result == "WIN" else -100
+                            if odds > 0:
+                                profit = (odds/100 * 100) if result == "WIN" else -100
+                            conn = sqlite3.connect(engine.db_path)
+                            c = conn.cursor()
+                            bet_id = hashlib.md5(f"{prop['player']}{prop['market']}{prop['line']}{datetime.now()}".encode()).hexdigest()[:12]
+                            c.execute("INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, actual, date, settled_date, bolt_signal, profit) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                      (bet_id, prop['player'], prop.get('sport','NBA'), prop['market'], prop['line'],
+                                       prop['pick'], odds, 0.0, result, actual,
+                                       prop['game_date'], datetime.now().strftime("%Y-%m-%d"), "AUTO_SETTLED", profit))
+                            conn.commit()
+                            conn.close()
+                            imported_count += 1
+                        st.success(f"✅ Imported and settled {imported_count} props!")
+                        engine._calibrate_sem()
+                        engine.auto_tune_thresholds()
+                        engine._auto_retrain_ml()
+                        st.rerun()
+            else:
+                st.warning("Please paste some props.")
+        st.markdown("---")
+        st.subheader("📋 Pending Bets")
+        conn = sqlite3.connect(engine.db_path)
+        pending_df = pd.read_sql_query("SELECT id, player, sport, market, line, pick, odds, date FROM bets WHERE result = 'PENDING' ORDER BY date DESC", conn)
+        conn.close()
+        if pending_df.empty:
+            st.info("No pending bets.")
+        else:
+            st.dataframe(pending_df)
+            st.subheader("Settle a Pending Bet")
+            bet_ids = pending_df['id'].tolist()
+            selected_bet_id = st.selectbox("Select bet to settle", bet_ids, format_func=lambda x: pending_df[pending_df['id']==x]['player'].iloc[0])
+            actual_result = st.number_input("Actual result", value=0.0, step=0.5)
+            if st.button("Settle Selected Bet"):
+                conn = sqlite3.connect(engine.db_path)
+                c = conn.cursor()
+                c.execute("SELECT line, pick, odds FROM bets WHERE id = ?", (selected_bet_id,))
+                row = c.fetchone()
+                if row:
+                    line, pick, odds = row
+                    if pick and line:
+                        won = (actual_result > line) if pick == "OVER" else (actual_result < line)
+                        result = "WIN" if won else "LOSS"
+                        profit = (abs(odds)/100 * 100) if won else -100
+                        if odds > 0:
+                            profit = (odds/100 * 100) if won else -100
+                        c.execute("UPDATE bets SET result = ?, actual = ?, settled_date = ?, profit = ? WHERE id = ?",
+                                  (result, actual_result, datetime.now().strftime("%Y-%m-%d"), profit, selected_bet_id))
+                    else:
+                        c.execute("UPDATE bets SET result = ?, settled_date = ? WHERE id = ?",
+                                  ("SETTLED", datetime.now().strftime("%Y-%m-%d"), selected_bet_id))
+                    conn.commit()
+                    st.success(f"Bet settled")
+                    engine._calibrate_sem()
+                    engine.auto_tune_thresholds()
+                    engine._auto_retrain_ml()
+                    st.rerun()
+                conn.close()
+
+if __name__ == "__main__":
+    run_dashboard()
