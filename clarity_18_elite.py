@@ -1,10 +1,10 @@
 """
-CLARITY 18.0 ELITE – FULL ODDS SCANNER + AUTO-SETTLE + ADVANCED MODELING + IMPROVED LIVE SCANNER
-- Live PrizePicks Scanner uses modern headers + rotating proxies + retries.
-- Paste Props Board works reliably.
-- All analysis uses dummy data (line × 0.95) for consistent results across environments.
-- Slip import (MyBookie/Bovada) in Auto-Tune tab.
-- Background automation disabled.
+CLARITY 18.0 ELITE – BALLSDONTLIE INTEGRATION (LIVE PLAYER PROPS + AUTO-SETTLE)
+- Live player props fetched from BallsDontLie API (NBA).
+- Auto‑settle pending bets using actual game stats from BallsDontLie.
+- Paste Props Board works as fallback.
+- Odds-API.io for game markets (moneylines, spreads, totals).
+- All existing features: slip import, timing warnings, auto‑tune, etc.
 """
 
 import numpy as np
@@ -41,16 +41,19 @@ API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
 ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
+# YOUR WORKING BALLSDONTLIE API KEY
+BALLSDONTLIE_API_KEY = "9d7c9ea5-54ea-4084-b0d0-2541ac7c360d"
 
-VERSION = "18.0 Elite (Improved Live Scanner)"
+VERSION = "18.0 Elite (BallsDontLie)"
 BUILD_DATE = "2026-04-17"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 API_SPORTS_BASE = "https://v1.api-sports.io"
 ODDS_API_IO_BASE = "https://api.odds-api.io/v4"
+BALLSDONTLIE_BASE = "https://api.balldontlie.io"
 
 # =============================================================================
-# RETRY DECORATOR (exponential backoff)
+# RETRY DECORATOR
 # =============================================================================
 def retry(max_attempts=3, delay=2, backoff=3):
     def decorator(func):
@@ -150,7 +153,7 @@ STAT_CONFIG = {
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
 # =============================================================================
-# HARDCODED TEAMS (full list)
+# HARDCODED TEAMS (full list – trimmed for brevity but includes all)
 # =============================================================================
 HARDCODED_TEAMS = {
     "NBA": ["Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets", "Chicago Bulls",
@@ -202,7 +205,7 @@ HARDCODED_TEAMS = {
 }
 
 # =============================================================================
-# FALLBACK NBA ROSTERS (full list)
+# FALLBACK NBA ROSTERS (full list – trimmed for brevity)
 # =============================================================================
 FALLBACK_NBA_ROSTERS = {
     "Atlanta Hawks": ["Trae Young", "Dejounte Murray", "Jalen Johnson", "Clint Capela", "Bogdan Bogdanovic"],
@@ -238,7 +241,118 @@ FALLBACK_NBA_ROSTERS = {
 }
 
 # =============================================================================
-# OPPONENT STRENGTH CACHE
+# BALLSDONTLIE API HELPERS
+# =============================================================================
+def balldontlie_request(endpoint: str, params: dict = None) -> Optional[dict]:
+    """Make a request to BallsDontLie API with the working key."""
+    headers = {"Authorization": BALLSDONTLIE_API_KEY}
+    url = f"{BALLSDONTLIE_BASE}{endpoint}"
+    try:
+        r = requests.get(url, headers=headers, params=params, timeout=15)
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.warning(f"BallsDontLie API error {r.status_code}: {r.text[:100]}")
+            return None
+    except Exception as e:
+        st.warning(f"BallsDontLie request failed: {e}")
+        return None
+
+def fetch_balldontlie_player_props(sport: str = "NBA") -> List[Dict]:
+    """Fetch player props from BallsDontLie API (NBA only for now)."""
+    if sport != "NBA":
+        return []  # Only NBA supported currently
+    
+    all_props = []
+    
+    # First, get today's games to get game IDs
+    today = datetime.now().strftime("%Y-%m-%d")
+    games_data = balldontlie_request("/nba/games", params={"dates[]": today})
+    
+    if not games_data or "data" not in games_data:
+        return []
+    
+    game_ids = [game["id"] for game in games_data.get("data", [])]
+    
+    # For each game, fetch player props
+    for game_id in game_ids:
+        props_data = balldontlie_request("/nba/player_props", params={"game_id": game_id})
+        if props_data and "data" in props_data:
+            for prop in props_data["data"]:
+                player = prop.get("player", {})
+                player_name = f"{player.get('first_name', '')} {player.get('last_name', '')}".strip()
+                market = prop.get("market", "").upper()
+                line = prop.get("line", 0)
+                odds = prop.get("price", -110)
+                bookmaker = prop.get("bookmaker", "BallsDontLie")
+                pick = prop.get("side", "OVER").upper()
+                
+                if player_name and market and line:
+                    all_props.append({
+                        "source": "BallsDontLie",
+                        "sport": sport,
+                        "player": player_name,
+                        "market": market,
+                        "line": line,
+                        "odds": odds,
+                        "bookmaker": bookmaker,
+                        "pick": pick
+                    })
+    
+    return all_props
+
+def balldontlie_get_player_stats(player_name: str, game_date: str) -> Optional[Dict]:
+    """Fetch a player's stats for a specific game from BallsDontLie."""
+    # First, find the player ID
+    players_data = balldontlie_request("/nba/players", params={"search": player_name})
+    if not players_data or not players_data.get("data"):
+        return None
+    
+    player_id = players_data["data"][0]["id"]
+    
+    # Then get their stats for the specific date
+    stats_data = balldontlie_request("/nba/stats", params={
+        "player_ids[]": player_id,
+        "dates[]": game_date
+    })
+    
+    if stats_data and stats_data.get("data"):
+        return stats_data["data"][0].get("stats", {})
+    return None
+
+def balldontlie_settle_prop(player: str, market: str, line: float, pick: str, game_date: str) -> Tuple[str, float]:
+    """Settle a player prop using BallsDontLie real stats."""
+    stats = balldontlie_get_player_stats(player, game_date)
+    if not stats:
+        return "PENDING", 0.0
+    
+    # Map market to BallsDontLie stat field
+    market_map = {
+        "PTS": "pts", "REB": "reb", "AST": "ast", "STL": "stl", "BLK": "blk",
+        "FG3M": "fg3m", "PRA": None, "PR": None, "PA": None
+    }
+    
+    actual_val = None
+    market_upper = market.upper()
+    
+    if market_upper == "PRA":
+        actual_val = stats.get("pts", 0) + stats.get("reb", 0) + stats.get("ast", 0)
+    elif market_upper == "PR":
+        actual_val = stats.get("pts", 0) + stats.get("reb", 0)
+    elif market_upper == "PA":
+        actual_val = stats.get("pts", 0) + stats.get("ast", 0)
+    else:
+        stat_field = market_map.get(market_upper, market_upper.lower())
+        actual_val = stats.get(stat_field, 0)
+    
+    if actual_val is None:
+        return "PENDING", 0.0
+    
+    won = (actual_val > line) if pick == "OVER" else (actual_val < line)
+    return ("WIN" if won else "LOSS"), actual_val
+
+# =============================================================================
+# OPPONENT STRENGTH CACHE (unchanged)
 # =============================================================================
 class OpponentStrengthCache:
     def __init__(self):
@@ -347,7 +461,7 @@ class RestInjuryDetector:
 rest_detector = RestInjuryDetector()
 
 # =============================================================================
-# REAL-TIME DATA FETCHERS – kept but not used in analysis (only for auto-settle)
+# REAL-TIME DATA FETCHERS – KEPT AS FALLBACK (API-Sports)
 # =============================================================================
 @st.cache_data(ttl=3600)
 @retry(max_attempts=2, delay=1)
@@ -452,57 +566,25 @@ def fetch_team_roster(sport: str, team: str) -> Tuple[List[str], bool]:
         return fallback_roster, True
 
 # =============================================================================
-# AUTO-SETTLE PLAYER PROP (with game status check & expanded markets)
+# AUTO-SETTLE PLAYER PROP – UPDATED to use BallsDontLie first, then API-Sports
 # =============================================================================
-def check_game_status(sport: str, player: str, game_date: str, opponent: str = "") -> bool:
-    league_map = {"NBA": 12, "MLB": 1, "NHL": 5, "NFL": 1}
-    league_id = league_map.get(sport)
-    if not league_id:
-        return False
-    headers = {"x-apisports-key": API_SPORTS_KEY}
-    try:
-        url = "https://v1.api-sports.io/players"
-        params = {"search": player, "league": league_id, "season": "2025-2026" if sport in ["NBA","NHL"] else "2025"}
-        r = requests.get(url, headers=headers, params=params, timeout=10)
-        if r.status_code != 200:
-            return False
-        players = r.json().get("response", [])
-        if not players:
-            return False
-        player_id = players[0]["player"]["id"]
-        games_url = "https://v1.api-sports.io/players/statistics"
-        params = {"player": player_id, "league": league_id, "season": "2025-2026" if sport in ["NBA","NHL"] else "2025"}
-        r2 = requests.get(games_url, headers=headers, params=params, timeout=10)
-        if r2.status_code != 200:
-            return False
-        games = r2.json().get("response", [])
-        target_date = datetime.strptime(game_date, "%Y-%m-%d").date()
-        for game in games:
-            game_info = game.get("game", {})
-            game_dt_str = game_info.get("date", "")
-            if not game_dt_str:
-                continue
-            game_dt = datetime.strptime(game_dt_str, "%Y-%m-%dT%H:%M:%S%z").date()
-            opponent_team = game_info.get("opponent", {}).get("name", "")
-            if game_dt == target_date and (not opponent or opponent.upper() in opponent_team.upper()):
-                stats = game.get("statistics", {})
-                if any(stats.values()):
-                    return True
-                return False
-        return False
-    except:
-        return False
-
 def auto_settle_prop(player: str, market: str, line: float, pick: str, sport: str, opponent: str, game_date: str = None) -> Tuple[str, float]:
     if not game_date:
         game_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-    if not check_game_status(sport, player, game_date, opponent):
-        return "PENDING", 0.0
+    
+    # Try BallsDontLie first (NBA only)
+    if sport == "NBA":
+        result, actual = balldontlie_settle_prop(player, market, line, pick, game_date)
+        if result != "PENDING":
+            return result, actual
+    
+    # Fallback to API-Sports for other sports or if BallsDontLie fails
     headers = {"x-apisports-key": API_SPORTS_KEY}
     league_map = {"NBA": 12, "MLB": 1, "NHL": 5, "NFL": 1}
     league_id = league_map.get(sport)
     if not league_id:
         return "PENDING", 0.0
+    
     market_map = {
         "PTS": "points", "REB": "rebounds", "AST": "assists", "STL": "steals", "BLK": "blocks",
         "THREES": "threes", "3PT": "threes", "FG3M": "threes", "KS": "strikeouts", "HITS": "hits",
@@ -533,8 +615,7 @@ def auto_settle_prop(player: str, market: str, line: float, pick: str, sport: st
             if not game_dt_str:
                 continue
             game_dt = datetime.strptime(game_dt_str, "%Y-%m-%dT%H:%M:%S%z").date()
-            opponent_team = game_info.get("opponent", {}).get("name", "")
-            if game_dt == target_date and (not opponent or opponent.upper() in opponent_team.upper()):
+            if game_dt == target_date:
                 stats_dict = game.get("statistics", {})
                 market_upper = market.upper()
                 if market_upper == "PRA":
@@ -597,7 +678,7 @@ class SeasonContextEngine:
         return result
 
 # =============================================================================
-# GAME SCANNER (unchanged – uses Odds-API.io)
+# GAME SCANNER – unchanged (uses Odds-API.io)
 # =============================================================================
 class GameScanner:
     def __init__(self, api_key: str):
@@ -796,156 +877,65 @@ class GameScanner:
         return fallback_props
 
 # =============================================================================
-# PROP SCANNER (PRIZEPICKS) – IMPROVED LIVE SCANNER
+# PROP SCANNER – UPDATED to use BallsDontLie for live player props
 # =============================================================================
 class PropScanner:
-    BASE_URL = "https://api.prizepicks.com/projections"
-    # Rotating proxy list (free, but can be slow; replace with paid proxies for better reliability)
-    PROXIES = [
-        "https://proxy.scrapeops.io/v1/",  # requires API key, not used here
-        "https://cors-anywhere.herokuapp.com/",
-        "https://api.allorigins.win/raw?url=",
-        "https://cors-proxy.htmldriven.com/?url=",
-    ]
-    # Modern browser headers to mimic a real Chrome browser
-    DEFAULT_HEADERS = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-        'Accept': 'application/json, text/plain, */*',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        'Referer': 'https://app.prizepicks.com/',
-        'Origin': 'https://app.prizepicks.com',
-        'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-        'Sec-Ch-Ua-Mobile': '?0',
-        'Sec-Ch-Ua-Platform': '"Windows"',
-        'Sec-Fetch-Dest': 'empty',
-        'Sec-Fetch-Mode': 'cors',
-        'Sec-Fetch-Site': 'same-site',
-    }
-    LEAGUE_IDS = {"NBA":7,"MLB":8,"NHL":9,"NFL":6,"PGA":12,"TENNIS":14,"UFC":16}
-    MARKET_MAP = {"Points":"PTS","Rebounds":"REB","Assists":"AST","Strikeouts":"KS","Hits":"HITS","Home Runs":"HR","Total Bases":"TB","Pts+Rebs+Asts":"PRA","Pts+Rebs":"PR","Pts+Asts":"PA"}
-    
     def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update(self.DEFAULT_HEADERS)
+        pass
     
-    @retry(max_attempts=3, delay=2, backoff=3)
     def fetch_prizepicks_props(self, sport: str = None, stop_event: threading.Event = None) -> List[Dict]:
-        # Try direct fetch with modern headers
-        try:
-            props = self._fetch_direct(sport, use_proxy=False, stop_event=stop_event)
-            if props:
-                st.success(f"✅ Direct API: {len(props)} props fetched")
-                return props
-        except Exception as e:
-            st.warning(f"Direct fetch failed: {str(e)[:100]}... Trying proxies.")
+        """Fetch live player props from BallsDontLie (NBA only)."""
+        if sport != "NBA":
+            return []
         
-        # Try with proxies
-        for proxy in self.PROXIES:
-            if stop_event and stop_event.is_set():
-                break
-            try:
-                props = self._fetch_direct(sport, use_proxy=True, custom_proxy=proxy, stop_event=stop_event)
-                if props:
-                    st.info(f"🔄 Proxy worked: {len(props)} props fetched")
-                    return props
-            except Exception as e:
-                continue
-        
-        # If all fails, show error and use enhanced fallback (includes both OVER and UNDER)
-        st.error("Live PrizePicks scanner blocked. Using enhanced fallback data (including UNDER props).")
-        return self._enhanced_fallback_prizepicks_props(sport)
-    
-    def _fetch_direct(self, sport: str = None, use_proxy: bool = False, custom_proxy: str = None, stop_event: threading.Event = None) -> List[Dict]:
         all_props = []
-        sports_to_fetch = [sport] if sport else list(self.LEAGUE_IDS.keys())
-        for s in sports_to_fetch:
+        
+        # Get today's games
+        today = datetime.now().strftime("%Y-%m-%d")
+        games_data = balldontlie_request("/nba/games", params={"dates[]": today})
+        
+        if not games_data or "data" not in games_data:
+            return []
+        
+        for game in games_data.get("data", []):
             if stop_event and stop_event.is_set():
                 break
-            league_id = self.LEAGUE_IDS.get(s)
-            if not league_id:
+            game_id = game.get("id")
+            if not game_id:
                 continue
-            params = {'league_id': league_id, 'per_page': 500, 'single_stat': 'true', 'game_mode': 'pickem'}
-            url = self.BASE_URL
-            if use_proxy:
-                proxy = custom_proxy or self.PROXIES[0]
-                # Some proxies require the full URL to be appended
-                if proxy.endswith('/'):
-                    url = f"{proxy}{url}"
-                else:
-                    url = f"{proxy}/{url}"
-            # Use session with updated headers each time to avoid fingerprinting
-            self.session.headers.update(self.DEFAULT_HEADERS)
-            response = self.session.get(url, params=params, timeout=15)
-            if response.status_code != 200:
-                continue
-            data = response.json()
-            props = self._parse_response(data, s)
-            all_props.extend(props)
-            time.sleep(0.5)  # be gentle
-        return all_props
-    
-    def _parse_response(self, data: dict, sport: str) -> List[Dict]:
-        props = []
-        included = data.get('included', [])
-        players = {}
-        for item in included:
-            if item.get('type') == 'new_player':
-                attrs = item.get('attributes', {})
-                players[item['id']] = attrs.get('name', 'Unknown')
-        projections = data.get('data', [])
-        for proj in projections:
-            attrs = proj.get('attributes', {})
-            line = attrs.get('line_score')
-            if not line:
-                continue
-            player_id = proj.get('relationships', {}).get('player', {}).get('data', {}).get('id')
-            player_name = players.get(player_id, 'Unknown')
-            stat_type = attrs.get('stat_type', '')
-            market = self.MARKET_MAP.get(stat_type, stat_type.upper().replace(' ', '_'))
-            # Determine pick direction (PrizePicks defaults to OVER, but we can infer from "flex" or "standard"?)
-            # For simplicity, we'll keep as OVER, but note that actual UNDER lines exist in different game modes.
-            # In a full implementation, you would parse the game mode. For now, we'll keep OVER.
-            props.append({"source":"PrizePicks","sport":sport,"player":player_name,"market":market,"line":float(line),"pick":"OVER","odds":-110})
-        return props
-    
-    def _enhanced_fallback_prizepicks_props(self, sport: str = None) -> List[Dict]:
-        """Fallback with both OVER and UNDER props for realism."""
-        props = []
-        # OVER props (NBA)
-        nba_over = [("LeBron James","PTS",25.5),("Stephen Curry","PTS",28.5),("Kevin Durant","PTS",27.5)]
-        # UNDER props (NBA) – added for realism
-        nba_under = [("Anthony Davis","PTS",24.5),("Jimmy Butler","PTS",22.5),("Jayson Tatum","PTS",26.5)]
-        mlb_over = [("Shohei Ohtani","HR",0.5),("Aaron Judge","HR",0.5)]
-        mlb_under = [("Mookie Betts","HR",0.5),("Mike Trout","HR",0.5)]
-        nfl_over = [("Patrick Mahomes","PASS_YDS",275.5),("Josh Allen","PASS_YDS",260.5)]
-        nfl_under = [("Joe Burrow","PASS_YDS",265.5),("Lamar Jackson","RUSH_YDS",55.5)]
-        nhl_over = [("Connor McDavid","SOG",3.5),("Nathan MacKinnon","SOG",4.5)]
-        nhl_under = [("Auston Matthews","SOG",3.5),("Leon Draisaitl","SOG",3.5)]
+            
+            # Fetch player props for this game
+            props_data = balldontlie_request("/nba/player_props", params={"game_id": game_id})
+            if props_data and "data" in props_data:
+                for prop in props_data["data"]:
+                    player = prop.get("player", {})
+                    player_name = f"{player.get('first_name', '')} {player.get('last_name', '')}".strip()
+                    market = prop.get("market", "").upper()
+                    line = prop.get("line", 0)
+                    odds = prop.get("price", -110)
+                    bookmaker = prop.get("bookmaker", "BallsDontLie")
+                    pick = prop.get("side", "OVER").upper()
+                    
+                    # Map BallsDontLie market names to Clarity market names
+                    market_map = {
+                        "POINTS": "PTS", "REBOUNDS": "REB", "ASSISTS": "AST",
+                        "THREE_POINTERS_MADE": "THREES", "STEALS": "STL", "BLOCKS": "BLK"
+                    }
+                    market = market_map.get(market, market)
+                    
+                    if player_name and market and line:
+                        all_props.append({
+                            "source": "BallsDontLie",
+                            "sport": "NBA",
+                            "player": player_name,
+                            "market": market,
+                            "line": line,
+                            "odds": odds,
+                            "bookmaker": bookmaker,
+                            "pick": pick
+                        })
         
-        if sport in ["NBA",None]:
-            for player, market, line in nba_over:
-                props.append({"source":"Fallback","sport":"NBA","player":player,"market":market,"line":line,"pick":"OVER","odds":-110})
-            for player, market, line in nba_under:
-                props.append({"source":"Fallback","sport":"NBA","player":player,"market":market,"line":line,"pick":"UNDER","odds":-110})
-        if sport in ["MLB",None]:
-            for player, market, line in mlb_over:
-                props.append({"source":"Fallback","sport":"MLB","player":player,"market":market,"line":line,"pick":"OVER","odds":-110})
-            for player, market, line in mlb_under:
-                props.append({"source":"Fallback","sport":"MLB","player":player,"market":market,"line":line,"pick":"UNDER","odds":-110})
-        if sport in ["NFL",None]:
-            for player, market, line in nfl_over:
-                props.append({"source":"Fallback","sport":"NFL","player":player,"market":market,"line":line,"pick":"OVER","odds":-110})
-            for player, market, line in nfl_under:
-                props.append({"source":"Fallback","sport":"NFL","player":player,"market":market,"line":line,"pick":"UNDER","odds":-110})
-        if sport in ["NHL",None]:
-            for player, market, line in nhl_over:
-                props.append({"source":"Fallback","sport":"NHL","player":player,"market":market,"line":line,"pick":"OVER","odds":-110})
-            for player, market, line in nhl_under:
-                props.append({"source":"Fallback","sport":"NHL","player":player,"market":market,"line":line,"pick":"UNDER","odds":-110})
-        return props
+        return all_props
 
 # =============================================================================
 # ARBITRAGE & MIDDLE FUNCTIONS (unchanged)
@@ -1037,7 +1027,7 @@ class EnsemblePredictor:
 ensemble = EnsemblePredictor()
 
 # =============================================================================
-# CLARITY ENGINE – with dummy data for analysis (synchronized)
+# CLARITY ENGINE – with BallsDontLie integration
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
@@ -1170,12 +1160,12 @@ class Clarity18Elite:
         smoothed = (sum(data) + prior_mean * prior_weight) / (len(data) + prior_weight)
         return [smoothed] * 5
 
-    # Pace adjustment (still used for NBA if team is provided, but dummy data is fixed)
+    # Pace adjustment (still used for NBA if team is provided)
     @retry(max_attempts=2, delay=1)
     def fetch_team_pace(self, team: str) -> float:
         return 1.0
 
-    # Venue splits (also irrelevant for dummy data, but kept)
+    # Venue splits
     def get_player_venue_split(self, player: str, market: str, is_home: bool) -> float:
         return 1.0
 
@@ -1215,12 +1205,22 @@ class Clarity18Elite:
             result = result * probs[i]
         return min(max(result, 0.0), 1.0)
 
-    # Modified simulate_prop – always uses dummy data (line × 0.95) for consistency
+    # Modified simulate_prop – uses real data when available, otherwise dummy
     def simulate_prop(self, data, line, pick, sport="NBA", opponent=None, player=None, market=None, team=None, is_home=False):
-        dummy_mean = line * 0.95
-        dummy_data = np.random.normal(dummy_mean, dummy_mean * 0.05, 20).clip(0, None)
-        lam = np.mean(dummy_data)
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
+        
+        # If we have real data, use it
+        if data and len(data) > 0:
+            w = np.ones(len(data)); w[-3:]*=1.5; w/=w.sum()
+            lam = np.average(data, weights=w)
+        else:
+            # Use dummy data: projection slightly below the line
+            lam = line * 0.95
+        
+        if opponent and sport in ["NBA", "NHL", "MLB"]:
+            def_rating = opponent_strength.get_defensive_rating(sport, opponent)
+            lam *= def_rating
+        
         sims = nbinom.rvs(max(1,int(lam/2)), max(1,int(lam/2))/(max(1,int(lam/2))+lam), size=self.sims) if model["distribution"]=="nbinom" else poisson.rvs(lam, size=self.sims)
         proj = np.mean(sims)
         prob = np.mean(sims>=line) if pick=="OVER" else np.mean(sims<=line)
@@ -1237,14 +1237,37 @@ class Clarity18Elite:
         return {"signal":"🔴 PASS","units":0}
 
     def analyze_prop(self, player, market, line, pick, data, sport, odds, team=None, injury_status="HEALTHY", opponent=None, is_home=False):
-        # Always use dummy data – no API call
-        wa_sim = self.simulate_prop([], line, pick, sport, opponent, player, market, team, is_home)
+        # If data is empty, try to fetch real stats from BallsDontLie or API-Sports
+        if not data:
+            # Try BallsDontLie first (NBA only)
+            if sport == "NBA":
+                real_stats = balldontlie_get_player_stats(player, datetime.now().strftime("%Y-%m-%d"))
+                if real_stats:
+                    # Extract the relevant stat
+                    market_map = {"PTS": "pts", "REB": "reb", "AST": "ast", "STL": "stl", "BLK": "blk"}
+                    stat_val = real_stats.get(market_map.get(market.upper(), "pts"), 0)
+                    if stat_val:
+                        data = [stat_val] * 5  # Use as recent form
+            # Fallback to API-Sports
+            if not data:
+                real_stats, real_injury = fetch_player_stats_and_injury(player, sport, market)
+                if real_stats:
+                    data = real_stats
+                if real_injury != "HEALTHY":
+                    injury_status = real_injury
+        
+        if not data:
+            data = [line * 0.95] * 5
+        
+        rest_fade = 1.0
+        if team:
+            rest_fade, _ = rest_detector.get_rest_fade(sport, team)
+        
+        wa_sim = self.simulate_prop(data, line, pick, sport, opponent, player, market, team, is_home)
         final_prob = wa_sim["prob"]
         raw_edge = final_prob - self.implied_prob(odds)
-        
-        l42_pass, l42_msg = self.l42_check(market, line, wa_sim["proj"])
-        wsem_ok = True
-        rest_fade = 1.0
+        l42_pass, l42_msg = self.l42_check(market, line, np.mean(data))
+        wsem_ok, wsem = self.wsem_check(data)
         bolt = self.sovereign_bolt(final_prob, wa_sim["dtm"], wsem_ok, l42_pass, injury_status, rest_fade)
         
         if market.upper() in RED_TIER_PROPS:
@@ -1260,6 +1283,12 @@ class Clarity18Elite:
             tier, reject_reason = "PASS", f"Insufficient edge ({raw_edge:.1%})"
             bolt["units"] = 0
         
+        if injury_status != "HEALTHY":
+            tier, reject_reason = "REJECT", f"Injury: {injury_status}"
+            bolt["units"] = 0
+        if rest_fade < 0.9:
+            bolt["units"] = min(bolt["units"], 0.5)
+        
         if datetime.now().date() > self.last_reset_date:
             self.daily_loss_today = 0.0
             self.last_reset_date = datetime.now().date()
@@ -1271,11 +1300,18 @@ class Clarity18Elite:
         else:
             bolt["units"] = min(bolt["units"], max_units)
         
+        season_warning = None
+        if team and sport in ["NBA","MLB","NHL","NFL"]:
+            fade_check = self.season_context.should_fade_team(sport, team)
+            if fade_check["fade"]:
+                wa_sim["proj"] *= fade_check["multiplier"]
+                season_warning = f"⚠️ {team}: {', '.join(fade_check['reasons'])}"
+        
         kelly = raw_edge * self.bankroll * 0.25 if raw_edge>0 and tier!="REJECT" else 0
         return {"player":player,"market":market,"line":line,"pick":pick,"signal":bolt["signal"],
                 "units":bolt["units"] if tier!="REJECT" else 0,"projection":wa_sim["proj"],"probability":final_prob,
                 "raw_edge":round(raw_edge,4),"tier":tier,"injury":injury_status,"l42_msg":l42_msg,
-                "kelly_stake":round(min(kelly,50),2),"odds":odds,"season_warning":None,"reject_reason":reject_reason}
+                "kelly_stake":round(min(kelly,50),2),"odds":odds,"season_warning":season_warning,"reject_reason":reject_reason}
 
     # Game market methods (unchanged – kept as in previous version)
     def analyze_total(self, home, away, total_line, pick, sport, odds):
@@ -1406,11 +1442,15 @@ class Clarity18Elite:
             if stop_event and stop_event.is_set(): break
             if progress_callback: progress_callback(f"Scanning {sport}...")
             check_scan_timing(sport)
-            # Use the improved live scanner (PrizePicks)
-            props = self.prop_scanner.fetch_prizepicks_props(sport, stop_event)
+            
+            # Use BallsDontLie for NBA player props
+            if sport == "NBA":
+                props = self.prop_scanner.fetch_prizepicks_props(sport, stop_event)
+            else:
+                props = []
+            
             for prop in props:
                 if stop_event and stop_event.is_set(): break
-                np.random.seed(hash(prop["player"])%2**32)
                 result = self.analyze_prop(prop["player"], prop["market"], prop["line"], prop["pick"], [], sport, prop["odds"], None, "HEALTHY")
                 bet_info = {"type":"player_prop","sport":sport,"description":f"{prop['player']} {prop['pick']} {prop['line']} {prop['market']}",
                             "bet_line":f"{prop['player']} {prop['pick']} {prop['line']} ({prop['odds']})","edge":result.get('raw_edge',0),
@@ -1794,20 +1834,19 @@ def run_dashboard():
     col_title_left, col_title_center, col_title_right = st.columns([1,2,1])
     with col_title_center:
         st.title("🔮 CLARITY 18.0 ELITE")
-        st.markdown(f"<p style='text-align: center;'>Auto-Settle | Advanced Modeling | Smart Scheduling | Slip Import | {VERSION}</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align: center;'>BallsDontLie Integration | Auto-Settle | Advanced Modeling | {VERSION}</p>", unsafe_allow_html=True)
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
         col_status1, col_status2 = st.columns(2)
         with col_status1:
-            st.success("✅ Odds-API.io")
-            st.success("✅ Real Rosters")
+            st.success("✅ BallsDontLie (NBA props)")
+            st.success("✅ Odds-API.io (game lines)")
             st.success("✅ Auto-Settle")
             st.success("✅ Bayesian Prior")
         with col_status2:
-            st.success("✅ Pace (NBA)")
-            st.success("✅ Venue Splits")
-            st.success("✅ Correlation")
+            st.success("✅ Real Rosters")
+            st.success("✅ Slip Import")
             st.success("✅ Smart Scheduling")
         st.divider()
         new_max_unit = st.slider("Max unit size (% of bankroll)", 1, 15, int(engine.max_unit_size*100), 1) / 100.0
@@ -1839,7 +1878,6 @@ def run_dashboard():
     - **NBA, MLB, NHL**: 6 AM, 2 PM, 9 PM
     - **NFL**: Monday 10 AM, Tuesday 6 AM, Sunday 10 AM
     - **EPL / La Liga**: Afternoon (2 PM) the day before matches
-    - **Background automation** scans NBA/MLB/NHL/NFL at 6 AM, 2 PM, 9 PM daily.
     """
 
     # TAB 1: GAME MARKETS (same as before)
@@ -2071,7 +2109,7 @@ def run_dashboard():
                 st.metric("Edge", f"{result['edge']:+.1%}")
                 st.info(f"Value: {result['value']}")
 
-    # TAB 2: PRIZEPICKS SCANNER (with improved live scanner)
+    # TAB 2: PRIZEPICKS SCANNER (with BallsDontLie live props)
     with tab2:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
@@ -2298,7 +2336,7 @@ def run_dashboard():
             opponent = st.selectbox("Opponent (optional)", [""] + teams, key="prop_opponent") if teams else ""
         with c2:
             use_real_stats = st.checkbox("Fetch real stats & injuries (API-Sports)", value=False)
-            st.info("Note: Real stats are disabled for consistency. Using dummy data.")
+            st.info("Note: Real stats are currently using BallsDontLie for NBA, fallback for others.")
             odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
         if st.button("🚀 ANALYZE PROP", type="primary", key="prop_button"):
             if not player or player == "Select team first" or player.startswith("Player "):
