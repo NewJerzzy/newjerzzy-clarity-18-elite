@@ -4,7 +4,6 @@ CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Player Props + Game Slips + Result
 - Auto‑detects PrizePicks, MyBookie, Bovada formats.
 - Live analysis for game lines (ML, spread, total) using Odds-API.io.
 - Player prop analysis using BallsDontLie (NBA) or dummy data.
-- Screenshot OCR support.
 - Imports results into database for auto‑tune and ML retraining.
 """
 
@@ -991,7 +990,10 @@ class Clarity18Elite:
         if opponent and sport in ["NBA", "NHL", "MLB"]:
             def_rating = opponent_strength.get_defensive_rating(sport, opponent)
             lam *= def_rating
-        sims = nbinom.rvs(max(1,int(lam/2)), max(1,int(lam/2))/(max(1,int(lam/2))+lam), size=self.sims) if model["distribution"]=="nbinom" else poisson.rvs(lam, size=self.sims)
+        if model["distribution"] == "nbinom":
+            sims = nbinom.rvs(max(1,int(lam/2)), max(1,int(lam/2))/(max(1,int(lam/2))+lam), size=self.sims)
+        else:
+            sims = poisson.rvs(lam, size=self.sims)
         proj = np.mean(sims)
         prob = np.mean(sims>=line) if pick=="OVER" else np.mean(sims<=line)
         dtm = (proj-line)/line if line!=0 else 0
@@ -1152,7 +1154,10 @@ class Clarity18Elite:
         if away_fade["fade"]: 
             base_proj *= away_fade["multiplier"]; 
             season_warnings.append(f"{away}: {', '.join(away_fade['reasons'])}")
-        sims = nbinom.rvs(max(1,int(base_proj/2)), max(1,int(base_proj/2))/(max(1,int(base_proj/2))+base_proj), size=self.sims) if model["distribution"]=="nbinom" else poisson.rvs(base_proj, size=self.sims)
+        if model["distribution"] == "nbinom":
+            sims = nbinom.rvs(max(1,int(base_proj/2)), max(1,int(base_proj/2))/(max(1,int(base_proj/2))+base_proj), size=self.sims)
+        else:
+            sims = poisson.rvs(base_proj, size=self.sims)
         proj, prob_over, prob_under, prob_push = np.mean(sims), np.mean(sims>total_line), np.mean(sims<total_line), np.mean(sims==total_line)
         prob = (prob_over/(1-prob_push) if prob_push<1 else prob_over) if pick=="OVER" else (prob_under/(1-prob_push) if prob_push<1 else prob_under)
         edge = prob - self.implied_prob(odds)
