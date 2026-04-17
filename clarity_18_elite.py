@@ -1,14 +1,10 @@
 """
-CLARITY 18.0 ELITE – FULL ODDS SCANNER + AUTO-SETTLE + ADVANCED MODELING
+CLARITY 18.0 ELITE – FULL ODDS SCANNER + AUTO-SETTLE + ADVANCED MODELING + SMART SCHEDULING
 - Best Odds Scanner uses Odds-API.io (your key) for real player props.
 - Auto‑Settle pending bets with game status check, expanded market mapping.
-- Correlation / covariance modeling for parlays.
-- Bayesian prior for low‑sample players.
-- Pace adjustment for NBA projections.
-- Enhanced fatigue (continuous rest days).
-- Enhanced venue splits (home/away performance).
-- Retry logic on all API calls.
-- User‑defined max unit size, export database backup.
+- Bayesian prior, pace adjustment, venue splits, correlation, enhanced fatigue.
+- Background automation now scans for best odds at 6 AM, 2 PM, and 9 PM daily.
+- Sport‑specific optimal scanning windows displayed in UI.
 - All original tabs fully functional.
 """
 
@@ -47,7 +43,7 @@ ODDS_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 
-VERSION = "18.0 Elite (Advanced Modeling)"
+VERSION = "18.0 Elite (Smart Scheduling)"
 BUILD_DATE = "2026-04-16"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -1269,7 +1265,6 @@ class Clarity18Elite:
     
     # =========================================================================
     # Existing methods (analyze_total, analyze_moneyline, analyze_spread, etc.)
-    # These are kept exactly as in the previous working version
     # =========================================================================
     def analyze_total(self, home, away, total_line, pick, sport, odds):
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
@@ -1556,21 +1551,53 @@ class Clarity18Elite:
         self.last_tune_date = datetime.now()
         st.info(f"🔄 Auto-tune: prob_bolt {prob_old:.2f}→{self.prob_bolt:.2f}, dtm_bolt {dtm_old:.3f}→{self.dtm_bolt:.3f} (ROI: {roi:.1%})")
 
+# =============================================================================
+# BACKGROUND AUTOMATION – ENHANCED with scheduled best odds scans
+# =============================================================================
 class BackgroundAutomation:
-    def __init__(self, engine): self.engine = engine; self.running = False; self.thread = None
+    def __init__(self, engine):
+        self.engine = engine
+        self.running = False
+        self.thread = None
+        self.last_scan_6 = None
+        self.last_scan_14 = None
+        self.last_scan_21 = None
+
     def start(self):
-        if not self.running: self.running = True; self.thread = threading.Thread(target=self._run, daemon=True); self.thread.start()
+        if not self.running:
+            self.running = True
+            self.thread = threading.Thread(target=self._run, daemon=True)
+            self.thread.start()
+
     def _run(self):
         while self.running:
             now = datetime.now()
-            if now.hour == 8 and (getattr(self,"last_settlement",None) is None or self.last_settlement.date() < now.date()):
+            today = now.date()
+            
+            # Settlement at 8 AM (unchanged)
+            if now.hour == 8 and (getattr(self, "last_settlement", None) is None or self.last_settlement.date() < today):
                 self.engine.settle_pending_bets()
                 self.last_settlement = now
                 self.engine._auto_retrain_ml()
-            time.sleep(1800)
+            
+            # Scheduled best odds scans at 6 AM, 2 PM, 9 PM
+            if now.hour == 6 and now.minute < 5 and self.last_scan_6 != today:
+                st.info(f"🔄 Running scheduled best odds scan at {now.strftime('%H:%M')} (6 AM)")
+                self.engine.run_best_odds_scan(["NBA", "MLB", "NHL", "NFL"])
+                self.last_scan_6 = today
+            elif now.hour == 14 and now.minute < 5 and self.last_scan_14 != today:
+                st.info(f"🔄 Running scheduled best odds scan at {now.strftime('%H:%M')} (2 PM)")
+                self.engine.run_best_odds_scan(["NBA", "MLB", "NHL", "NFL"])
+                self.last_scan_14 = today
+            elif now.hour == 21 and now.minute < 5 and self.last_scan_21 != today:
+                st.info(f"🔄 Running scheduled best odds scan at {now.strftime('%H:%M')} (9 PM)")
+                self.engine.run_best_odds_scan(["NBA", "MLB", "NHL", "NFL"])
+                self.last_scan_21 = today
+            
+            time.sleep(60)  # check every minute
 
 # =============================================================================
-# PROP PARSER FUNCTIONS (unchanged from previous working version)
+# PROP PARSER FUNCTIONS (unchanged)
 # =============================================================================
 def parse_pasted_props(text: str, default_date: str = None) -> List[Dict]:
     if not default_date:
@@ -1779,7 +1806,7 @@ def auto_parse_bets(text: str) -> List[Dict]:
     return bets
 
 # =============================================================================
-# STREAMLIT DASHBOARD – with sidebar upgrades and full tabs
+# STREAMLIT DASHBOARD – with sport-specific info box
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -1793,7 +1820,7 @@ def export_database():
 def run_dashboard():
     st.set_page_config(page_title="CLARITY 18.0 ELITE", layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.markdown(f"**Auto-Settle Player Props | Full Odds Scanner | Advanced Modeling | {VERSION}**")
+    st.markdown(f"**Auto-Settle Player Props | Full Odds Scanner | Advanced Modeling | Smart Scheduling | {VERSION}**")
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
@@ -1807,6 +1834,7 @@ def run_dashboard():
         st.success("✅ Venue Splits (Home/Away)")
         st.success("✅ Enhanced Fatigue (continuous rest)")
         st.success("✅ Correlation Modeling (parlays)")
+        st.success("✅ Smart Scheduling (6 AM, 2 PM, 9 PM scans)")
         
         new_max_unit = st.slider(
             "Max unit size (% of bankroll)",
@@ -1835,10 +1863,20 @@ def run_dashboard():
 
     all_sports = ["NBA", "MLB", "NHL", "NFL", "SOCCER_EPL", "SOCCER_LALIGA", "COLLEGE_BASKETBALL", "COLLEGE_FOOTBALL", "ESPORTS_LOL", "ESPORTS_CS2"]
 
+    # Sport-specific optimal scanning info box
+    scanning_info = """
+    **📅 Optimal Scanning Windows (for best lines & player props):**
+    - **NBA, MLB, NHL**: 6 AM (morning), 2 PM (afternoon), 9 PM (evening)
+    - **NFL**: Monday 10 AM, Tuesday 6 AM, Sunday 10 AM (weekly schedule)
+    - **EPL / La Liga**: Afternoon (2 PM) the day before matches
+    - **Background automation** scans NBA/MLB/NHL/NFL at 6 AM, 2 PM, 9 PM daily.
+    """
+    
     # =========================================================================
-    # TAB 1: GAME MARKETS (same as previous working version – fully restored)
+    # TAB 1: GAME MARKETS (with info box)
     # =========================================================================
     with tab1:
+        st.info(scanning_info)
         st.header("Game Markets")
         st.subheader("📅 Auto-Load Games")
         col1, col2, col3 = st.columns([2,1,1])
@@ -2086,7 +2124,7 @@ def run_dashboard():
                 st.info(f"Value: {result['value']}")
 
     # =========================================================================
-    # TAB 2: PRIZEPICKS SCANNER (same as previous working version – restored)
+    # TAB 2: PRIZEPICKS SCANNER (unchanged from previous working version)
     # =========================================================================
     with tab2:
         st.header("🏆 PrizePicks Scanner")
@@ -2221,9 +2259,10 @@ def run_dashboard():
                             st.caption("Reason: Insufficient edge")
 
     # =========================================================================
-    # TAB 3: SCANNERS & ACCURACY (restored)
+    # TAB 3: SCANNERS & ACCURACY (with info box)
     # =========================================================================
     with tab3:
+        st.info(scanning_info)
         st.header("📊 Scanners & Accuracy Dashboard")
         scanner_tabs = st.tabs(["📈 Best Odds", "💰 Arbitrage", "🎯 Middles", "📊 Accuracy"])
         with scanner_tabs[0]:
@@ -2296,7 +2335,7 @@ def run_dashboard():
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
 
     # =========================================================================
-    # TAB 4: PLAYER PROPS (restored)
+    # TAB 4: PLAYER PROPS (unchanged)
     # =========================================================================
     with tab4:
         st.header("Manual Player Prop Analyzer (Real Rosters)")
@@ -2348,7 +2387,7 @@ def run_dashboard():
                     if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
 
     # =========================================================================
-    # TAB 5: IMAGE ANALYSIS (restored)
+    # TAB 5: IMAGE ANALYSIS (unchanged)
     # =========================================================================
     with tab5:
         st.header("📸 Screenshot Analyzer")
@@ -2406,7 +2445,7 @@ def run_dashboard():
                                                 st.caption(f"Reason: {res['reject_reason']}")
 
     # =========================================================================
-    # TAB 6: AUTO-TUNE (restored)
+    # TAB 6: AUTO-TUNE (unchanged)
     # =========================================================================
     with tab6:
         st.header("Auto-Tune History (ROI-based)")
