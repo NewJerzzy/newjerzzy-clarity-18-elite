@@ -4,7 +4,7 @@ CLARITY 18.0 ELITE – FULL ODDS SCANNER + AUTO-SETTLE + ADVANCED MODELING + SMA
 - Auto‑Settle pending bets with game status check, expanded market mapping.
 - Bayesian prior, pace adjustment, venue splits, correlation, enhanced fatigue.
 - Background automation scans for best odds at 6 AM, 2 PM, 9 PM daily.
-- Import bet slips from MyBookie, Bovada (game lines & player props) for learning.
+- Import player props (numbered format) + import game slips (MyBookie/Bovada) – both in Auto-Tune tab.
 - All original tabs fully functional.
 """
 
@@ -151,7 +151,7 @@ STAT_CONFIG = {
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
 # =============================================================================
-# HARDCODED TEAMS (trimmed for brevity – full list in your original file)
+# HARDCODED TEAMS (full list – trimmed for brevity)
 # =============================================================================
 HARDCODED_TEAMS = {
     "NBA": ["Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets", "Chicago Bulls",
@@ -203,7 +203,7 @@ HARDCODED_TEAMS = {
 }
 
 # =============================================================================
-# FALLBACK NBA ROSTERS (trimmed – full list in your original file)
+# FALLBACK NBA ROSTERS (full list – trimmed for brevity)
 # =============================================================================
 FALLBACK_NBA_ROSTERS = {
     "Atlanta Hawks": ["Trae Young", "Dejounte Murray", "Jalen Johnson", "Clint Capela", "Bogdan Bogdanovic"],
@@ -589,7 +589,7 @@ class SeasonContextEngine:
         return result
 
 # =============================================================================
-# GAME SCANNER (unchanged from previous working version)
+# GAME SCANNER (unchanged)
 # =============================================================================
 class GameScanner:
     def __init__(self, api_key: str):
@@ -968,7 +968,7 @@ class EnsemblePredictor:
 ensemble = EnsemblePredictor()
 
 # =============================================================================
-# CLARITY ENGINE – with all 5 upgrades + slip import helper
+# CLARITY ENGINE – with all 5 upgrades
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
@@ -1275,7 +1275,7 @@ class Clarity18Elite:
                 "kelly_stake":round(min(kelly,50),2),"odds":odds,"season_warning":season_warning,"reject_reason":reject_reason}
 
     # =========================================================================
-    # Game market analysis methods (unchanged from previous working version)
+    # Game market analysis methods (unchanged)
     # =========================================================================
     def analyze_total(self, home, away, total_line, pick, sport, odds):
         model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
@@ -1606,10 +1606,9 @@ class BackgroundAutomation:
 # SLIP IMPORT PARSERS (MyBookie & Bovada)
 # =============================================================================
 def parse_mybookie_slip(text: str) -> List[Dict]:
-    """Parse a single MyBookie slip (game line or player prop)"""
+    """Parse a single MyBookie slip (game line)"""
     bets = []
     lines = text.strip().split('\n')
-    # Detect sport from lines like "MLB | Baseball ..."
     sport = None
     market_type = None
     team = None
@@ -1635,25 +1634,26 @@ def parse_mybookie_slip(text: str) -> List[Dict]:
         elif 'Total' in line:
             market_type = 'TOTAL'
         elif 'Risk:' in line:
-            risk = float(re.search(r'Risk:\s*\$?([\d\.]+)', line).group(1))
+            match = re.search(r'Risk:\s*\$?([\d\.]+)', line)
+            if match:
+                risk = float(match.group(1))
         elif 'Win:' in line:
-            profit = float(re.search(r'Win:\s*\$?([\d\.]+)', line).group(1))
+            match = re.search(r'Win:\s*\$?([\d\.]+)', line)
+            if match:
+                profit = float(match.group(1))
         elif line.lower() in ['win', 'loss']:
             result = line.upper()
-        # Extract team with spread (e.g., "San Jose Sharks (+1.5)")
         spread_match = re.search(r'^([A-Za-z\s]+)\s*\(([+-]\d+\.?\d*)\)', line)
         if spread_match:
             team = spread_match.group(1).strip()
             line_val = float(spread_match.group(2))
             market_type = 'SPREAD'
-        # Extract moneyline team (no spread) – simple heuristics
-        if not team and line and not line.startswith(('Risk', 'Win', 'Game Date')) and not any(x in line for x in ['MLB', 'NBA', 'NHL', 'NFL', 'Winner', 'Handicap', 'Total']):
+        if not team and line and not any(x in line for x in ['MLB', 'NBA', 'NHL', 'NFL', 'Winner', 'Handicap', 'Total']):
             odds_match = re.search(r'([+-]\d+)', line)
             if odds_match and not odds:
                 odds = int(odds_match.group(1))
-                if not team and len(line.split()) <= 5:
+                if len(line.split()) <= 5:
                     team = line.split('(')[0].strip()
-        # Extract odds standalone
         odds_match = re.search(r'^([+-]\d+)$', line)
         if odds_match and not odds:
             odds = int(odds_match.group(1))
@@ -1682,30 +1682,24 @@ def parse_bovada_slip(text: str) -> List[Dict]:
         line = line.strip()
         if not line:
             continue
-        # Detect result
         if line.lower() in ['win', 'loss']:
             current_bet['result'] = line.upper()
-        # Detect odds line (e.g., "+1305")
         odds_match = re.match(r'^([+-]\d+)$', line)
         if odds_match and 'odds' not in current_bet:
             current_bet['odds'] = int(odds_match.group(1))
-        # Detect risk
         if 'Risk' in line:
             risk_match = re.search(r'Risk\s*\$?\s*([\d\.]+)', line)
             if risk_match:
                 current_bet['risk'] = float(risk_match.group(1))
-        # Detect winnings
         if 'Winnings' in line:
             win_match = re.search(r'Winnings\s*\$?\s*([\d\.]+)', line)
             if win_match:
                 current_bet['profit'] = float(win_match.group(1))
-        # Detect team and line from patterns like "New York Mets (+178)"
         bet_line_match = re.search(r'^([A-Za-z\s]+)\s*\(([+-]\d+\.?\d*)\)', line)
         if bet_line_match:
             current_bet['player'] = bet_line_match.group(1).strip()
             current_bet['line'] = float(bet_line_match.group(2))
             current_bet['market'] = 'MONEYLINE' if 'Moneyline' in text or 'ML' in text else 'SPREAD'
-        # Detect sport from matchup line (e.g., "New York Mets @ Los Angeles Dodgers")
         if '@' in line and any(s in line for s in ['MLB', 'NBA', 'NHL', 'NFL']):
             if 'MLB' in line:
                 current_bet['sport'] = 'MLB'
@@ -1715,7 +1709,6 @@ def parse_bovada_slip(text: str) -> List[Dict]:
                 current_bet['sport'] = 'NHL'
             elif 'NFL' in line:
                 current_bet['sport'] = 'NFL'
-        # When we have enough, finalize
         if 'player' in current_bet and 'odds' in current_bet and 'sport' in current_bet:
             current_bet['pick'] = current_bet.get('player', '')
             current_bet['date'] = datetime.now().strftime("%Y-%m-%d")
@@ -1731,14 +1724,13 @@ def import_slip_text(text: str) -> List[Dict]:
     elif 'parlay' in text_lower or 'ref.' in text_lower or 'winnings' in text_lower:
         return parse_bovada_slip(text)
     else:
-        # Fallback: try both
         bets = parse_mybookie_slip(text)
         if not bets:
             bets = parse_bovada_slip(text)
         return bets
 
 # =============================================================================
-# STREAMLIT DASHBOARD – with all tabs and slip import
+# STREAMLIT DASHBOARD – with slip import moved to Auto‑Tune tab
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -2034,7 +2026,7 @@ def run_dashboard():
                 st.info(f"Value: {result['value']}")
 
     # =========================================================================
-    # TAB 2: PRIZEPICKS SCANNER (full – same as previous working version)
+    # TAB 2: PRIZEPICKS SCANNER (full version)
     # =========================================================================
     with tab2:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
@@ -2171,7 +2163,7 @@ def run_dashboard():
                             st.caption("Reason: Insufficient edge")
 
     # =========================================================================
-    # TAB 3: SCANNERS & ACCURACY (with slip import added to the bottom)
+    # TAB 3: SCANNERS & ACCURACY (full version – slip import removed, now in Tab 6)
     # =========================================================================
     with tab3:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
@@ -2246,42 +2238,9 @@ def run_dashboard():
             else:
                 st.info("No settled bets by tier yet.")
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
-        st.divider()
-        st.subheader("📥 IMPORT BET SLIPS (MyBookie / Bovada)")
-        st.markdown("Paste your bet slip text (game lines or player props) – Clarity will auto‑detect the format and import the result.")
-        slip_text = st.text_area("Paste slip here", height=200)
-        if st.button("🔍 Import Slip", type="primary"):
-            if slip_text.strip():
-                bets = import_slip_text(slip_text)
-                if not bets:
-                    st.warning("No bets recognized. Please check the format.")
-                else:
-                    imported = 0
-                    for bet in bets:
-                        # Insert into bets table (similar to auto_settle)
-                        conn = sqlite3.connect(engine.db_path)
-                        c = conn.cursor()
-                        bet_id = hashlib.md5(f"{bet['player']}{bet['market']}{bet['odds']}{datetime.now()}".encode()).hexdigest()[:12]
-                        profit = bet.get('profit', 0) if bet.get('result') == 'WIN' else ( -bet.get('risk', 100) if bet.get('result') == 'LOSS' else 0 )
-                        c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, actual, date, settled_date, bolt_signal, profit)
-                                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                  (bet_id, bet.get('player', ''), bet.get('sport', 'MLB'), bet.get('market', 'MONEYLINE'),
-                                   bet.get('line', 0), bet.get('pick', ''), bet.get('odds', -110), 0,
-                                   bet.get('result', 'PENDING'), 0, bet.get('date', datetime.now().strftime("%Y-%m-%d")),
-                                   datetime.now().strftime("%Y-%m-%d"), "SLIP_IMPORT", profit))
-                        conn.commit()
-                        conn.close()
-                        imported += 1
-                    st.success(f"✅ Imported {imported} bets successfully!")
-                    engine._calibrate_sem()
-                    engine.auto_tune_thresholds()
-                    engine._auto_retrain_ml()
-                    st.rerun()
-            else:
-                st.warning("Please paste some slip text.")
 
     # =========================================================================
-    # TAB 4: PLAYER PROPS (full – same as previous working version)
+    # TAB 4: PLAYER PROPS (full version)
     # =========================================================================
     with tab4:
         st.header("Manual Player Prop Analyzer (Real Rosters)")
@@ -2333,7 +2292,7 @@ def run_dashboard():
                     if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
 
     # =========================================================================
-    # TAB 5: IMAGE ANALYSIS (full – same as previous working version)
+    # TAB 5: IMAGE ANALYSIS (full version)
     # =========================================================================
     with tab5:
         st.header("📸 Screenshot Analyzer")
@@ -2391,7 +2350,7 @@ def run_dashboard():
                                                 st.caption(f"Reason: {res['reject_reason']}")
 
     # =========================================================================
-    # TAB 6: AUTO-TUNE (full – same as previous working version, with slip import already added to Tab 3)
+    # TAB 6: AUTO-TUNE (with both import methods)
     # =========================================================================
     with tab6:
         st.header("Auto-Tune History (ROI-based)")
@@ -2403,6 +2362,8 @@ def run_dashboard():
         else:
             st.dataframe(df)
         st.markdown("---")
+        
+        # ==================== IMPORT PLAYER PROPS (numbered format) ====================
         st.subheader("📥 IMPORT PLAYER PROPS (Auto-Settle)")
         st.markdown("""
         **Paste player props in numbered format.** Clarity will automatically fetch actual stats and mark WIN/LOSS.
@@ -2415,9 +2376,9 @@ NONE
 REVERSE
 0.0
         """)
-        prop_text = st.text_area("Paste player props here", height=250)
+        prop_text = st.text_area("Paste player props here", height=200, key="player_props_import")
         game_date_input = st.date_input("Game date (default: yesterday)", value=datetime.now() - timedelta(days=1))
-        if st.button("🔍 Import & Auto-Settle Props", type="primary"):
+        if st.button("🔍 Import & Auto-Settle Props", type="primary", key="import_player_props"):
             if prop_text.strip():
                 with st.spinner("Parsing and settling props..."):
                     props = parse_pasted_props(prop_text, default_date=game_date_input.strftime("%Y-%m-%d"))
@@ -2451,7 +2412,48 @@ REVERSE
                         st.rerun()
             else:
                 st.warning("Please paste some props.")
+        
         st.markdown("---")
+        
+        # ==================== IMPORT GAME SLIPS (MyBookie / Bovada) ====================
+        st.subheader("📥 IMPORT GAME SLIPS (MyBookie / Bovada)")
+        st.markdown("""
+        **Paste your bet slip text here** (moneyline, spread, total, parlays).  
+        Clarity will automatically detect the format and import the result.
+        """)
+        slip_text = st.text_area("Paste slip here", height=200, key="game_slip_import")
+        if st.button("🔍 Import Slip", type="primary", key="import_game_slip"):
+            if slip_text.strip():
+                bets = import_slip_text(slip_text)
+                if not bets:
+                    st.warning("No bets recognized. Please check the format.")
+                else:
+                    imported = 0
+                    for bet in bets:
+                        conn = sqlite3.connect(engine.db_path)
+                        c = conn.cursor()
+                        bet_id = hashlib.md5(f"{bet['player']}{bet['market']}{bet['odds']}{datetime.now()}".encode()).hexdigest()[:12]
+                        profit = bet.get('profit', 0) if bet.get('result') == 'WIN' else ( -bet.get('risk', 100) if bet.get('result') == 'LOSS' else 0 )
+                        c.execute("""INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, actual, date, settled_date, bolt_signal, profit)
+                                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                  (bet_id, bet.get('player', ''), bet.get('sport', 'MLB'), bet.get('market', 'MONEYLINE'),
+                                   bet.get('line', 0), bet.get('pick', ''), bet.get('odds', -110), 0,
+                                   bet.get('result', 'PENDING'), 0, bet.get('date', datetime.now().strftime("%Y-%m-%d")),
+                                   datetime.now().strftime("%Y-%m-%d"), "SLIP_IMPORT", profit))
+                        conn.commit()
+                        conn.close()
+                        imported += 1
+                    st.success(f"✅ Imported {imported} bets successfully!")
+                    engine._calibrate_sem()
+                    engine.auto_tune_thresholds()
+                    engine._auto_retrain_ml()
+                    st.rerun()
+            else:
+                st.warning("Please paste some slip text.")
+        
+        st.markdown("---")
+        
+        # ==================== PENDING BETS SECTION ====================
         st.subheader("📋 Pending Bets")
         conn = sqlite3.connect(engine.db_path)
         pending_df = pd.read_sql_query("SELECT id, player, sport, market, line, pick, odds, date FROM bets WHERE result = 'PENDING' ORDER BY date DESC", conn)
