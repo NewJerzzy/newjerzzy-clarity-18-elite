@@ -1603,6 +1603,103 @@ class BackgroundAutomation:
             time.sleep(60)
 
 # =============================================================================
+# PROP PARSER FOR PASTED TEXT (MISSING – RESTORED)
+# =============================================================================
+def parse_pasted_props(text: str, default_date: str = None) -> List[Dict]:
+    """Extract player props from pasted PrizePicks-style text."""
+    if not default_date:
+        default_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    bets = []
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    # numbered block format
+    numbered_blocks = []
+    current_block = []
+    for line in lines:
+        if re.match(r'^\d+$', line):
+            if current_block:
+                numbered_blocks.append(current_block)
+            current_block = []
+        else:
+            current_block.append(line)
+    if current_block:
+        numbered_blocks.append(current_block)
+    if len(numbered_blocks) > 1:
+        for block in numbered_blocks:
+            if len(block) < 3:
+                continue
+            player = block[0].strip()
+            market_line = block[1] if len(block) > 1 else ""
+            market_match = re.search(r'·\s*([A-Z]+)', market_line)
+            market = market_match.group(1) if market_match else "PTS"
+            market_map = {"PRA":"PRA","PR":"PR","PA":"PA","PTS":"PTS","REBS":"REB","ASTS":"AST",
+                          "RA":"PRA","REB":"REB","AST":"AST","BLK":"BLK","STL":"STL"}
+            market = market_map.get(market.upper(), market.upper())
+            line_val = None
+            for b in block[2:]:
+                try:
+                    line_val = float(b)
+                    break
+                except:
+                    pass
+            if line_val is None:
+                continue
+            pick = "UNDER" if any("REVERSE" in b.upper() for b in block) else "OVER"
+            opponent = None
+            opp_match = re.search(r'vs\s+([A-Z]{3})', market_line)
+            if opp_match:
+                opponent = opp_match.group(1)
+            bets.append({
+                "type": "player_prop",
+                "player": player,
+                "market": market,
+                "line": line_val,
+                "pick": pick,
+                "sport": "NBA",
+                "opponent": opponent,
+                "game_date": default_date
+            })
+        if bets:
+            return bets
+    # fallback: simple format
+    player_pattern = re.compile(r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)')
+    market_pattern = re.compile(r'\b(Rebounds|Points|Assists|PRA|Rebs\+Asts|Threes|Blocks|Steals|Pts\+Rebs\+Asts|PR|PA|RA)\b', re.IGNORECASE)
+    line_pattern = re.compile(r'\b(\d+\.?\d*)\b')
+    current_player = None
+    current_market = None
+    current_line = None
+    current_pick = "OVER"
+    for line in lines:
+        if re.search(r'\bMore\b', line, re.IGNORECASE):
+            current_pick = "OVER"
+        elif re.search(r'\bLess\b', line, re.IGNORECASE):
+            current_pick = "UNDER"
+        player_match = player_pattern.match(line)
+        if player_match:
+            current_player = player_match.group(1).strip()
+        market_match = market_pattern.search(line)
+        if market_match:
+            raw_market = market_match.group(1).upper()
+            market_map = {"REBOUNDS":"REB","POINTS":"PTS","ASSISTS":"AST","PRA":"PRA","PR":"PR","PA":"PA",
+                          "REBS+ASTS":"PRA","THREES":"3PT","BLOCKS":"BLK","STEALS":"STL","RA":"PRA"}
+            current_market = market_map.get(raw_market, raw_market)
+        if current_player and current_market:
+            line_match = line_pattern.search(line)
+            if line_match:
+                current_line = float(line_match.group(1))
+                bets.append({
+                    "type": "player_prop",
+                    "player": current_player,
+                    "market": current_market,
+                    "line": current_line,
+                    "pick": current_pick,
+                    "sport": "NBA",
+                    "game_date": default_date
+                })
+                current_market = None
+                current_line = None
+    return bets
+
+# =============================================================================
 # SLIP IMPORT PARSERS (MyBookie & Bovada)
 # =============================================================================
 def parse_mybookie_slip(text: str) -> List[Dict]:
@@ -2163,7 +2260,7 @@ def run_dashboard():
                             st.caption("Reason: Insufficient edge")
 
     # =========================================================================
-    # TAB 3: SCANNERS & ACCURACY (full version – slip import removed, now in Tab 6)
+    # TAB 3: SCANNERS & ACCURACY (slip import removed)
     # =========================================================================
     with tab3:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
