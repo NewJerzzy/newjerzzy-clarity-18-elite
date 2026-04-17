@@ -877,9 +877,11 @@ class GameScanner:
         return fallback_props
 
 # =============================================================================
-# PROP SCANNER – UPDATED to use BallsDontLie for live player props
+# PROP SCANNER – RESTORED with LEAGUE_IDS and BallsDontLie integration
 # =============================================================================
 class PropScanner:
+    LEAGUE_IDS = {"NBA":7,"MLB":8,"NHL":9,"NFL":6,"PGA":12,"TENNIS":14,"UFC":16}
+    
     def __init__(self):
         pass
     
