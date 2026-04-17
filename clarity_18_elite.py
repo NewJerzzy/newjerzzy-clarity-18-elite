@@ -711,6 +711,54 @@ class GameScanner:
                         "total": game.get("total"), "over_odds": game.get("over_odds"), "under_odds": game.get("under_odds")}
         return None
 
+    def fetch_player_props_odds(self, sport: str = "basketball_nba", markets: str = "player_points,player_assists,player_rebounds") -> List[Dict]:
+        """Fetch player props from Odds-API.io (fallback for non-NBA)."""
+        all_props = []
+        sport_map = {"basketball_nba": "basketball", "baseball_mlb": "baseball", "icehockey_nhl": "icehockey", "americanfootball_nfl": "americanfootball"}
+        sport_key = sport_map.get(sport, "basketball")
+        url = f"{ODDS_API_IO_BASE}/value-bets"
+        params = {"apiKey": self.odds_api_io_key, "sport": sport_key, "bookmaker": "all", "limit": 100}
+        try:
+            r = requests.get(url, params=params, timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                bets = data.get("data", []) if isinstance(data, dict) else data
+                for bet in bets[:100]:
+                    player_name = bet.get("participant_name", "")
+                    market = bet.get("market", "").upper().replace("PLAYER_", "")
+                    line = bet.get("point", 0)
+                    odds = bet.get("price", -110)
+                    bookmaker = bet.get("bookmaker", "Odds-API.io")
+                    pick = "OVER" if "over" in str(bet.get("selection", "")).lower() else "UNDER"
+                    if player_name and market and line:
+                        all_props.append({
+                            "sport": sport,
+                            "player": player_name,
+                            "market": market,
+                            "line": line,
+                            "odds": odds,
+                            "bookmaker": bookmaker,
+                            "pick": pick
+                        })
+        except:
+            pass
+        return all_props
+
+    def _get_fallback_player_props(self, sport: str) -> List[Dict]:
+        fallback_props = []
+        sample_props = {
+            "basketball_nba": [("LeBron James","PTS",25.5,-110,"PrizePicks"),("Stephen Curry","PTS",28.5,-110,"PrizePicks"),("Kevin Durant","PTS",27.5,-110,"PrizePicks")],
+            "baseball_mlb": [("Shohei Ohtani","HR",0.5,120,"PrizePicks"),("Aaron Judge","HR",0.5,110,"PrizePicks")],
+            "americanfootball_nfl": [("Patrick Mahomes","PASS_YDS",275.5,-110,"PrizePicks"),("Josh Allen","PASS_YDS",260.5,-110,"PrizePicks")],
+            "icehockey_nhl": [("Connor McDavid","SOG",3.5,-110,"PrizePicks"),("Nathan MacKinnon","SOG",4.5,-110,"PrizePicks")]
+        }
+        for s, props in sample_props.items():
+            if sport == s:
+                for p in props:
+                    fallback_props.append({"sport": sport, "player": p[0], "market": p[1], "line": p[2], "odds": p[3], "bookmaker": p[4], "pick": "OVER"})
+                break
+        return fallback_props
+
 # =============================================================================
 # LIGHTGBM MODEL
 # =============================================================================
@@ -761,7 +809,7 @@ class EnsemblePredictor:
 ensemble = EnsemblePredictor()
 
 # =============================================================================
-# CLARITY ENGINE
+# CLARITY ENGINE – COMPLETE WITH ALL METHODS
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
@@ -1081,6 +1129,18 @@ class Clarity18Elite:
                 "prob_push":round(prob_push,3),"edge":round(edge,4),"tier":tier,"kelly_stake":round(min(kelly,50),2),
                 "odds":odds,"season_warnings":season_warnings,"reject_reason":reject_reason}
 
+    def analyze_alternate(self, base_line, alt_line, pick, sport, odds):
+        model = SPORT_MODELS.get(sport, SPORT_MODELS["NBA"])
+        avg_total = model.get("avg_total",200)
+        sims = norm.rvs(loc=avg_total, scale=avg_total*0.12, size=self.sims)
+        prob = np.mean(sims>alt_line) if pick=="OVER" else np.mean(sims<alt_line)
+        edge = prob - self.implied_prob(odds)
+        if edge>=0.03: value, action = "GOOD VALUE","BET"
+        elif edge>=0: value, action = "FAIR VALUE","CONSIDER"
+        else: value, action = "POOR VALUE","AVOID"
+        return {"base_line":base_line,"alt_line":alt_line,"pick":pick,"odds":odds,"probability":round(prob,3),
+                "implied":round(self.implied_prob(odds),3),"edge":round(edge,4),"value":value,"action":action}
+
     def get_teams(self, sport): return HARDCODED_TEAMS.get(sport, ["Select a sport first"])
     def get_roster(self, sport, team):
         if sport in ["PGA","TENNIS","UFC"]: return self._get_individual_sport_players(sport)
@@ -1095,6 +1155,178 @@ class Clarity18Elite:
         elif sport=="TENNIS": return ["Novak Djokovic","Carlos Alcaraz","Iga Swiatek","Coco Gauff","Aryna Sabalenka","Jannik Sinner"]
         elif sport=="UFC": return ["Jon Jones","Islam Makhachev","Alex Pereira","Sean O'Malley","Ilia Topuria","Dricus Du Plessis"]
         return ["Player 1","Player 2","Player 3"]
+
+    def run_best_bets_scan(self, selected_sports, stop_event=None, progress_callback=None, result_callback=None, days_offset=0):
+        game_bets, prop_bets, rejected = [], [], []
+        games = self.game_scanner.fetch_games_by_date(selected_sports, days_offset)
+        for game in games:
+            if stop_event and stop_event.is_set(): break
+            sport, home, away = game["sport"], game["home"], game["away"]
+            if game.get("home_ml") and game.get("away_ml"):
+                ml = self.analyze_moneyline(home, away, sport, game["home_ml"], game["away_ml"])
+                bet_info = {"type":"moneyline","sport":sport,"description":f"{ml.get('pick','PASS')} ML vs {away if ml.get('pick')==home else home}",
+                            "bet_line":f"{ml.get('pick','N/A')} ML ({game['home_ml'] if ml.get('pick')==home else game['away_ml']}) vs {away if ml.get('pick')==home else home}",
+                            "edge":ml.get('edge',0),"probability":ml.get('win_prob',0.0),"units":ml.get('units',0),
+                            "odds":game['home_ml'] if ml.get('pick')==home else game['away_ml'],"season_warnings":ml.get('season_warnings',[]),"reject_reason":ml.get('reject_reason')}
+                if ml.get('units',0)>0: game_bets.append(bet_info)
+                else: rejected.append(bet_info)
+            if game.get("spread") and game.get("spread_odds"):
+                for pick_side in [home, away]:
+                    spread_res = self.analyze_spread(home, away, game["spread"], pick_side, sport, game["spread_odds"])
+                    bet_info = {"type":"spread","sport":sport,"description":f"{pick_side} {game['spread']:+.1f} vs {away if pick_side==home else home}",
+                                "bet_line":f"{pick_side} {game['spread']:+.1f} ({game['spread_odds']}) vs {away if pick_side==home else home}",
+                                "edge":spread_res.get('edge',0),"probability":spread_res.get('prob_cover',0.0),"units":spread_res.get('units',0),
+                                "odds":game['spread_odds'],"season_warnings":spread_res.get('season_warnings',[]),"reject_reason":spread_res.get('reject_reason')}
+                    if spread_res.get('units',0)>0: game_bets.append(bet_info)
+                    else: rejected.append(bet_info)
+            if game.get("total"):
+                for pick_side, odds in [("OVER",game.get("over_odds",-110)),("UNDER",game.get("under_odds",-110))]:
+                    total_res = self.analyze_total(home, away, game["total"], pick_side, sport, odds)
+                    bet_info = {"type":"total","sport":sport,"description":f"{home} vs {away}: {pick_side} {game['total']}",
+                                "bet_line":f"{home} vs {away} — {pick_side} {game['total']} ({odds})",
+                                "edge":total_res.get('edge',0),"probability":total_res.get('prob_over' if pick_side=="OVER" else 'prob_under',0.0),
+                                "units":total_res.get('units',0),"odds":odds,"season_warnings":total_res.get('season_warnings',[]),"reject_reason":total_res.get('reject_reason')}
+                    if total_res.get('units',0)>0: game_bets.append(bet_info)
+                    else: rejected.append(bet_info)
+        for sport in selected_sports:
+            if stop_event and stop_event.is_set(): break
+            if progress_callback: progress_callback(f"Scanning {sport}...")
+            check_scan_timing(sport)
+            if sport == "NBA":
+                # For NBA, use BallsDontLie
+                props = self._fetch_balldontlie_props()
+            else:
+                # For other sports, use Odds-API.io
+                sport_key = {"NBA":"basketball_nba","MLB":"baseball_mlb","NHL":"icehockey_nhl","NFL":"americanfootball_nfl"}.get(sport, "basketball_nba")
+                props = self.game_scanner.fetch_player_props_odds(sport_key)
+            for prop in props:
+                if stop_event and stop_event.is_set(): break
+                result = self.analyze_prop(prop["player"], prop["market"], prop["line"], prop["pick"], [], sport, prop["odds"], None, "HEALTHY")
+                bet_info = {"type":"player_prop","sport":sport,"description":f"{prop['player']} {prop['pick']} {prop['line']} {prop['market']}",
+                            "bet_line":f"{prop['player']} {prop['pick']} {prop['line']} ({prop['odds']})","edge":result.get('raw_edge',0),
+                            "probability":result.get('probability',0.0),"units":result.get('units',0),"odds":prop['odds'],
+                            "season_warning":result.get('season_warning'),"reject_reason":result.get('reject_reason')}
+                if result.get('units',0)>0: prop_bets.append(bet_info)
+                else: rejected.append(bet_info)
+                if result_callback: result_callback(bet_info)
+        game_bets.sort(key=lambda x:x['edge'], reverse=True); prop_bets.sort(key=lambda x:x['edge'], reverse=True)
+        self.scanned_bets["props"] = prop_bets; self.scanned_bets["games"] = game_bets; self.scanned_bets["rejected"] = rejected
+        return self.scanned_bets
+
+    def _fetch_balldontlie_props(self) -> List[Dict]:
+        """Fetch NBA player props from BallsDontLie."""
+        all_props = []
+        today = datetime.now().strftime("%Y-%m-%d")
+        games_data = balldontlie_request("/nba/games", params={"dates[]": today})
+        if not games_data or not games_data.get("data"):
+            return []
+        for game in games_data.get("data", []):
+            game_id = game.get("id")
+            if not game_id:
+                continue
+            props_data = balldontlie_request("/nba/player_props", params={"game_id": game_id})
+            if props_data and "data" in props_data:
+                for prop in props_data["data"]:
+                    player = prop.get("player", {})
+                    player_name = f"{player.get('first_name', '')} {player.get('last_name', '')}".strip()
+                    market = prop.get("market", "").upper()
+                    line = prop.get("line", 0)
+                    odds = prop.get("price", -110)
+                    bookmaker = prop.get("bookmaker", "BallsDontLie")
+                    pick = prop.get("side", "OVER").upper()
+                    market_map = {"POINTS": "PTS", "REBOUNDS": "REB", "ASSISTS": "AST",
+                                  "THREE_POINTERS_MADE": "THREES", "STEALS": "STL", "BLOCKS": "BLK"}
+                    market = market_map.get(market, market)
+                    if player_name and market and line:
+                        all_props.append({"sport": "NBA", "player": player_name, "market": market,
+                                          "line": line, "odds": odds, "bookmaker": bookmaker, "pick": pick})
+        return all_props
+
+    def run_best_odds_scan(self, selected_sports):
+        all_bets = []
+        for sport in selected_sports:
+            check_scan_timing(sport)
+            if sport == "NBA":
+                props = self._fetch_balldontlie_props()
+            else:
+                sport_key = {"NBA":"basketball_nba","MLB":"baseball_mlb","NHL":"icehockey_nhl","NFL":"americanfootball_nfl"}.get(sport)
+                if not sport_key: continue
+                props = self.game_scanner.fetch_player_props_odds(sport_key)
+            for prop in props:
+                result = self.analyze_prop(prop["player"], prop["market"], prop["line"], prop["pick"], [], sport, prop["odds"], None, "HEALTHY")
+                if result.get('units',0)>0:
+                    all_bets.append({"player":prop["player"],"market":prop["market"],"line":prop["line"],"pick":prop["pick"],
+                                     "odds":prop["odds"],"bookmaker":prop["bookmaker"],"edge":result.get('raw_edge',0),
+                                     "probability":result.get('probability',0),"units":result.get('units',0),"sport":sport})
+        best_bets = {}
+        for bet in all_bets:
+            key = f"{bet['player']}|{bet['market']}|{bet['line']}"
+            if key not in best_bets or bet['odds'] > best_bets[key]['odds']: best_bets[key] = bet
+        sorted_bets = sorted(best_bets.values(), key=lambda x:x['edge'], reverse=True)
+        self.scanned_bets["best_odds"] = sorted_bets[:10]
+        props_for_arb = [{'player':bet['player'],'market':bet['market'],'line':bet['line'],'pick':bet['pick'],
+                          'odds':bet['odds'],'bookmaker':bet['bookmaker']} for bet in all_bets]
+        self.scanned_bets["arbs"] = self.detect_arbitrage(props_for_arb)
+        self.scanned_bets["middles"] = self.hunt_middles(props_for_arb)
+        return sorted_bets[:10]
+
+    def get_accuracy_dashboard(self):
+        conn = sqlite3.connect(self.db_path)
+        df = pd.read_sql_query("SELECT * FROM bets WHERE result IN ('WIN','LOSS')", conn)
+        conn.close()
+        if df.empty: return {'total_bets':0,'wins':0,'losses':0,'win_rate':0,'roi':0,'units_profit':0,'by_sport':{},'by_tier':{},'sem_score':self.sem_score}
+        wins, total = (df['result']=='WIN').sum(), len(df)
+        total_stake, total_profit = df['odds'].apply(lambda x:100).sum(), df.apply(lambda r:90.9 if r['result']=='WIN' else -100, axis=1).sum()
+        roi = (total_profit/total_stake)*100 if total_stake>0 else 0
+        by_sport = {}
+        for sport in df['sport'].unique():
+            sport_df = df[df['sport']==sport]
+            sport_wins = (sport_df['result']=='WIN').sum()
+            by_sport[sport] = {'bets':len(sport_df),'win_rate':round(sport_wins/len(sport_df)*100,1) if len(sport_df)>0 else 0}
+        by_tier = {}
+        for _,row in df.iterrows():
+            signal = row.get('bolt_signal','PASS')
+            tier = 'SAFE' if 'SAFE' in str(signal) else 'BALANCED+' if 'BALANCED' in str(signal) else 'RISKY' if 'RISKY' in str(signal) else 'PASS'
+            if tier not in by_tier: by_tier[tier] = {'bets':0,'wins':0}
+            by_tier[tier]['bets'] += 1
+            if row['result']=='WIN': by_tier[tier]['wins'] += 1
+        for tier in by_tier: by_tier[tier]['win_rate'] = round(by_tier[tier]['wins']/by_tier[tier]['bets']*100,1) if by_tier[tier]['bets']>0 else 0
+        return {'total_bets':total,'wins':wins,'losses':total-wins,'win_rate':round(wins/total*100,1) if total>0 else 0,
+                'roi':round(roi,1),'units_profit':round(total_profit/100,1),'by_sport':by_sport,'by_tier':by_tier,'sem_score':self.sem_score}
+
+    def detect_arbitrage(self, props):
+        arbs = []; grouped = {}
+        for prop in props:
+            key = f"{prop['player']}|{prop['market']}"
+            grouped.setdefault(key, []).append(prop)
+        for key,bets in grouped.items():
+            if len(bets)<2: continue
+            best_over = max([b for b in bets if b['pick']=='OVER'], key=lambda x:x['odds'], default=None)
+            best_under = max([b for b in bets if b['pick']=='UNDER'], key=lambda x:x['odds'], default=None)
+            if best_over and best_under:
+                over_dec, under_dec = self.convert_odds(best_over['odds']), self.convert_odds(best_under['odds'])
+                arb_pct = (1/over_dec + 1/under_dec - 1)*100
+                if arb_pct>0: arbs.append({'Player':best_over['player'],'Market':best_over['market'],'Line':best_over['line'],
+                                           'Bet 1':f"OVER {best_over['odds']} @ {best_over['bookmaker']}",
+                                           'Bet 2':f"UNDER {best_under['odds']} @ {best_under['bookmaker']}",'Arb %':round(arb_pct,2)})
+        return arbs
+
+    def hunt_middles(self, props):
+        middles = []; grouped = {}
+        for prop in props:
+            key = f"{prop['player']}|{prop['market']}"
+            grouped.setdefault(key, []).append(prop)
+        for key,bets in grouped.items():
+            overs = [b for b in bets if b['pick']=='OVER']; unders = [b for b in bets if b['pick']=='UNDER']
+            for over in overs:
+                for under in unders:
+                    if over['line'] < under['line'] and under['line']-over['line']>=0.5:
+                        middles.append({'Player':over['player'],'Market':over['market'],
+                                        'Middle Window':f"{over['line']} – {under['line']}",
+                                        'Leg 1':f"OVER {over['line']} ({over['odds']}) @ {over['bookmaker']}",
+                                        'Leg 2':f"UNDER {under['line']} ({under['odds']}) @ {under['bookmaker']}",
+                                        'Window Size':round(under['line']-over['line'],1)})
+        return sorted(middles, key=lambda x:x['Window Size'], reverse=True)
 
     def _log_bet(self, player, market, line, pick, sport, odds, edge, signal):
         conn = sqlite3.connect(self.db_path); c = conn.cursor()
@@ -1348,11 +1580,9 @@ def parse_props_from_image(image_bytes, filename, filetype):
 
 def parse_game_slip_analysis(text: str) -> Optional[Dict]:
     """Parse a game slip for live analysis (no result yet)."""
-    # Look for patterns like "New York Yankees +120 vs Boston Red Sox"
-    # or "Los Angeles Dodgers -1.5 (-110) vs San Diego Padres"
     patterns = [
-        r'([A-Za-z\s]+)\s+([+-]\d+)\s+vs\s+([A-Za-z\s]+)',  # "Yankees +120 vs Red Sox"
-        r'([A-Za-z\s]+)\s+([+-]\d+\.?\d*)\s*\(([+-]\d+)\)\s+vs\s+([A-Za-z\s]+)',  # "Dodgers -1.5 (-110) vs Padres"
+        r'([A-Za-z\s]+)\s+([+-]\d+)\s+vs\s+([A-Za-z\s]+)',
+        r'([A-Za-z\s]+)\s+([+-]\d+\.?\d*)\s*\(([+-]\d+)\)\s+vs\s+([A-Za-z\s]+)',
     ]
     for pattern in patterns:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -1428,9 +1658,7 @@ def run_dashboard():
     - **EPL / La Liga**: Afternoon (2 PM) the day before matches
     """
 
-    # =========================================================================
-    # TAB 1: GAME MARKETS (unchanged – same as before)
-    # =========================================================================
+    # TAB 1: GAME MARKETS (unchanged – keep from previous version)
     with tab1:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
@@ -1660,7 +1888,7 @@ def run_dashboard():
                 st.info(f"Value: {result['value']}")
 
     # =========================================================================
-    # TAB 2: UNIFIED QUICK SCANNER (NEW)
+    # TAB 2: UNIFIED QUICK SCANNER
     # =========================================================================
     with tab2:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
@@ -1677,9 +1905,10 @@ def run_dashboard():
             uploaded_file = st.file_uploader("Choose a screenshot", type=["png","jpg","jpeg"], key="qs_screenshot")
             if uploaded_file and st.button("📸 Extract from Screenshot", type="secondary"):
                 with st.spinner("Extracting text via OCR..."):
-                    pasted_text = parse_props_from_image(uploaded_file.getvalue(), uploaded_file.name, uploaded_file.type)
-                    if pasted_text:
-                        st.success(f"Extracted {len(pasted_text)} props from screenshot")
+                    extracted = parse_props_from_image(uploaded_file.getvalue(), uploaded_file.name, uploaded_file.type)
+                    if extracted:
+                        pasted_text = str(extracted)
+                        st.success(f"Extracted {len(extracted)} props from screenshot")
                     else:
                         st.warning("No props found in image.")
         
@@ -1692,7 +1921,7 @@ def run_dashboard():
                 rejected_items = []
                 game_recommendations = []
                 
-                # First, try to parse as player props
+                # Parse as player props
                 props = parse_pasted_props(pasted_text)
                 if props:
                     for prop in props:
@@ -1703,12 +1932,10 @@ def run_dashboard():
                         else:
                             rejected_items.append((prop, result))
                 
-                # Then, try to parse as game slips (with or without results)
+                # Parse as game slips
                 slips = import_slip_text(pasted_text)
                 for slip in slips:
-                    # Check if slip has a result (Win/Loss)
                     if slip.get('result'):
-                        # Import into database for learning
                         conn = sqlite3.connect(engine.db_path)
                         c = conn.cursor()
                         bet_id = hashlib.md5(f"{slip['player']}{slip['market']}{slip['odds']}{datetime.now()}".encode()).hexdigest()[:12]
@@ -1722,42 +1949,6 @@ def run_dashboard():
                         conn.commit()
                         conn.close()
                         imported_bets.append(slip)
-                    else:
-                        # No result – try live analysis
-                        # First, try to extract teams and odds from the slip text
-                        # For now, we'll try to parse the original text for game lines
-                        game_analysis = parse_game_slip_analysis(pasted_text)
-                        if game_analysis:
-                            sport = game_analysis.get('sport', 'MLB')
-                            team = game_analysis.get('team')
-                            opponent = game_analysis.get('opponent')
-                            odds = game_analysis.get('odds')
-                            line_type = game_analysis.get('line_type')
-                            if line_type == 'moneyline':
-                                # Need to determine which side is which
-                                # For simplicity, assume the team listed is the one we're analyzing
-                                # We'll need to get the opponent's odds from live data
-                                odds_data = engine.game_scanner.get_game_odds(team, opponent, sport)
-                                if odds_data:
-                                    if odds_data.get('home_ml') and odds_data.get('away_ml'):
-                                        # Determine if team is home or away
-                                        if odds_data.get('home') == team:
-                                            ml_result = engine.analyze_moneyline(team, opponent, sport, odds_data['home_ml'], odds_data['away_ml'])
-                                        else:
-                                            ml_result = engine.analyze_moneyline(opponent, team, sport, odds_data['home_ml'], odds_data['away_ml'])
-                                        if ml_result.get('units', 0) > 0:
-                                            game_recommendations.append(ml_result)
-                                        else:
-                                            rejected_items.append(ml_result)
-                            elif line_type == 'spread':
-                                spread = game_analysis.get('spread')
-                                odds_data = engine.game_scanner.get_game_odds(team, opponent, sport)
-                                if odds_data and odds_data.get('spread'):
-                                    spread_res = engine.analyze_spread(team, opponent, spread, team, sport, odds)
-                                    if spread_res.get('units', 0) > 0:
-                                        game_recommendations.append(spread_res)
-                                    else:
-                                        rejected_items.append(spread_res)
                 
                 # Display results
                 if approved_props:
@@ -1771,7 +1962,7 @@ def run_dashboard():
                     for rec in game_recommendations:
                         if rec.get('pick'):
                             st.markdown(f"**{rec['pick']} {rec.get('odds', '?')}**")
-                            st.caption(f"Edge: {rec.get('edge', 0):.1%} | Units: {rec.get('units', 0)} | Signal: {rec.get('signal', '')}")
+                            st.caption(f"Edge: {rec.get('edge', 0):.1%} | Units: {rec.get('units', 0)}")
                 
                 if imported_bets:
                     st.subheader("✅ IMPORTED BETS (for learning)")
@@ -1786,15 +1977,12 @@ def run_dashboard():
                                 prop, res = item
                                 st.markdown(f"**{prop['player']} {prop['pick']} {prop['line']} {prop['market']}**")
                                 st.caption(f"Reason: {res.get('reject_reason', 'Insufficient edge')}")
-                            else:
-                                st.markdown(f"**{item.get('pick', '?')}**")
-                                st.caption(f"Reason: {item.get('reject_reason', 'Insufficient edge')}")
                 
                 if not approved_props and not game_recommendations and not imported_bets and not rejected_items:
                     st.warning("No recognizable bets found. Please check format.")
 
     # =========================================================================
-    # TAB 3: SCANNERS & ACCURACY (unchanged)
+    # TAB 3: SCANNERS & ACCURACY (simplified – keep essential)
     # =========================================================================
     with tab3:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
