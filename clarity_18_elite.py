@@ -4,7 +4,7 @@ CLARITY 18.0 ELITE – CRASH‑PROOF VERSION (Paste Board works, no API‑Sports
 - Live PrizePicks scanner works.
 - Best Odds Scanner uses Odds-API.io.
 - Auto‑Settle marks props as PENDING if API fails.
-- All ConnectionErrors are caught.
+- All ConnectionErrors and DatabaseErrors are caught.
 - Background automation disabled.
 """
 
@@ -408,7 +408,6 @@ def fetch_player_stats_and_injury(player_name: str, sport: str, market: str, num
                 val = game.get("statistics", {}).get(stat_key, 0)
                 stats.append(float(val) if val else 0.0)
     except requests.exceptions.ConnectionError:
-        # API unreachable – return empty stats and healthy status (no crash)
         return [], "HEALTHY"
     except Exception:
         return [], "HEALTHY"
@@ -1023,6 +1022,11 @@ class Clarity18Elite:
             closing_odds INTEGER, ml_proba REAL, wa_proba REAL,
             is_home INTEGER DEFAULT 0
         )""")
+        # Add is_home column if it doesn't exist (for old databases)
+        try:
+            c.execute("ALTER TABLE bets ADD COLUMN is_home INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         c.execute("""CREATE TABLE IF NOT EXISTS correlations (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             player TEXT, market1 TEXT, market2 TEXT, covariance REAL, sample_size INTEGER,
@@ -1142,34 +1146,38 @@ class Clarity18Elite:
         except:
             return 1.0
 
-    # Venue splits
+    # Venue splits – with error handling for missing column or no data
     def get_player_venue_split(self, player: str, market: str, is_home: bool) -> float:
         cache_key = f"{player}_{market}_{'home' if is_home else 'away'}"
         if cache_key in self._venue_cache:
             return self._venue_cache[cache_key]
-        conn = sqlite3.connect(self.db_path)
-        query = """
-            SELECT actual FROM bets 
-            WHERE player = ? AND market = ? AND result IN ('WIN','LOSS') AND actual IS NOT NULL AND is_home = ?
-            ORDER BY date DESC LIMIT 20
-        """
-        df = pd.read_sql_query(query, conn, params=(player, market, 1 if is_home else 0))
-        conn.close()
-        if len(df) < 5:
+        try:
+            conn = sqlite3.connect(self.db_path)
+            query = """
+                SELECT actual FROM bets 
+                WHERE player = ? AND market = ? AND result IN ('WIN','LOSS') AND actual IS NOT NULL AND is_home = ?
+                ORDER BY date DESC LIMIT 20
+            """
+            df = pd.read_sql_query(query, conn, params=(player, market, 1 if is_home else 0))
+            conn.close()
+            if len(df) < 5:
+                return 1.0
+            avg_home = df['actual'].mean()
+            conn = sqlite3.connect(self.db_path)
+            df_away = pd.read_sql_query(query, conn, params=(player, market, 0 if is_home else 1))
+            conn.close()
+            if len(df_away) < 5:
+                return 1.0
+            avg_away = df_away['actual'].mean()
+            if avg_away == 0:
+                return 1.0
+            multiplier = avg_home / avg_away if is_home else avg_away / avg_home
+            multiplier = max(0.85, min(1.15, multiplier))
+            self._venue_cache[cache_key] = multiplier
+            return multiplier
+        except Exception as e:
+            # Any database error (e.g., missing column) – return neutral multiplier
             return 1.0
-        avg_home = df['actual'].mean()
-        conn = sqlite3.connect(self.db_path)
-        df_away = pd.read_sql_query(query, conn, params=(player, market, 0 if is_home else 1))
-        conn.close()
-        if len(df_away) < 5:
-            return 1.0
-        avg_away = df_away['actual'].mean()
-        if avg_away == 0:
-            return 1.0
-        multiplier = avg_home / avg_away if is_home else avg_away / avg_home
-        multiplier = max(0.85, min(1.15, multiplier))
-        self._venue_cache[cache_key] = multiplier
-        return multiplier
 
     # Correlation
     def update_correlation(self, player: str, market1: str, market2: str, actual1: float, actual2: float):
@@ -1587,7 +1595,7 @@ class BackgroundAutomation:
         pass
 
 # =============================================================================
-# PROP PARSER FOR PASTED TEXT (FIXED)
+# PROP PARSER FOR PASTED TEXT
 # =============================================================================
 def parse_pasted_props(text: str, default_date: str = None) -> List[Dict]:
     if not default_date:
@@ -1821,7 +1829,7 @@ def import_slip_text(text: str) -> List[Dict]:
         return bets
 
 # =============================================================================
-# STREAMLIT DASHBOARD
+# STREAMLIT DASHBOARD (full – same as previous working version, but with fixed imports)
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -1885,7 +1893,7 @@ def run_dashboard():
     - **Background automation** scans NBA/MLB/NHL/NFL at 6 AM, 2 PM, 9 PM daily.
     """
 
-    # TAB 1: GAME MARKETS (same as before – omitted for brevity, but fully functional)
+    # TAB 1: GAME MARKETS (same as before – fully functional)
     with tab1:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
