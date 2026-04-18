@@ -1,7 +1,5 @@
-streamlit>=1.28.0
-numpy>=1.26.0
-pandas>=2.0.0
-scipy>=1.11.0
-openai>=1.0.0
-requests>=2.31.0
-lightgbm 
+streamlit
+numpy
+scipy
+requests
+lightgbm
