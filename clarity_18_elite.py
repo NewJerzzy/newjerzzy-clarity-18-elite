@@ -21,7 +21,7 @@ SPORT_CATEGORIES = {"NBA": ["PTS", "REB", "AST"]}
 HARDCODED_TEAMS = {"NBA": ["Lakers", "Celtics", "Warriors"]}
 
 # =============================================================================
-# CLARITY ENGINE CLASS (defined BEFORE instantiation)
+# CLARITY ENGINE CLASS (MUST be defined BEFORE engine = Clarity18Elite())
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
@@ -61,7 +61,7 @@ class Clarity18Elite:
         return {"total_bets": 0, "win_rate": 0, "roi": 0, "sem_score": 100}
 
 # =============================================================================
-# CREATE ENGINE INSTANCE (AFTER class definition)
+# CREATE ENGINE INSTANCE (AFTER class definition – this is correct now)
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -77,7 +77,7 @@ def parse_pasted_props(text, default_date=None):
 def run_dashboard():
     st.set_page_config(layout="wide")
     st.title("🔮 CLARITY 18.0 ELITE")
-    st.caption("Working version – all 5 tabs functional")
+    st.caption("Working version – class defined before engine instantiation")
     
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "🎮 GAME MARKETS", "📋 PASTE & SCAN", "📊 SCANNERS & ACCURACY", "🎯 PLAYER PROPS", "🔧 SELF EVALUATION"
