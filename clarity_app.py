@@ -1,16 +1,10 @@
 """
-CLARITY 18.0 ELITE – Unified Quick Scanner (Auto-Settle + Slip-Settle Upgrade)
-
-New in this build:
-- Automatic WIN/LOSS framework for props and game markets (NBA fully wired via BallDontLie).
-- Slip-based settling (Option B): upload winning/losing slips → OCR → match to pending bets → mark WIN/LOSS.
-- Manual settle kept as a fallback only when auto-detection is impossible.
-- Self-Evaluation tab shows pending bets, auto-settle, slip-settle, and performance analytics.
-
-Notes:
-- NBA player props are auto-settled via BallDontLie.
-- Game-line auto-settle + other sports are wired as a framework with placeholder API hooks.
-- Slip-settle works for both props and game markets by matching OCR’d bets to pending ones.
+CLARITY 18.1 ELITE – Unified Quick Scanner
+- Multi-sport manual analyzer (NBA, MLB, NFL, NHL)
+- Auto-settle framework for all sports (NBA fully wired via BallDontLie, others scaffolded)
+- Slip-based settlement (Option B)
+- Manual settle as fallback
+- Clear Pending Bets button (testing cleanup only)
 """
 
 import re
@@ -34,7 +28,7 @@ OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 BALLSDONTLIE_API_KEY = "9d7c9ea5-54ea-4084-b0d0-2541ac7c360d"
 
-VERSION = "18.0 Elite (Unified Quick Scanner – Auto-Settle + Slip-Settle)"
+VERSION = "18.1 Elite (Unified Quick Scanner – Multi-Sport + Clear Pending)"
 BUILD_DATE = "2026-04-17"
 
 ODDS_API_IO_BASE = "https://api.odds-api.io/v4"
@@ -63,6 +57,20 @@ STAT_CONFIG: Dict[str, Dict[str, Any]] = {
     "PRA": {"tier": "HIGH", "buffer": 3.0, "reject": True},
     "PR": {"tier": "HIGH", "buffer": 2.0, "reject": True},
     "PA": {"tier": "HIGH", "buffer": 2.0, "reject": True},
+    # MLB
+    "HITS": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "TB": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "K": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "OUTS": {"tier": "LOW", "buffer": 1.5, "reject": False},
+    # NFL
+    "PASS_YDS": {"tier": "MED", "buffer": 10.0, "reject": False},
+    "RUSH_YDS": {"tier": "MED", "buffer": 5.0, "reject": False},
+    "REC_YDS": {"tier": "MED", "buffer": 5.0, "reject": False},
+    "REC": {"tier": "LOW", "buffer": 0.5, "reject": False},
+    # NHL
+    "SOG": {"tier": "MED", "buffer": 0.5, "reject": False},
+    "SAVES": {"tier": "MED", "buffer": 1.5, "reject": False},
+    "POINTS": {"tier": "MED", "buffer": 0.5, "reject": False},
 }
 
 RED_TIER_PROPS = ["PRA", "PR", "PA"]
@@ -167,6 +175,13 @@ def update_bet_result(bet_id: int, result: str, actual: float) -> None:
         "UPDATE bets SET result = ?, actual = ? WHERE id = ?",
         (result, actual, bet_id),
     )
+    conn.commit()
+    conn.close()
+
+def clear_pending_bets() -> None:
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.cursor()
+    cur.execute("DELETE FROM bets WHERE result = '' OR result IS NULL")
     conn.commit()
     conn.close()
 
@@ -315,7 +330,50 @@ def balldontlie_settle_prop(
         return "PENDING", 0.0
 
 # =============================================================================
-# SIMPLE EDGE ESTIMATION (for manual tab)
+# OTHER SPORTS – RECENT STAT FETCH (SCAFFOLD)
+# =============================================================================
+def api_sports_request(endpoint: str, params: Optional[dict] = None, sport: str = "baseball") -> Optional[dict]:
+    try:
+        headers = {"x-apisports-key": API_SPORTS_KEY}
+        url = f"{API_SPORTS_BASE}/{sport}{endpoint}"
+        r = requests.get(url, headers=headers, params=params, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+        return None
+    except Exception:
+        return None
+
+def fetch_mlb_recent_stat(player_name: str, market: str, num_games: int = 8) -> List[float]:
+    # Placeholder scaffold – wire to MLB stats provider of your choice
+    return []
+
+def fetch_nfl_recent_stat(player_name: str, market: str, num_games: int = 8) -> List[float]:
+    # Placeholder scaffold – wire to NFL stats provider of your choice
+    return []
+
+def fetch_nhl_recent_stat(player_name: str, market: str, num_games: int = 8) -> List[float]:
+    # Placeholder scaffold – wire to NHL stats provider of your choice
+    return []
+
+def fetch_recent_stat_multi(
+    sport: str,
+    player_name: str,
+    market: str,
+    num_games: int = 8,
+) -> List[float]:
+    sport = sport.upper()
+    if sport == "NBA":
+        return fetch_nba_recent_stat(player_name, market, num_games)
+    if sport == "MLB":
+        return fetch_mlb_recent_stat(player_name, market, num_games)
+    if sport == "NFL":
+        return fetch_nfl_recent_stat(player_name, market, num_games)
+    if sport == "NHL":
+        return fetch_nhl_recent_stat(player_name, market, num_games)
+    return []
+
+# =============================================================================
+# SIMPLE EDGE ESTIMATION
 # =============================================================================
 def estimate_edge_from_history(
     values: List[float],
@@ -414,15 +472,15 @@ def auto_settle_prop(
     """
     Automatic prop settlement.
     - NBA: fully wired via BallDontLie.
-    - Other sports: framework in place, returns PENDING by default.
+    - Other sports: scaffolded, returns PENDING by default.
     """
     if not game_date:
         game_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
 
-    if sport == "NBA":
+    if sport.upper() == "NBA":
         return balldontlie_settle_prop(player, market, line, pick, game_date)
 
-    # Framework for future: MLB/NFL/NHL props via other APIs.
+    # Future: wire MLB/NFL/NHL prop settlement here.
     return "PENDING", 0.0
 
 def fetch_game_final_score_api(
@@ -434,9 +492,8 @@ def fetch_game_final_score_api(
     """
     Framework for automatic game-line settlement.
     Currently returns (None, None) as a placeholder.
-    You can wire this to API-Sports / ESPN / MLB / NHL stats APIs.
+    Wire this to API-Sports / ESPN / MLB / NHL stats APIs.
     """
-    # Placeholder: no external calls here to avoid brittle behavior.
     return None, None
 
 def auto_settle_game(
@@ -466,10 +523,7 @@ def auto_settle_game(
         return ("WIN" if won else "LOSS"), float(team_score)
     elif "SPREAD" in mt:
         margin = team_score - opp_score
-        if "ALT" in mt:
-            # Same logic, just alternate line
-            pass
-        if pick.upper() == "FAV" or pick.upper() == "OVER":
+        if pick.upper() in ["FAV", "OVER"]:
             won = margin > line
         else:
             won = margin < line
@@ -767,7 +821,7 @@ def parse_player_props(text: str, default_sport: str, source: str) -> List[Dict[
     if pitcher_count >= 2:
         return results
 
-    i = 0    # PrizePicks + generic props
+    i = 0
     while i < len(lines):
         line = lines[i]
 
@@ -874,9 +928,9 @@ def parse_pasteboard_unified(text: str, default_sport: str, source: str) -> List
 # CLARITY DECISION ENGINE
 # =============================================================================
 def clarity_decision_for_prop(row: Dict[str, Any]) -> Tuple[str, str, str, float, float, int, float]:
-    history: List[float] = []
-    if row["sport"] == "NBA" and row["market"] in ["PTS", "REB", "AST", "PRA", "PR", "PA"]:
-        history = fetch_nba_recent_stat(row["player"], row["market"], num_games=8)
+    history: List[float] = fetch_recent_stat_multi(
+        row["sport"], row["player"], row["market"], num_games=8
+    )
 
     if not history:
         return (
@@ -1080,7 +1134,7 @@ def match_slip_to_pending(
     For each slip row (PROP or GAME), find matching pending bets.
     Matching logic:
     - Props: sport + player + market + line
-    - Games: sport + team + market_type + line (and optionally price)
+    - Games: sport + team + market_type + line
     """
     matches: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = []
 
@@ -1089,7 +1143,7 @@ def match_slip_to_pending(
         if s["type"] == "PROP":
             for p in pending:
                 if (
-                    p["sport"] == s["sport"]
+                    p["sport"].upper() == s["sport"].upper()
                     and p["player"].lower() == s["player"].lower()
                     and p["market"].upper() == s["market"].upper()
                     and abs(float(p["line"]) - float(s["line"])) < 0.01
@@ -1098,11 +1152,10 @@ def match_slip_to_pending(
         elif s["type"] == "GAME":
             for p in pending:
                 if (
-                    p["sport"] == s["sport"]
+                    p["sport"].upper() == s["sport"].upper()
                     and p["market"].upper() == s["market_type"].upper()
                     and abs(float(p["line"]) - float(s["line"])) < 0.01
                 ):
-                    # For game bets, player field holds team or market_type
                     if s["team"] and s["team"].lower() not in p["player"].lower():
                         continue
                     matched.append(p)
@@ -1117,11 +1170,11 @@ def match_slip_to_pending(
 # =============================================================================
 def main():
     st.set_page_config(
-        page_title="Clarity 18.0 Elite – Unified Quick Scanner",
+        page_title="Clarity 18.1 Elite – Unified Quick Scanner",
         layout="wide",
     )
 
-    st.title("CLARITY 18.0 ELITE – Unified Quick Scanner")
+    st.title("CLARITY 18.1 ELITE – Unified Quick Scanner")
     st.caption(f"Version: {VERSION} | Build: {BUILD_DATE}")
 
     init_db()
@@ -1289,19 +1342,29 @@ def main():
                 st.dataframe(settled.head(50), use_container_width=True)
 
     # -------------------------------------------------------------------------
-    # TAB 4 – PLAYER PROPS (Manual Analyzer)
+    # TAB 4 – PLAYER PROPS (Manual Analyzer – Multi-Sport)
     # -------------------------------------------------------------------------
     with tab4:
-        st.subheader("🎯 PLAYER PROPS – Manual dropdown analyzer")
+        st.subheader("🎯 PLAYER PROPS – Manual dropdown analyzer (Multi-Sport)")
 
-        sport_pp = st.selectbox("Sport", ["NBA"], index=0)
-        player_name = st.text_input("Player name", value="LeBron James")
-        market_pp = st.selectbox("Market", ["PTS", "REB", "AST", "PRA", "PR", "PA"], index=0)
-        line_pp = st.number_input("Line", min_value=0.0, max_value=100.0, value=25.5, step=0.5)
+        sport_pp = st.selectbox("Sport", ["NBA", "MLB", "NFL", "NHL"], index=0)
+
+        if sport_pp == "NBA":
+            markets_pp = ["PTS", "REB", "AST", "PRA", "PR", "PA"]
+        elif sport_pp == "MLB":
+            markets_pp = ["HITS", "TB", "K", "OUTS"]
+        elif sport_pp == "NFL":
+            markets_pp = ["PASS_YDS", "RUSH_YDS", "REC_YDS", "REC"]
+        else:  # NHL
+            markets_pp = ["SOG", "SAVES", "POINTS"]
+
+        player_name = st.text_input("Player name", value="LeBron James" if sport_pp == "NBA" else "")
+        market_pp = st.selectbox("Market", markets_pp, index=0)
+        line_pp = st.number_input("Line", min_value=0.0, max_value=500.0, value=25.5, step=0.5)
         pick_pp = st.selectbox("Pick (for manual edge calc only)", ["OVER", "UNDER"], index=0)
 
         if st.button("Analyze Player Prop"):
-            history = fetch_nba_recent_stat(player_name, market_pp, num_games=8)
+            history = fetch_recent_stat_multi(sport_pp, player_name, market_pp, num_games=8)
             edge, prob = estimate_edge_from_history(history, line_pp, pick_pp)
             tier_info = STAT_CONFIG.get(market_pp, {"tier": "LOW", "buffer": 0.0, "reject": False})
 
@@ -1361,8 +1424,7 @@ def main():
                         result = "PENDING"
                         actual = 0.0
 
-                        # Props
-                        if market.upper() in ["PTS", "REB", "AST", "PRA", "PR", "PA"]:
+                        if market.upper() in STAT_CONFIG.keys():
                             result, actual = auto_settle_prop(
                                 player_or_team,
                                 market,
@@ -1372,7 +1434,6 @@ def main():
                                 opponent,
                                 game_date,
                             )
-                        # Game markets
                         elif any(k in market.upper() for k in ["ML", "SPREAD", "TOTAL"]):
                             result, actual = auto_settle_game(
                                 player_or_team,
@@ -1476,6 +1537,15 @@ def main():
                         update_bet_result(int(manual_id), manual_result, manual_actual)
                         st.success(f"Bet {manual_id} settled as {manual_result}.")
 
+        st.markdown("---")
+        st.markdown("#### Testing Cleanup – Clear Pending Bets Only")
+        st.caption(
+            "This will delete ONLY pending bets (test data). Settled bets (WIN/LOSS) remain for self-evaluation."
+        )
+        if st.button("Clear Pending Bets (Testing Only)"):
+            clear_pending_bets()
+            st.success("All pending bets have been cleared. Settled history remains intact.")
+
         st.markdown("#### Recent Bets (All)")
         hist_df2 = get_recent_bets(limit=200)
         if hist_df2.empty:
@@ -1511,10 +1581,9 @@ def main():
 
     st.markdown("---")
     st.caption(
-        "Clarity 18.0 Elite now supports: unified scanning, OCR, pending bet tracking, "
-        "automatic NBA prop settlement, slip-based settlement for any sport/market, and "
-        "manual settlement as a last resort. This gives you a full feedback loop to monitor "
-        "strictness/looseness and performance over time."
+        "Clarity 18.1 Elite now supports: unified scanning, OCR, pending bet tracking, "
+        "automatic NBA prop settlement, multi-sport manual analysis, slip-based settlement, "
+        "and a safe Clear Pending Bets button so your real evaluation starts clean."
     )
 
 if __name__ == "__main__":
