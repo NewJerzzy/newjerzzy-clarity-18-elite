@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Final 5-tab, Clarity-colored engine, OCR-tuned)
+CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Final 5-tab, Clarity-colored engine, OCR-tuned, MyBookie + PrizePicks aware)
 
 Tabs:
 1. 🎮 GAME MARKETS        – Live game lines, alternate lines, parlays
@@ -11,7 +11,7 @@ Tabs:
 Key behavior:
 - PASTE & SCAN and OCR use the SAME engine.
 - Automatic sport detection from text (NBA / NFL / MLB / NHL) when set to AUTO.
-- OCR noise filtering: merges broken lines, odds, and team names.
+- OCR noise filtering: merges broken lines, odds, team names, and PrizePicks fragments.
 - PASTE & SCAN separates PLAYER PROPS and GAME MARKETS into two clean tables.
 - Player props: Clarity ignores the slip’s pick and chooses OVER / UNDER / PASS itself.
 - Each prop row shows:
@@ -42,7 +42,7 @@ OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 BALLSDONTLIE_API_KEY = "9d7c9ea5-54ea-4084-b0d0-2541ac7c360d"
 
-VERSION = "18.0 Elite (Unified Quick Scanner – OCR-tuned)"
+VERSION = "18.0 Elite (Unified Quick Scanner – OCR-tuned, MyBookie + PrizePicks aware)"
 BUILD_DATE = "2026-04-17"
 
 ODDS_API_IO_BASE = "https://api.odds-api.io/v4"
@@ -443,6 +443,8 @@ NFL_TEAMS = [
 ]
 
 MLB_TEAMS = [
+    "Cincinnati Reds", "Minnesota Twins", "New York Mets", "Chicago Cubs",
+    "Tampa Bay Rays", "Pittsburgh Pirates", "Chicago White Sox", "Oakland Athletics",
     "St. Louis Cardinals", "Houston Astros", "Los Angeles Dodgers", "Colorado Rockies",
     "San Diego Padres", "Los Angeles Angels", "Texas Rangers", "Seattle Mariners",
     "New York Yankees", "Boston Red Sox", "Chicago Cubs",
@@ -456,6 +458,8 @@ NHL_TEAMS = [
 ALL_TEAMS = NBA_TEAMS + NFL_TEAMS + MLB_TEAMS + NHL_TEAMS
 
 TEAM_TOKEN_PATTERN = re.compile(r"[A-Z][a-z]+(?: [A-Z][a-z]+)+")
+
+MONTH_WORDS = {"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"}
 
 def detect_sport_from_text(text: str) -> str:
     t = text.lower()
@@ -474,27 +478,58 @@ def detect_sport_from_text(text: str) -> str:
         if name.lower() in t:
             score["NHL"] += 1
 
+    # Pitcher pattern strongly implies MLB
+    if re.search(r"-[LR]\b", t):
+        score["MLB"] += 3
+
     best = max(score, key=score.get)
     if score[best] == 0:
         return "NBA"  # default
     return best
 
+def is_garbage_line(line: str) -> bool:
+    l = line.strip()
+    if not l:
+        return True
+    if l.lower() in {"lht", "thu"}:
+        return True
+    if l in {"₺", "•", "V"}:
+        return True
+    if len(l) <= 2 and not any(ch.isdigit() for ch in l):
+        return True
+    return False
+
 def clean_ocr_text(raw: str) -> str:
     """
     OCR noise filter:
     - Merge team name fragments (Toronto + Raptors).
-    - Merge odds fragments (+8.5 + (-110)).
-    - Remove obvious junk lines.
+    - Merge odds fragments (+1.5 + -179, O 8 + -105, etc.).
+    - Merge multi-line player names and markets (PrizePicks).
+    - Remove obvious junk lines and 'More/Less' noise.
     """
     lines = [l.strip() for l in raw.splitlines()]
     lines = [l for l in lines if l]  # remove empty
 
+    # First pass: remove obvious garbage and 'More/Less' noise
+    filtered: List[str] = []
+    for l in lines:
+        low = l.lower()
+        if is_garbage_line(l):
+            continue
+        if "more" in low or "less" in low:
+            # PrizePicks user pick – Clarity ignores it
+            continue
+        if "more wagers" in low:
+            continue
+        filtered.append(l)
+
+    lines = filtered
     merged: List[str] = []
     i = 0
     while i < len(lines):
         line = lines[i]
 
-        # Merge single word + next capitalized word → team name
+        # Merge single word + next capitalized word → team or player name
         if (
             i + 1 < len(lines)
             and len(line.split()) == 1
@@ -506,9 +541,23 @@ def clean_ocr_text(raw: str) -> str:
             i += 2
             continue
 
-        # Merge odds fragments: number + (-110)
+        # Merge odds fragments: number + (-110) or +1.5 + -179, O 8 + -105, etc.
         if i + 1 < len(lines):
             next_line = lines[i + 1]
+
+            # Run line or spread: +1.5 / -1.5 with price on next line
+            if re.match(r"^[+-]?\d+(\.\d+)?$", line) and re.match(r"^[+-]?\d{2,4}$", next_line):
+                merged.append(f"{line} ({next_line})")
+                i += 2
+                continue
+
+            # Totals: O 8 / U 8 with price on next line
+            if re.match(r"^[OU]\s*\d+(\.\d+)?$", line, re.IGNORECASE) and re.match(r"^[+-]?\d{2,4}$", next_line):
+                merged.append(f"{line} ({next_line})")
+                i += 2
+                continue
+
+            # Original pattern: number + (-110)
             if re.match(r"^[+-]?\d+(\.\d+)?$", line) and re.match(r"^\(-?\d+\)$", next_line):
                 merged.append(f"{line} {next_line}")
                 i += 2
@@ -518,10 +567,29 @@ def clean_ocr_text(raw: str) -> str:
                 i += 2
                 continue
 
+        # PrizePicks: line + market on next line (e.g., 19.5 / Points)
+        if (
+            i + 1 < len(lines)
+            and re.match(r"^\d+(\.\d+)?$", line)
+            and any(word in lines[i + 1].lower() for word in ["points", "rebounds", "assists", "pra", "pr ", "pa "])
+        ):
+            merged.append(f"{line} {lines[i+1]}")
+            i += 2
+            continue
+
+        # Normalize ≥ 21 Points / = 17 Points → 21 Points / 17 Points
+        m_ge = re.match(r"^[≥=]\s*(\d+(\.\d+)?)\s+(.*)$", line)
+        if m_ge:
+            num = m_ge.group(1)
+            rest = m_ge.group(3)
+            merged.append(f"{num} {rest}")
+            i += 1
+            continue
+
         merged.append(line)
         i += 1
 
-    # Remove obvious junk (very short lines with no digits or letters)
+    # Remove very short junk lines again
     cleaned = []
     for l in merged:
         if len(l) <= 1:
@@ -647,13 +715,31 @@ def parse_game_slips(text: str, default_sport: str) -> List[Dict[str, Any]]:
 
     return results
 
+def looks_like_pitcher_line(line: str) -> bool:
+    # MyBookie style: "Cincinnati Reds - Abbott, Andrew -L"
+    if "-" in line and "," in line and re.search(r"-[LR]\b", line):
+        return True
+    return False
+
 def parse_player_props(text: str, default_sport: str, source: str) -> List[Dict[str, Any]]:
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     results: List[Dict[str, Any]] = []
 
+    # If we see a lot of pitcher lines, assume this block is MLB game slips, not props
+    pitcher_count = sum(1 for l in lines if looks_like_pitcher_line(l))
+    if pitcher_count >= 2:
+        # MLB screenshot – skip prop parsing entirely
+        return results
+
     i = 0
     while i < len(lines):
         line = lines[i]
+
+        # Skip obvious team/position tags like "TOR - F-G", "CLE- C"
+        low = line.lower()
+        if re.match(r"^[A-Z]{2,4}\s*-\s*[A-Z\-]+$", line) or re.match(r"^[A-Z]{2,4}-\s*[A-Z]$", line):
+            i += 1
+            continue
 
         # PrizePicks style: player on one line, stat on next
         if i + 1 < len(lines) and not any(ch.isdigit() for ch in line) and any(ch.isdigit() for ch in lines[i + 1]):
@@ -662,6 +748,11 @@ def parse_player_props(text: str, default_sport: str, source: str) -> List[Dict[
             if m:
                 d = m.groupdict()
                 player = d["player"].strip()
+                # Ignore if player line looks like a date/month mash (e.g., "Taj-R Apr")
+                if any(tok.lower() in MONTH_WORDS for tok in player.split()):
+                    i += 2
+                    continue
+
                 line_val = float(d["line"])
                 market = "PTS"
                 lower_combined = combined.lower()
@@ -698,6 +789,10 @@ def parse_player_props(text: str, default_sport: str, source: str) -> List[Dict[
 
         d = m.groupdict()
         player = d["player"].strip()
+        if any(tok.lower() in MONTH_WORDS for tok in player.split()):
+            i += 1
+            continue
+
         line_val = float(d["line"])
 
         market = "PTS"
