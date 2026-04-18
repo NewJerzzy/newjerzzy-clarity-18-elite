@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Final 5-tab, Clarity-colored engine)
+CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Final 5-tab, Clarity-colored engine, OCR-tuned)
 
 Tabs:
 1. 🎮 GAME MARKETS        – Live game lines, alternate lines, parlays
@@ -9,6 +9,9 @@ Tabs:
 5. 🔧 SELF EVALUATION     – Auto-settle, pending bets, tuning history, SEM-style evaluation
 
 Key behavior:
+- PASTE & SCAN and OCR use the SAME engine.
+- Automatic sport detection from text (NBA / NFL / MLB / NHL) when set to AUTO.
+- OCR noise filtering: merges broken lines, odds, and team names.
 - PASTE & SCAN separates PLAYER PROPS and GAME MARKETS into two clean tables.
 - Player props: Clarity ignores the slip’s pick and chooses OVER / UNDER / PASS itself.
 - Each prop row shows:
@@ -39,7 +42,7 @@ OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 BALLSDONTLIE_API_KEY = "9d7c9ea5-54ea-4084-b0d0-2541ac7c360d"
 
-VERSION = "18.0 Elite (Unified Quick Scanner – Final 5-tab Clarity Colored)"
+VERSION = "18.0 Elite (Unified Quick Scanner – OCR-tuned)"
 BUILD_DATE = "2026-04-17"
 
 ODDS_API_IO_BASE = "https://api.odds-api.io/v4"
@@ -425,16 +428,111 @@ def auto_settle_prop(
     return "PENDING", 0.0
 
 # =============================================================================
-# PASTEBOARD PARSERS – GAME SLIPS + PLAYER PROPS (incl. alt lines)
+# TEAM / SPORT DETECTION + OCR CLEANING
 # =============================================================================
 
-TEAM_NAMES = [
+NBA_TEAMS = [
     "Toronto Raptors", "Cleveland Cavaliers", "Minnesota Timberwolves", "Denver Nuggets",
-    "St. Louis Cardinals", "Houston Astros", "Los Angeles Dodgers", "Colorado Rockies",
-    "San Diego Padres", "Los Angeles Angels", "Texas Rangers", "Seattle Mariners",
+    "Los Angeles Lakers", "Boston Celtics", "Golden State Warriors", "Miami Heat",
+    "Philadelphia 76ers", "New York Knicks", "Brooklyn Nets", "Chicago Bulls",
 ]
 
+NFL_TEAMS = [
+    "Dallas Cowboys", "San Francisco 49ers", "Kansas City Chiefs", "Philadelphia Eagles",
+    "Buffalo Bills", "Miami Dolphins", "New York Jets", "New England Patriots",
+]
+
+MLB_TEAMS = [
+    "St. Louis Cardinals", "Houston Astros", "Los Angeles Dodgers", "Colorado Rockies",
+    "San Diego Padres", "Los Angeles Angels", "Texas Rangers", "Seattle Mariners",
+    "New York Yankees", "Boston Red Sox", "Chicago Cubs",
+]
+
+NHL_TEAMS = [
+    "Toronto Maple Leafs", "Montreal Canadiens", "Boston Bruins", "New York Rangers",
+    "Chicago Blackhawks", "Detroit Red Wings",
+]
+
+ALL_TEAMS = NBA_TEAMS + NFL_TEAMS + MLB_TEAMS + NHL_TEAMS
+
 TEAM_TOKEN_PATTERN = re.compile(r"[A-Z][a-z]+(?: [A-Z][a-z]+)+")
+
+def detect_sport_from_text(text: str) -> str:
+    t = text.lower()
+    score = {"NBA": 0, "NFL": 0, "MLB": 0, "NHL": 0}
+
+    for name in NBA_TEAMS:
+        if name.lower() in t:
+            score["NBA"] += 1
+    for name in NFL_TEAMS:
+        if name.lower() in t:
+            score["NFL"] += 1
+    for name in MLB_TEAMS:
+        if name.lower() in t:
+            score["MLB"] += 1
+    for name in NHL_TEAMS:
+        if name.lower() in t:
+            score["NHL"] += 1
+
+    best = max(score, key=score.get)
+    if score[best] == 0:
+        return "NBA"  # default
+    return best
+
+def clean_ocr_text(raw: str) -> str:
+    """
+    OCR noise filter:
+    - Merge team name fragments (Toronto + Raptors).
+    - Merge odds fragments (+8.5 + (-110)).
+    - Remove obvious junk lines.
+    """
+    lines = [l.strip() for l in raw.splitlines()]
+    lines = [l for l in lines if l]  # remove empty
+
+    merged: List[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # Merge single word + next capitalized word → team name
+        if (
+            i + 1 < len(lines)
+            and len(line.split()) == 1
+            and len(lines[i + 1].split()) == 1
+            and line[0].isupper()
+            and lines[i + 1][0].isupper()
+        ):
+            merged.append(f"{line} {lines[i+1]}")
+            i += 2
+            continue
+
+        # Merge odds fragments: number + (-110)
+        if i + 1 < len(lines):
+            next_line = lines[i + 1]
+            if re.match(r"^[+-]?\d+(\.\d+)?$", line) and re.match(r"^\(-?\d+\)$", next_line):
+                merged.append(f"{line} {next_line}")
+                i += 2
+                continue
+            if re.match(r"^[OU]\d+(\.\d+)?$", line, re.IGNORECASE) and re.match(r"^\(-?\d+\)$", next_line):
+                merged.append(f"{line} {next_line}")
+                i += 2
+                continue
+
+        merged.append(line)
+        i += 1
+
+    # Remove obvious junk (very short lines with no digits or letters)
+    cleaned = []
+    for l in merged:
+        if len(l) <= 1:
+            continue
+        cleaned.append(l)
+
+    return "\n".join(cleaned)
+
+# =============================================================================
+# PASTEBOARD PARSERS – GAME SLIPS + PLAYER PROPS (incl. alt lines)
+# =============================================================================
 
 PROP_PATTERN = re.compile(
     r"(?P<player>[A-Za-z .'-]+)\s+(?P<line>\d+\.?\d*)\s*(Points|Rebounds|Assists|PRA|PR|PA|PTS|REB|AST)?",
@@ -463,8 +561,9 @@ MONEYLINE_PATTERN = re.compile(
 
 def detect_teams_in_block(block: str) -> List[str]:
     found = []
-    for t in TEAM_NAMES:
-        if t.lower() in block.lower():
+    lower_block = block.lower()
+    for t in ALL_TEAMS:
+        if t.lower() in lower_block:
             found.append(t)
     if not found:
         for m in TEAM_TOKEN_PATTERN.findall(block):
@@ -490,7 +589,6 @@ def parse_game_slips(text: str, default_sport: str) -> List[Dict[str, Any]]:
         totals = TOTAL_PATTERN.findall(b) + TOTAL_PATTERN_ALT.findall(b)
         mls = MONEYLINE_PATTERN.findall(b)
 
-        # Treat first spread as main, others as alt
         for i, sp in enumerate(spreads):
             sign, num, price = sp
             line = float(num) if sign == "+" else -float(num)
@@ -509,7 +607,6 @@ def parse_game_slips(text: str, default_sport: str) -> List[Dict[str, Any]]:
                 }
             )
 
-        # First total as main, others as alt
         for j, t in enumerate(totals):
             if len(t) == 2:
                 num, price = t
@@ -532,7 +629,6 @@ def parse_game_slips(text: str, default_sport: str) -> List[Dict[str, Any]]:
                 }
             )
 
-        # First two ML as main, others as alt
         for k, ml in enumerate(mls):
             team = team_a if k % 2 == 0 else team_b
             market_type = "ML" if k < 2 else "ALT_ML"
@@ -555,19 +651,67 @@ def parse_player_props(text: str, default_sport: str, source: str) -> List[Dict[
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     results: List[Dict[str, Any]] = []
 
-    for i, line in enumerate(lines):
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # PrizePicks style: player on one line, stat on next
+        if i + 1 < len(lines) and not any(ch.isdigit() for ch in line) and any(ch.isdigit() for ch in lines[i + 1]):
+            combined = f"{line} {lines[i+1]}"
+            m = PROP_PATTERN.search(combined)
+            if m:
+                d = m.groupdict()
+                player = d["player"].strip()
+                line_val = float(d["line"])
+                market = "PTS"
+                lower_combined = combined.lower()
+                if "rebound" in lower_combined:
+                    market = "REB"
+                elif "assist" in lower_combined:
+                    market = "AST"
+                elif "pra" in lower_combined:
+                    market = "PRA"
+                elif "pr " in lower_combined or "points + rebounds" in lower_combined:
+                    market = "PR"
+                elif "pa " in lower_combined or "points + assists" in lower_combined:
+                    market = "PA"
+
+                results.append(
+                    {
+                        "type": "PROP",
+                        "source": source,
+                        "sport": default_sport,
+                        "player": player,
+                        "market": market,
+                        "line": line_val,
+                        "opponent": "",
+                        "game_date": "",
+                    }
+                )
+                i += 2
+                continue
+
         m = PROP_PATTERN.search(line)
         if not m:
+            i += 1
             continue
+
         d = m.groupdict()
         player = d["player"].strip()
         line_val = float(d["line"])
 
         market = "PTS"
-        if "rebound" in line.lower():
+        lower_line = line.lower()
+        if "rebound" in lower_line:
             market = "REB"
-        elif "assist" in line.lower():
+        elif "assist" in lower_line:
             market = "AST"
+        elif "pra" in lower_line:
+            market = "PRA"
+        elif "pr " in lower_line or "points + rebounds" in lower_line:
+            market = "PR"
+        elif "pa " in lower_line or "points + assists" in lower_line:
+            market = "PA"
 
         results.append(
             {
@@ -581,12 +725,23 @@ def parse_player_props(text: str, default_sport: str, source: str) -> List[Dict[
                 "game_date": "",
             }
         )
+        i += 1
 
     return results
 
 def parse_pasteboard_unified(text: str, default_sport: str, source: str) -> List[Dict[str, Any]]:
-    props = parse_player_props(text, default_sport, source)
+    # Automatic sport detection if default_sport == "AUTO"
+    if default_sport == "AUTO":
+        detected = detect_sport_from_text(text)
+        default_sport = detected
+
+    # For OCR, run noise cleaner first
+    if source == "OCR":
+        text = clean_ocr_text(text)
+
     games = parse_game_slips(text, default_sport)
+    props = parse_player_props(text, default_sport, source)
+
     return props + games
 
 # =============================================================================
@@ -790,6 +945,13 @@ def analyze_and_store_unified(parsed: List[Dict[str, Any]]) -> Tuple[pd.DataFram
 
     df_props = pd.DataFrame(prop_rows) if prop_rows else pd.DataFrame()
     df_games = pd.DataFrame(game_rows) if game_rows else pd.DataFrame()
+
+    # Deduplicate game rows (helps with OCR repeated blocks)
+    if not df_games.empty:
+        df_games = df_games.drop_duplicates(
+            subset=["Team", "Opponent", "Market Type", "Line", "Price"]
+        )
+
     return df_props, df_games
 
 # =============================================================================
@@ -841,8 +1003,13 @@ def main():
     with tab2:
         st.subheader("📋 PASTE & SCAN – Paste or screenshot anything – props, slips, tickets")
 
-        sport_for_paste = st.selectbox("Default sport for pasted / OCR props & games", list(SPORT_MODELS.keys()), index=0)
-        check_scan_timing(sport_for_paste)
+        sport_for_paste = st.selectbox(
+            "Sport for pasted / OCR props & games",
+            ["AUTO", "NBA", "NFL", "MLB", "NHL"],
+            index=0,
+        )
+        if sport_for_paste != "AUTO":
+            check_scan_timing(sport_for_paste)
 
         st.markdown("#### Paste Text")
         paste_text = st.text_area(
@@ -1061,8 +1228,8 @@ def main():
     st.markdown("---")
     st.caption(
         "Final 5-tab Clarity 18.0 Elite: game markets, paste & scan (with OCR), scanners & accuracy, "
-        "player props, and self evaluation. Pasted Bovada/MyBookie/PrizePicks text is split into PLAYER PROPS "
-        "and GAME MARKETS, with bold, color-coded Clarity recommendations."
+        "player props, and self evaluation. Pasted or OCR’d Bovada/MyBookie/PrizePicks text is split into "
+        "PLAYER PROPS and GAME MARKETS, with bold, color-coded Clarity recommendations."
     )
 
 if __name__ == "__main__":
