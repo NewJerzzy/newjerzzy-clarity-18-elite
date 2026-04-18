@@ -1,17 +1,16 @@
 """
-CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Rebuilt, 5-tab layout)
+CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Final 5-tab rebuild)
 
 Tabs:
 1. 🎮 GAME MARKETS        – Live game lines, alternate lines, parlays
-2. 📋 PASTE & SCAN        – Paste or screenshot anything – props, game slips, tickets
+2. 📋 PASTE & SCAN        – Paste text OR upload screenshot → OCR → props, slips, tickets
 3. 📊 SCANNERS & ACCURACY – Best odds, arbitrage, middles, win rate
 4. 🎯 PLAYER PROPS        – Manual dropdown analyzer
-5. 🔧 SELF EVALUATION     – Auto-settle, pending bets, tuning history
+5. 🔧 SELF EVALUATION     – Auto-settle, pending bets, tuning history, SEM-style evaluation
 
-This rebuild:
-- Keeps API keys hard-coded (per your request)
-- Uses SQLite for bets, but with very safe, minimal queries
-- Wraps all external API calls so they can NEVER crash the app
+- API keys kept hard-coded (per your request)
+- SQLite used safely for bets
+- All external APIs wrapped so they cannot crash the app
 """
 
 import re
@@ -35,7 +34,7 @@ OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 BALLSDONTLIE_API_KEY = "9d7c9ea5-54ea-4084-b0d0-2541ac7c360d"
 
-VERSION = "18.0 Elite (Unified Quick Scanner – 5-tab Rebuild)"
+VERSION = "18.0 Elite (Unified Quick Scanner – Final 5-tab)"
 BUILD_DATE = "2026-04-17"
 
 ODDS_API_IO_BASE = "https://api.odds-api.io/v4"
@@ -127,7 +126,8 @@ def get_pending_bets() -> List[Dict[str, Any]]:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
-        "SELECT id, sport, player, market, line, pick, opponent, game_date FROM bets WHERE result = '' OR result IS NULL"
+        "SELECT id, sport, player, market, line, pick, opponent, game_date "
+        "FROM bets WHERE result = '' OR result IS NULL"
     )
     rows = cur.fetchall()
     conn.close()
@@ -204,7 +204,7 @@ PROP_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
-def parse_pasteboard(text: str, default_sport: str) -> List[Dict[str, Any]]:
+def parse_pasteboard(text: str, default_sport: str, source: str) -> List[Dict[str, Any]]:
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     results: List[Dict[str, Any]] = []
     for line in lines:
@@ -214,7 +214,7 @@ def parse_pasteboard(text: str, default_sport: str) -> List[Dict[str, Any]]:
         d = m.groupdict()
         results.append(
             {
-                "source": "PASTE",
+                "source": source,
                 "sport": default_sport,
                 "player": d["player"].strip(),
                 "market": d["market"].upper(),
@@ -225,6 +225,36 @@ def parse_pasteboard(text: str, default_sport: str) -> List[Dict[str, Any]]:
             }
         )
     return results
+
+# =============================================================================
+# OCR.SPACE HELPER
+# =============================================================================
+def ocr_space_image(image_bytes: bytes) -> str:
+    """
+    Sends image bytes to OCR.Space and returns extracted text.
+    Returns empty string on failure (never crashes app).
+    """
+    try:
+        url = "https://api.ocr.space/parse/image"
+        files = {"file": ("image.png", image_bytes)}
+        data = {
+            "apikey": OCR_SPACE_API_KEY,
+            "language": "eng",
+            "OCREngine": 2,
+        }
+        r = requests.post(url, files=files, data=data, timeout=30)
+        if r.status_code != 200:
+            return ""
+        js = r.json()
+        parsed_results = js.get("ParsedResults", [])
+        texts = []
+        for pr in parsed_results:
+            t = pr.get("ParsedText", "")
+            if t:
+                texts.append(t)
+        return "\n".join(texts).strip()
+    except Exception:
+        return ""
 
 # =============================================================================
 # BALSDONTLIE HELPERS (NBA)
@@ -429,6 +459,48 @@ def auto_settle_prop(
     return "PENDING", 0.0
 
 # =============================================================================
+# SHARED ANALYSIS HELPER FOR PASTE & OCR
+# =============================================================================
+def analyze_and_store_props(
+    parsed: List[Dict[str, Any]],
+) -> pd.DataFrame:
+    rows = []
+    for p in parsed:
+        history: List[float] = []
+        if p["sport"] == "NBA" and p["market"] in ["PTS", "REB", "AST", "PRA", "PR", "PA"]:
+            history = fetch_nba_recent_stat(p["player"], p["market"], num_games=8)
+
+        edge, prob = estimate_edge_from_history(history, p["line"], p["pick"])
+        tier_info = STAT_CONFIG.get(p["market"], {"tier": "LOW", "buffer": 0.0, "reject": False})
+
+        rows.append(
+            {
+                "Player": p["player"],
+                "Market": p["market"],
+                "Line": p["line"],
+                "Pick": p["pick"],
+                "Sport": p["sport"],
+                "Source": p.get("source", ""),
+                "Games Used": len(history),
+                "Mean Stat": round(np.mean(history), 2) if history else 0.0,
+                "Edge %": round(edge * 100, 1),
+                "Win Prob %": round(prob * 100, 1),
+                "Tier": tier_info["tier"],
+                "Red Tier": tier_info["reject"],
+            }
+        )
+
+        insert_bet(
+            {
+                **p,
+                "result": "",
+                "actual": 0.0,
+            }
+        )
+
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+# =============================================================================
 # STREAMLIT APP
 # =============================================================================
 def main():
@@ -472,17 +544,18 @@ def main():
                 st.info("Showing best moneyline prices across books. Use this as a base for parlays / alt lines.")
 
     # -------------------------------------------------------------------------
-    # TAB 2 – PASTE & SCAN
+    # TAB 2 – PASTE & SCAN (Text + OCR)
     # -------------------------------------------------------------------------
     with tab2:
         st.subheader("📋 PASTE & SCAN – Paste or screenshot anything – props, slips, tickets")
 
-        sport_for_paste = st.selectbox("Default sport for pasted props", list(SPORT_MODELS.keys()), index=0)
+        sport_for_paste = st.selectbox("Default sport for pasted / OCR props", list(SPORT_MODELS.keys()), index=0)
         check_scan_timing(sport_for_paste)
 
+        st.markdown("#### Paste Text")
         paste_text = st.text_area(
             "Paste PrizePicks / slips / tickets here:",
-            height=220,
+            height=180,
             placeholder="Example:\nLeBron James PTS 27.5 OVER\nNikola Jokic PRA 47.5 UNDER",
         )
 
@@ -490,54 +563,51 @@ def main():
         with col_p1:
             run_scan = st.button("Scan & Analyze Pasted Text")
         with col_p2:
-            st.caption("Screenshot OCR not wired in this rebuild (can be added later safely).")
+            st.caption("All scanned props are stored as pending bets for Self Evaluation.")
 
         if run_scan:
             if not paste_text.strip():
                 st.warning("Paste something first.")
             else:
-                parsed = parse_pasteboard(paste_text, sport_for_paste)
+                parsed = parse_pasteboard(paste_text, sport_for_paste, source="PASTE")
                 if not parsed:
                     st.warning("No valid props detected. Check formatting.")
                 else:
-                    rows = []
-                    for p in parsed:
-                        history: List[float] = []
-                        if p["sport"] == "NBA" and p["market"] in ["PTS", "REB", "AST", "PRA", "PR", "PA"]:
-                            history = fetch_nba_recent_stat(p["player"], p["market"], num_games=8)
-
-                        edge, prob = estimate_edge_from_history(history, p["line"], p["pick"])
-                        tier_info = STAT_CONFIG.get(p["market"], {"tier": "LOW", "buffer": 0.0, "reject": False})
-
-                        rows.append(
-                            {
-                                "Player": p["player"],
-                                "Market": p["market"],
-                                "Line": p["line"],
-                                "Pick": p["pick"],
-                                "Sport": p["sport"],
-                                "Games Used": len(history),
-                                "Mean Stat": round(np.mean(history), 2) if history else 0.0,
-                                "Edge %": round(edge * 100, 1),
-                                "Win Prob %": round(prob * 100, 1),
-                                "Tier": tier_info["tier"],
-                                "Red Tier": tier_info["reject"],
-                            }
-                        )
-
-                        # Save as pending bet
-                        insert_bet(
-                            {
-                                **p,
-                                "result": "",
-                                "actual": 0.0,
-                            }
-                        )
-
-                    df = pd.DataFrame(rows)
-                    st.markdown("### Scan Results")
+                    df = analyze_and_store_props(parsed)
+                    st.markdown("### Scan Results (Pasted Text)")
                     st.dataframe(df, use_container_width=True)
-                    st.info("All scanned props have been stored as pending bets in the database (for Self Evaluation tab).")
+                    st.info("All scanned props have been stored as pending bets in the database.")
+
+        st.markdown("---")
+        st.markdown("#### Screenshot OCR")
+        uploaded_file = st.file_uploader(
+            "Upload screenshot (PNG/JPG/JPEG) of slips / props / tickets:",
+            type=["png", "jpg", "jpeg"],
+        )
+        run_ocr = st.button("Run OCR & Scan Screenshot")
+
+        if run_ocr:
+            if not uploaded_file:
+                st.warning("Upload a screenshot first.")
+            else:
+                image_bytes = uploaded_file.read()
+                with st.spinner("Running OCR on screenshot..."):
+                    ocr_text = ocr_space_image(image_bytes)
+
+                if not ocr_text:
+                    st.warning("OCR did not return any text. Try a clearer image or different crop.")
+                else:
+                    with st.expander("OCR Extracted Text"):
+                        st.text(ocr_text)
+
+                    parsed_ocr = parse_pasteboard(ocr_text, sport_for_paste, source="OCR")
+                    if not parsed_ocr:
+                        st.warning("No valid props detected in OCR text. You can copy/paste the text above and adjust manually.")
+                    else:
+                        df_ocr = analyze_and_store_props(parsed_ocr)
+                        st.markdown("### Scan Results (OCR Screenshot)")
+                        st.dataframe(df_ocr, use_container_width=True)
+                        st.info("OCR props have been stored as pending bets in the database.")
 
     # -------------------------------------------------------------------------
     # TAB 3 – SCANNERS & ACCURACY
@@ -603,7 +673,6 @@ def main():
             st.write(f"Edge vs 50/50: **{edge*100:.1f}%**")
             st.write(f"Tier: **{tier_info['tier']}**, Red Tier: **{tier_info['reject']}**")
 
-            # Optionally store as pending bet
             if st.checkbox("Store this as a pending bet", value=True):
                 insert_bet(
                     {
@@ -677,8 +746,8 @@ def main():
 
     st.markdown("---")
     st.caption(
-        "Rebuilt 5-tab Clarity 18.0 Elite: game markets, paste & scan, scanners & accuracy, player props, "
-        "and self evaluation. APIs are wrapped to avoid crashes; DB is minimal and safe."
+        "Final 5-tab Clarity 18.0 Elite: game markets, paste & scan (with OCR), scanners & accuracy, "
+        "player props, and self evaluation. APIs are wrapped to avoid crashes; DB is minimal and safe."
     )
 
 if __name__ == "__main__":
