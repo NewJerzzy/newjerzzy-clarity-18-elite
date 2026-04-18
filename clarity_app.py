@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Final 5-tab, Clarity-approved engine)
+CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Final 5-tab, Clarity-colored engine)
 
 Tabs:
 1. 🎮 GAME MARKETS        – Live game lines, alternate lines, parlays
@@ -8,10 +8,14 @@ Tabs:
 4. 🎯 PLAYER PROPS        – Manual dropdown analyzer
 5. 🔧 SELF EVALUATION     – Auto-settle, pending bets, tuning history, SEM-style evaluation
 
-- API keys kept hard-coded (per your request)
-- SQLite used safely for bets
-- All external APIs wrapped so they cannot crash the app
-- PASTE & SCAN can read Bovada, MyBookie, PrizePicks-style text and classify APPROVED vs PASS
+Key behavior:
+- PASTE & SCAN separates PLAYER PROPS and GAME MARKETS into two clean tables.
+- Player props: Clarity ignores the slip’s pick and chooses OVER / UNDER / PASS itself.
+- Each prop row shows:
+    🟢/🔴 badge + Clarity pick + Edge % + Win % + Last 8 Avg.
+- Game markets: ML / spreads / totals / alternate lines labeled and evaluated.
+- Alternate lines supported (ALT_ML, ALT_SPREAD, ALT_TOTAL_OVER, ALT_TOTAL_UNDER).
+- OCR supported via ocr.space.
 """
 
 import re
@@ -35,7 +39,7 @@ OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 BALLSDONTLIE_API_KEY = "9d7c9ea5-54ea-4084-b0d0-2541ac7c360d"
 
-VERSION = "18.0 Elite (Unified Quick Scanner – Final 5-tab Clarity)"
+VERSION = "18.0 Elite (Unified Quick Scanner – Final 5-tab Clarity Colored)"
 BUILD_DATE = "2026-04-17"
 
 ODDS_API_IO_BASE = "https://api.odds-api.io/v4"
@@ -200,10 +204,6 @@ def check_scan_timing(sport: str) -> None:
 # OCR.SPACE HELPER
 # =============================================================================
 def ocr_space_image(image_bytes: bytes) -> str:
-    """
-    Sends image bytes to OCR.Space and returns extracted text.
-    Returns empty string on failure (never crashes app).
-    """
     try:
         url = "https://api.ocr.space/parse/image"
         files = {"file": ("image.png", image_bytes)}
@@ -320,7 +320,7 @@ def balldontlie_settle_prop(
         return "PENDING", 0.0
 
 # =============================================================================
-# SIMPLE EDGE ESTIMATION
+# SIMPLE EDGE ESTIMATION (for manual tab)
 # =============================================================================
 def estimate_edge_from_history(
     values: List[float],
@@ -345,9 +345,6 @@ def estimate_edge_from_history(
 # ODDS FETCHER (GAME MARKETS)
 # =============================================================================
 def fetch_game_markets(sport_key: str = "basketball_nba") -> List[Dict[str, Any]]:
-    """
-    Uses Odds-API.io style endpoint. If it fails, returns [].
-    """
     try:
         url = f"{ODDS_API_IO_BASE}/sports/{sport_key}/odds"
         params = {
@@ -425,11 +422,10 @@ def auto_settle_prop(
     if sport == "NBA":
         return balldontlie_settle_prop(player, market, line, pick, game_date)
 
-    # For now, non-NBA auto-settle is not implemented (kept safe)
     return "PENDING", 0.0
 
 # =============================================================================
-# PASTEBOARD PARSERS – GAME SLIPS + PLAYER PROPS
+# PASTEBOARD PARSERS – GAME SLIPS + PLAYER PROPS (incl. alt lines)
 # =============================================================================
 
 TEAM_NAMES = [
@@ -494,52 +490,59 @@ def parse_game_slips(text: str, default_sport: str) -> List[Dict[str, Any]]:
         totals = TOTAL_PATTERN.findall(b) + TOTAL_PATTERN_ALT.findall(b)
         mls = MONEYLINE_PATTERN.findall(b)
 
+        # Treat first spread as main, others as alt
         for i, sp in enumerate(spreads):
             sign, num, price = sp
             line = float(num) if sign == "+" else -float(num)
-            team = team_a if i == 0 else team_b
+            team = team_a if i % 2 == 0 else team_b
+            market_type = "SPREAD" if i < 2 else "ALT_SPREAD"
             results.append(
                 {
                     "type": "GAME",
                     "sport": default_sport,
                     "team": team,
                     "opponent": team_b if team == team_a else team_a,
-                    "market_type": "SPREAD",
+                    "market_type": market_type,
                     "line": line,
                     "price": int(price),
                     "raw_block": b,
                 }
             )
 
-        for t in totals:
+        # First total as main, others as alt
+        for j, t in enumerate(totals):
             if len(t) == 2:
                 num, price = t
                 ou = "O"
             else:
                 ou, num, price = t
             line = float(num)
+            base_type = "TOTAL_OVER" if ou.upper() == "O" else "TOTAL_UNDER"
+            market_type = base_type if j < 2 else "ALT_" + base_type
             results.append(
                 {
                     "type": "GAME",
                     "sport": default_sport,
                     "team": "",
                     "opponent": "",
-                    "market_type": "TOTAL_OVER" if ou.upper() == "O" else "TOTAL_UNDER",
+                    "market_type": market_type,
                     "line": line,
                     "price": int(price),
                     "raw_block": b,
                 }
             )
 
-        for i, ml in enumerate(mls[:2]):
-            team = team_a if i == 0 else team_b
+        # First two ML as main, others as alt
+        for k, ml in enumerate(mls):
+            team = team_a if k % 2 == 0 else team_b
+            market_type = "ML" if k < 2 else "ALT_ML"
             results.append(
                 {
                     "type": "GAME",
                     "sport": default_sport,
                     "team": team,
                     "opponent": team_b if team == team_a else team_a,
-                    "market_type": "ML",
+                    "market_type": market_type,
                     "line": 0.0,
                     "price": int(ml),
                     "raw_block": b,
@@ -566,12 +569,6 @@ def parse_player_props(text: str, default_sport: str, source: str) -> List[Dict[
         elif "assist" in line.lower():
             market = "AST"
 
-        lookahead = "\n".join(lines[i : i + 3]).lower()
-        if "more" in lookahead and "less" in lookahead:
-            pick = "OVER"
-        else:
-            pick = "OVER"
-
         results.append(
             {
                 "type": "PROP",
@@ -580,7 +577,6 @@ def parse_player_props(text: str, default_sport: str, source: str) -> List[Dict[
                 "player": player,
                 "market": market,
                 "line": line_val,
-                "pick": pick,
                 "opponent": "",
                 "game_date": "",
             }
@@ -596,21 +592,80 @@ def parse_pasteboard_unified(text: str, default_sport: str, source: str) -> List
 # =============================================================================
 # CLARITY DECISION ENGINE
 # =============================================================================
-def clarity_decision_for_prop(row: Dict[str, Any]) -> Tuple[str, str, float, float, int, float]:
+def clarity_decision_for_prop(row: Dict[str, Any]) -> Tuple[str, str, str, float, float, int, float]:
+    """
+    Returns:
+        decision: 'APPROVED' or 'PASS'
+        reason: text explanation
+        clarity_pick: 'OVER', 'UNDER', or 'PASS'
+        edge: float (0–1)
+        win_prob: float (0–1)
+        games_used: int
+        mean_stat: float
+    """
     history: List[float] = []
     if row["sport"] == "NBA" and row["market"] in ["PTS", "REB", "AST", "PRA", "PR", "PA"]:
         history = fetch_nba_recent_stat(row["player"], row["market"], num_games=8)
 
-    edge, prob = estimate_edge_from_history(history, row["line"], row["pick"])
+    if not history:
+        return (
+            "PASS",
+            "No recent data available – cannot compute edge.",
+            "PASS",
+            0.0,
+            0.5,
+            0,
+            0.0,
+        )
+
+    mu = float(np.mean(history))
+    sigma = float(np.std(history) + 1e-6)
+    line = float(row["line"])
+
+    prob_over = 1.0 - norm.cdf(line, loc=mu, scale=sigma)
+    prob_under = norm.cdf(line, loc=mu, scale=sigma)
+
+    if prob_over > prob_under:
+        clarity_pick = "OVER"
+        win_prob = prob_over
+    else:
+        clarity_pick = "UNDER"
+        win_prob = prob_under
+
+    edge = win_prob - 0.5
     tier_info = STAT_CONFIG.get(row["market"], {"tier": "LOW", "buffer": 0.0, "reject": False})
 
     if tier_info["reject"]:
-        return "PASS", f"Red-tier market ({row['market']}) – not Clarity approved.", edge, prob, len(history), float(np.mean(history)) if history else 0.0
+        return (
+            "PASS",
+            f"Red-tier market ({row['market']}) – not Clarity approved.",
+            "PASS",
+            edge,
+            win_prob,
+            len(history),
+            mu,
+        )
 
     if edge * 100 >= 8.0:
-        return "APPROVED", f"Edge {edge*100:.1f}% with win prob {prob*100:.1f}%.", edge, prob, len(history), float(np.mean(history)) if history else 0.0
+        return (
+            "APPROVED",
+            f"Edge {edge*100:.1f}% with win prob {win_prob*100:.1f}%.",
+            clarity_pick,
+            edge,
+            win_prob,
+            len(history),
+            mu,
+        )
     else:
-        return "PASS", f"Edge too small ({edge*100:.1f}%).", edge, prob, len(history), float(np.mean(history)) if history else 0.0
+        return (
+            "PASS",
+            f"Edge too small ({edge*100:.1f}%).",
+            "PASS",
+            edge,
+            win_prob,
+            len(history),
+            mu,
+        )
 
 def clarity_decision_for_game(row: Dict[str, Any]) -> Tuple[str, str]:
     mt = row["market_type"]
@@ -621,40 +676,57 @@ def clarity_decision_for_game(row: Dict[str, Any]) -> Tuple[str, str]:
     else:
         implied = 100 / (price + 100)
 
-    if mt == "ML":
+    is_alt = mt.startswith("ALT_")
+
+    if mt.endswith("ML"):
         if implied < 0.40 or implied > 0.65:
-            return "APPROVED", f"Moneyline with implied {implied*100:.1f}% – outside typical coinflip zone."
+            tag = "Alternate ML" if is_alt else "ML"
+            return "APPROVED", f"{tag} with implied {implied*100:.1f}% – outside typical coinflip zone."
         else:
             return "PASS", f"Moneyline too close to coinflip ({implied*100:.1f}%)."
-    elif mt.startswith("TOTAL"):
-        return "PASS", "Totals currently not modeled – not Clarity approved."
-    elif mt == "SPREAD":
-        return "PASS", "Spread edges not modeled yet – defaulting to PASS."
+    elif "TOTAL" in mt:
+        return "PASS", "Totals (including alternate) currently not modeled – not Clarity approved."
+    elif "SPREAD" in mt:
+        return "PASS", "Spreads (including alternate) not modeled yet – defaulting to PASS."
     else:
         return "PASS", "Unknown market type – PASS."
 
-def analyze_and_store_unified(parsed: List[Dict[str, Any]]) -> pd.DataFrame:
-    rows = []
+def analyze_and_store_unified(parsed: List[Dict[str, Any]]) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    prop_rows = []
+    game_rows = []
+
     for p in parsed:
         if p["type"] == "PROP":
-            decision, reason, edge, prob, games_used, mean_stat = clarity_decision_for_prop(p)
+            decision, reason, clarity_pick, edge, prob, games_used, mean_stat = clarity_decision_for_prop(p)
             tier_info = STAT_CONFIG.get(p["market"], {"tier": "LOW", "buffer": 0.0, "reject": False})
 
-            rows.append(
+            if decision == "APPROVED":
+                badge = (
+                    f"<span style='color:green;font-weight:bold'>🟢 CLARITY SAYS: {clarity_pick}</span><br>"
+                    f"<span style='font-size:12px'>Edge: {edge*100:.1f}% | "
+                    f"Win Prob: {prob*100:.1f}% | Last 8 Avg: {mean_stat:.1f}</span>"
+                )
+            else:
+                badge = (
+                    f"<span style='color:red;font-weight:bold'>🔴 CLARITY SAYS: PASS</span><br>"
+                    f"<span style='font-size:12px'>Edge: {edge*100:.1f}% | "
+                    f"Win Prob: {prob*100:.1f}% | Last 8 Avg: {mean_stat:.1f}</span>"
+                )
+
+            prop_rows.append(
                 {
-                    "Type": "PROP",
-                    "Player/Team": p["player"],
-                    "MarketType": p["market"],
+                    "Player": p["player"],
+                    "Market": p["market"],
                     "Line": p["line"],
-                    "Pick": p["pick"],
                     "Sport": p["sport"],
                     "Games Used": games_used,
-                    "Mean Stat": round(mean_stat, 2),
+                    "Last 8 Avg": round(mean_stat, 2),
                     "Edge %": round(edge * 100, 1),
                     "Win Prob %": round(prob * 100, 1),
                     "Tier": tier_info["tier"],
                     "Red Tier": tier_info["reject"],
-                    "ClarityDecision": decision,
+                    "Clarity Decision": decision,
+                    "Clarity Summary": badge,
                     "Reason": reason,
                 }
             )
@@ -666,7 +738,7 @@ def analyze_and_store_unified(parsed: List[Dict[str, Any]]) -> pd.DataFrame:
                     "player": p["player"],
                     "market": p["market"],
                     "line": p["line"],
-                    "pick": p["pick"],
+                    "pick": clarity_pick,
                     "opponent": p.get("opponent", ""),
                     "game_date": p.get("game_date", ""),
                     "result": "",
@@ -676,22 +748,28 @@ def analyze_and_store_unified(parsed: List[Dict[str, Any]]) -> pd.DataFrame:
 
         elif p["type"] == "GAME":
             decision, reason = clarity_decision_for_game(p)
-            rows.append(
+
+            if decision == "APPROVED":
+                badge = (
+                    f"<span style='color:green;font-weight:bold'>🟢 {decision}</span><br>"
+                    f"<span style='font-size:12px'>{reason}</span>"
+                )
+            else:
+                badge = (
+                    f"<span style='color:red;font-weight:bold'>🔴 {decision}</span><br>"
+                    f"<span style='font-size:12px'>{reason}</span>"
+                )
+
+            game_rows.append(
                 {
-                    "Type": "GAME",
-                    "Player/Team": p["team"] or "TOTAL",
-                    "MarketType": p["market_type"],
+                    "Team": p["team"] or "TOTAL",
+                    "Opponent": p.get("opponent", ""),
+                    "Market Type": p["market_type"],
                     "Line": p["line"],
-                    "Pick": "",
+                    "Price": p.get("price", ""),
                     "Sport": p["sport"],
-                    "Games Used": "",
-                    "Mean Stat": "",
-                    "Edge %": "",
-                    "Win Prob %": "",
-                    "Tier": "",
-                    "Red Tier": "",
-                    "ClarityDecision": decision,
-                    "Reason": reason,
+                    "Clarity Decision": decision,
+                    "Clarity Summary": badge,
                 }
             )
 
@@ -710,7 +788,9 @@ def analyze_and_store_unified(parsed: List[Dict[str, Any]]) -> pd.DataFrame:
                 }
             )
 
-    return pd.DataFrame(rows) if rows else pd.DataFrame()
+    df_props = pd.DataFrame(prop_rows) if prop_rows else pd.DataFrame()
+    df_games = pd.DataFrame(game_rows) if game_rows else pd.DataFrame()
+    return df_props, df_games
 
 # =============================================================================
 # STREAMLIT APP
@@ -775,7 +855,7 @@ def main():
         with col_p1:
             run_scan = st.button("Scan & Analyze Pasted Text")
         with col_p2:
-            st.caption("Clarity will label each row as APPROVED or PASS and store bets as pending.")
+            st.caption("Clarity will separate PLAYER PROPS and GAME MARKETS, and label each as APPROVED or PASS.")
 
         if run_scan:
             if not paste_text.strip():
@@ -785,9 +865,20 @@ def main():
                 if not parsed:
                     st.warning("No valid props or game slips detected. Check formatting.")
                 else:
-                    df = analyze_and_store_unified(parsed)
-                    st.markdown("### Clarity Analysis – Pasted Text")
-                    st.dataframe(df, use_container_width=True)
+                    df_props, df_games = analyze_and_store_unified(parsed)
+
+                    if not df_props.empty:
+                        st.markdown("### 🟦 PLAYER PROPS – Clarity Recommendations")
+                        st.markdown(df_props.to_html(escape=False, index=False), unsafe_allow_html=True)
+                    else:
+                        st.markdown("### 🟦 PLAYER PROPS – None detected")
+
+                    if not df_games.empty:
+                        st.markdown("### 🟥 GAME MARKETS – Clarity Recommendations")
+                        st.markdown(df_games.to_html(escape=False, index=False), unsafe_allow_html=True)
+                    else:
+                        st.markdown("### 🟥 GAME MARKETS – None detected")
+
                     st.info("All APPROVED/PASS decisions are based on Clarity rules. Bets are stored as pending in the database.")
 
         st.markdown("---")
@@ -816,9 +907,20 @@ def main():
                     if not parsed_ocr:
                         st.warning("No valid props or game slips detected in OCR text.")
                     else:
-                        df_ocr = analyze_and_store_unified(parsed_ocr)
-                        st.markdown("### Clarity Analysis – OCR Screenshot")
-                        st.dataframe(df_ocr, use_container_width=True)
+                        df_props_ocr, df_games_ocr = analyze_and_store_unified(parsed_ocr)
+
+                        if not df_props_ocr.empty:
+                            st.markdown("### 🟦 PLAYER PROPS – Clarity Recommendations (OCR)")
+                            st.markdown(df_props_ocr.to_html(escape=False, index=False), unsafe_allow_html=True)
+                        else:
+                            st.markdown("### 🟦 PLAYER PROPS – None detected (OCR)")
+
+                        if not df_games_ocr.empty:
+                            st.markdown("### 🟥 GAME MARKETS – Clarity Recommendations (OCR)")
+                            st.markdown(df_games_ocr.to_html(escape=False, index=False), unsafe_allow_html=True)
+                        else:
+                            st.markdown("### 🟥 GAME MARKETS – None detected (OCR)")
+
                         st.info("OCR-derived bets have been stored as pending in the database.")
 
     # -------------------------------------------------------------------------
@@ -871,7 +973,7 @@ def main():
         player_name = st.text_input("Player name", value="LeBron James")
         market_pp = st.selectbox("Market", ["PTS", "REB", "AST", "PRA", "PR", "PA"], index=0)
         line_pp = st.number_input("Line", min_value=0.0, max_value=100.0, value=25.5, step=0.5)
-        pick_pp = st.selectbox("Pick", ["OVER", "UNDER"], index=0)
+        pick_pp = st.selectbox("Pick (for manual edge calc only)", ["OVER", "UNDER"], index=0)
 
         if st.button("Analyze Player Prop"):
             history = fetch_nba_recent_stat(player_name, market_pp, num_games=8)
@@ -881,7 +983,7 @@ def main():
             st.markdown("#### Analysis")
             st.write(f"Games used: **{len(history)}**")
             st.write(f"Mean stat: **{round(np.mean(history), 2) if history else 0.0}**")
-            st.write(f"Estimated win probability: **{prob*100:.1f}%**")
+            st.write(f"Estimated win probability (vs your pick): **{prob*100:.1f}%**")
             st.write(f"Edge vs 50/50: **{edge*100:.1f}%**")
             st.write(f"Tier: **{tier_info['tier']}**, Red Tier: **{tier_info['reject']}**")
 
@@ -959,7 +1061,8 @@ def main():
     st.markdown("---")
     st.caption(
         "Final 5-tab Clarity 18.0 Elite: game markets, paste & scan (with OCR), scanners & accuracy, "
-        "player props, and self evaluation. Pasted Bovada/MyBookie/PrizePicks text is classified as APPROVED or PASS."
+        "player props, and self evaluation. Pasted Bovada/MyBookie/PrizePicks text is split into PLAYER PROPS "
+        "and GAME MARKETS, with bold, color-coded Clarity recommendations."
     )
 
 if __name__ == "__main__":
