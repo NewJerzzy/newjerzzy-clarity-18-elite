@@ -4,6 +4,7 @@ CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Player Props + Game Slips + Result
 - Auto‑detects PrizePicks, MyBookie, Bovada formats.
 - Live analysis for game lines (ML, spread, total) using Odds-API.io.
 - Player prop analysis using BallsDontLie (NBA) or dummy data.
+- Screenshot OCR support.
 - Imports results into database for auto‑tune and ML retraining.
 """
 
@@ -89,7 +90,7 @@ def check_scan_timing(sport: str) -> None:
             st.info("⚽ For soccer, lines are often most efficient when scanned in the afternoon (2-3 PM) the day before matches.")
 
 # =============================================================================
-# SPORT MODELS
+# SPORT MODELS (unchanged)
 # =============================================================================
 SPORT_MODELS = {
     "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "avg_total": 228.5, "home_advantage": 3.0},
@@ -152,7 +153,7 @@ STAT_CONFIG = {
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
 # =============================================================================
-# HARDCODED TEAMS
+# HARDCODED TEAMS (full list)
 # =============================================================================
 HARDCODED_TEAMS = {
     "NBA": ["Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets", "Chicago Bulls",
@@ -204,7 +205,7 @@ HARDCODED_TEAMS = {
 }
 
 # =============================================================================
-# FALLBACK NBA ROSTERS
+# FALLBACK NBA ROSTERS (full list)
 # =============================================================================
 FALLBACK_NBA_ROSTERS = {
     "Atlanta Hawks": ["Trae Young", "Dejounte Murray", "Jalen Johnson", "Clint Capela", "Bogdan Bogdanovic"],
@@ -395,7 +396,7 @@ class RestInjuryDetector:
 rest_detector = RestInjuryDetector()
 
 # =============================================================================
-# REAL-TIME DATA FETCHERS
+# REAL-TIME DATA FETCHERS (fallback)
 # =============================================================================
 @st.cache_data(ttl=3600)
 @retry(max_attempts=2, delay=1)
@@ -699,6 +700,7 @@ class GameScanner:
         return all_games
 
     def get_game_odds(self, home: str, away: str, sport: str) -> Optional[Dict]:
+        """Fetch live odds for a specific matchup."""
         games = self.fetch_todays_games([sport])
         for game in games:
             if game.get("home") == home and game.get("away") == away:
@@ -710,6 +712,7 @@ class GameScanner:
         return None
 
     def fetch_player_props_odds(self, sport: str = "basketball_nba", markets: str = "player_points,player_assists,player_rebounds") -> List[Dict]:
+        """Fetch player props from Odds-API.io (fallback for non-NBA)."""
         all_props = []
         sport_map = {"basketball_nba": "basketball", "baseball_mlb": "baseball", "icehockey_nhl": "icehockey", "americanfootball_nfl": "americanfootball"}
         sport_key = sport_map.get(sport, "basketball")
@@ -806,7 +809,7 @@ class EnsemblePredictor:
 ensemble = EnsemblePredictor()
 
 # =============================================================================
-# CLARITY ENGINE - COMPLETE CLASS DEFINITION
+# CLARITY ENGINE – COMPLETE WITH ALL METHODS
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
@@ -904,6 +907,7 @@ class Clarity18Elite:
         conn.commit()
         conn.close()
         self.last_ml_retrain_date = datetime.now()
+        st.info("🔄 ML model retrained weekly with latest settled bets.")
 
     def convert_odds(self, american): return 1+american/100 if american>0 else 1+100/abs(american)
     def implied_prob(self, american): return 100/(american+100) if american>0 else abs(american)/(abs(american)+100)
@@ -1142,6 +1146,8 @@ class Clarity18Elite:
         if sport in ["PGA","TENNIS","UFC"]: return self._get_individual_sport_players(sport)
         if team and sport in ["NBA","MLB","NHL","NFL"]:
             roster, is_fallback = fetch_team_roster(sport, team)
+            if is_fallback and sport == "NBA":
+                st.warning(f"⚠️ Using fallback roster for {team} (API unavailable)")
             return roster
         return ["Player 1","Player 2","Player 3","Player 4","Player 5"]
     def _get_individual_sport_players(self, sport):
@@ -1187,8 +1193,10 @@ class Clarity18Elite:
             if progress_callback: progress_callback(f"Scanning {sport}...")
             check_scan_timing(sport)
             if sport == "NBA":
+                # For NBA, use BallsDontLie
                 props = self._fetch_balldontlie_props()
             else:
+                # For other sports, use Odds-API.io
                 sport_key = {"NBA":"basketball_nba","MLB":"baseball_mlb","NHL":"icehockey_nhl","NFL":"americanfootball_nfl"}.get(sport, "basketball_nba")
                 props = self.game_scanner.fetch_player_props_odds(sport_key)
             for prop in props:
@@ -1206,6 +1214,7 @@ class Clarity18Elite:
         return self.scanned_bets
 
     def _fetch_balldontlie_props(self) -> List[Dict]:
+        """Fetch NBA player props from BallsDontLie."""
         all_props = []
         today = datetime.now().strftime("%Y-%m-%d")
         games_data = balldontlie_request("/nba/games", params={"dates[]": today})
@@ -1374,6 +1383,7 @@ class Clarity18Elite:
                   (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), prob_old, self.prob_bolt, dtm_old, self.dtm_bolt, roi, 50))
         conn.commit(); conn.close()
         self.last_tune_date = datetime.now()
+        st.info(f"🔄 Auto-tune: prob_bolt {prob_old:.2f}→{self.prob_bolt:.2f}, dtm_bolt {dtm_old:.3f}→{self.dtm_bolt:.3f} (ROI: {roi:.1%})")
 
 # =============================================================================
 # BACKGROUND AUTOMATION (disabled)
@@ -1569,6 +1579,7 @@ def parse_props_from_image(image_bytes, filename, filetype):
         return []
 
 def parse_game_slip_analysis(text: str) -> Optional[Dict]:
+    """Parse a game slip for live analysis (no result yet)."""
     patterns = [
         r'([A-Za-z\s]+)\s+([+-]\d+)\s+vs\s+([A-Za-z\s]+)',
         r'([A-Za-z\s]+)\s+([+-]\d+\.?\d*)\s*\(([+-]\d+)\)\s+vs\s+([A-Za-z\s]+)',
@@ -1586,7 +1597,7 @@ def parse_game_slip_analysis(text: str) -> Optional[Dict]:
     return None
 
 # =============================================================================
-# STREAMLIT DASHBOARD - CREATE ENGINE INSTANCE AFTER ALL CLASSES ARE DEFINED
+# STREAMLIT DASHBOARD
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -1635,9 +1646,8 @@ def run_dashboard():
         with col_metrics4: st.metric("Prob Bolt", f"{engine.prob_bolt:.2f}")
         with col_metrics5: st.metric("DTM Bolt", f"{engine.dtm_bolt:.3f}")
 
-    # 5 TABS
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🎮 GAME MARKETS", "📋 PASTE & SCAN", "📊 SCANNERS & ACCURACY", "🎯 PLAYER PROPS", "🔧 SELF EVALUATION"
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🎮 GAME MARKETS", "📋 QUICK SCANNER", "📊 SCANNERS & ACCURACY", "🎯 PLAYER PROPS", "📸 IMAGE ANALYSIS", "🔧 AUTO-TUNE"
     ])
 
     all_sports = ["NBA", "MLB", "NHL", "NFL", "SOCCER_EPL", "SOCCER_LALIGA", "COLLEGE_BASKETBALL", "COLLEGE_FOOTBALL", "ESPORTS_LOL", "ESPORTS_CS2"]
@@ -1648,11 +1658,11 @@ def run_dashboard():
     - **EPL / La Liga**: Afternoon (2 PM) the day before matches
     """
 
-    # TAB 1: GAME MARKETS
+    # TAB 1: GAME MARKETS (unchanged – keep from previous version)
     with tab1:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
-        st.header("🎮 Game Markets")
+        st.header("Game Markets")
         st.subheader("📅 Auto-Load Games")
         col1, col2, col3 = st.columns([2,1,1])
         with col1:
@@ -1671,7 +1681,6 @@ def run_dashboard():
                         st.success(f"Loaded {len(games)} games")
                     else:
                         st.warning(f"No games found for {'tomorrow' if days_offset else 'today'}.")
-        
         if "auto_games" in st.session_state and st.session_state["auto_games"]:
             game_options = [f"{g['home']} vs {g['away']}" for g in st.session_state["auto_games"]]
             selected_game = st.selectbox("Select a game", game_options)
@@ -1682,7 +1691,6 @@ def run_dashboard():
                 st.info(f"**{home}** vs **{away}**")
                 recommendations_found = False
                 approved_bets_for_parlay = []
-                
                 if game.get("home_ml") and game.get("away_ml"):
                     ml_result = engine.analyze_moneyline(home, away, sport, game["home_ml"], game["away_ml"])
                     if ml_result.get('units', 0) > 0:
@@ -1691,7 +1699,6 @@ def run_dashboard():
                         recommendations_found = True
                     else:
                         st.info(f"❌ Moneyline not approved – {ml_result.get('reject_reason', 'Insufficient edge')}")
-                
                 if game.get("spread") and game.get("spread_odds"):
                     spread_approved = False
                     for pick_side in [home, away]:
@@ -1703,7 +1710,6 @@ def run_dashboard():
                             recommendations_found = True
                     if not spread_approved:
                         st.info(f"❌ Spread not approved – No significant edge")
-                
                 if game.get("total"):
                     total_approved = False
                     for pick_side, odds in [("OVER", game.get("over_odds", -110)), ("UNDER", game.get("under_odds", -110))]:
@@ -1715,7 +1721,6 @@ def run_dashboard():
                             recommendations_found = True
                     if not total_approved:
                         st.info(f"❌ Total not approved – No significant edge")
-                
                 st.markdown("---")
                 st.subheader("🔄 Best Alternate Lines")
                 alt_found = False
@@ -1745,7 +1750,6 @@ def run_dashboard():
                     st.info("No alternate lines with significant edge found.")
                 if not recommendations_found and not alt_found:
                     st.warning("⚠️ No CLARITY approved bets found for this game.")
-                
                 st.markdown("---")
                 st.subheader("🎯 CLARITY SUGGESTED PARLAYS")
                 if "auto_games_analyzed" not in st.session_state or st.session_state["auto_games_analyzed"] is None:
@@ -1767,7 +1771,6 @@ def run_dashboard():
                                 if total_res.get('units', 0) > 0:
                                     all_approved.append({"description": f"{pick_side} {g['total']}","odds": odds,"edge": total_res['edge'],"game": f"{g_home} vs {g_away}"})
                     st.session_state["auto_games_analyzed"] = all_approved
-                
                 all_approved = st.session_state.get("auto_games_analyzed", [])
                 if len(all_approved) >= 2:
                     def decimal_odds(american): return american/100+1 if american>0 else 100/abs(american)+1
@@ -1781,7 +1784,6 @@ def run_dashboard():
                         st.markdown(f"- {leg1['description']} ({leg1['odds']}) – Edge: {leg1['edge']:.1%}")
                         st.markdown(f"- {leg2['description']} ({leg2['odds']}) – Edge: {leg2['edge']:.1%}")
                         st.caption(f"📊 Estimated odds: {'+'+str(parlay_odds) if parlay_odds>0 else parlay_odds}")
-                    
                     leg3 = next((b for b in best_bets[2:] if b['game'] not in [leg1['game'], leg2['game']]), None)
                     if leg2 and leg3:
                         dec1, dec2, dec3 = decimal_odds(leg1['odds']), decimal_odds(leg2['odds']), decimal_odds(leg3['odds'])
@@ -1793,11 +1795,9 @@ def run_dashboard():
                         st.caption(f"📊 Estimated odds: {'+'+str(parlay_odds) if parlay_odds>0 else parlay_odds}")
                 else:
                     st.info("Need at least 2 approved bets from different games to build a parlay.")
-        
         st.markdown("---")
         st.subheader("✏️ Manual Entry")
         game_tab1, game_tab2, game_tab3, game_tab4 = st.tabs(["💰 Moneyline", "📊 Spread", "📈 Totals", "🔄 Alt Lines"])
-        
         with game_tab1:
             c1, c2 = st.columns(2)
             with c1:
@@ -1818,7 +1818,6 @@ def run_dashboard():
                 else:
                     st.error(f"### {result['signal']}")
                     if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
-        
         with game_tab2:
             c1, c2 = st.columns(2)
             with c1:
@@ -1841,7 +1840,6 @@ def run_dashboard():
                 else:
                     st.error(f"### {result['signal']}")
                     if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
-        
         with game_tab3:
             c1, c2 = st.columns(2)
             with c1:
@@ -1867,7 +1865,6 @@ def run_dashboard():
                 else:
                     st.error(f"### {result['signal']}")
                     if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
-        
         with game_tab4:
             c1, c2 = st.columns(2)
             with c1:
@@ -1890,21 +1887,22 @@ def run_dashboard():
                 st.metric("Edge", f"{result['edge']:+.1%}")
                 st.info(f"Value: {result['value']}")
 
-    # TAB 2: PASTE & SCAN
+    # =========================================================================
+    # TAB 2: UNIFIED QUICK SCANNER
+    # =========================================================================
     with tab2:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
-        st.header("📋 PASTE & SCAN")
+        st.header("📋 Quick Scanner – Paste Anything")
         st.markdown("Paste player props, game slips, or winning/losing tickets. Clarity auto‑detects and analyzes.")
         
-        input_method = st.radio("Input method:", ["📝 Paste Text", "📸 Upload Screenshot"], key="ps_input_method")
+        input_method = st.radio("Input method:", ["📝 Paste Text", "📸 Upload Screenshot"], key="qs_input_method")
         pasted_text = ""
-        
         if input_method == "📝 Paste Text":
-            pasted_text = st.text_area("Paste here", height=300, key="ps_text",
+            pasted_text = st.text_area("Paste here", height=250, key="qs_text",
                                        placeholder="Examples:\n\nPlayer props:\nBrandon Miller Points 20.5 More\nStephen Curry Points 28.5 More\n\nGame slips:\nNew York Yankees +120 vs Boston Red Sox\nLos Angeles Dodgers -1.5 (-110) vs San Diego Padres\n\nWith results:\nSan Jose Sharks (+1.5) -182 ... Win")
         else:
-            uploaded_file = st.file_uploader("Choose a screenshot", type=["png","jpg","jpeg"], key="ps_screenshot")
+            uploaded_file = st.file_uploader("Choose a screenshot", type=["png","jpg","jpeg"], key="qs_screenshot")
             if uploaded_file and st.button("📸 Extract from Screenshot", type="secondary"):
                 with st.spinner("Extracting text via OCR..."):
                     extracted = parse_props_from_image(uploaded_file.getvalue(), uploaded_file.name, uploaded_file.type)
@@ -1914,14 +1912,16 @@ def run_dashboard():
                     else:
                         st.warning("No props found in image.")
         
-        if st.button("🔍 ANALYZE & IMPORT", type="primary", use_container_width=True):
+        if st.button("🔍 ANALYZE & IMPORT", type="primary", key="qs_analyze"):
             if not pasted_text.strip():
                 st.warning("Please paste something or upload a screenshot.")
             else:
                 approved_props = []
                 imported_bets = []
                 rejected_items = []
+                game_recommendations = []
                 
+                # Parse as player props
                 props = parse_pasted_props(pasted_text)
                 if props:
                     for prop in props:
@@ -1932,6 +1932,7 @@ def run_dashboard():
                         else:
                             rejected_items.append((prop, result))
                 
+                # Parse as game slips
                 slips = import_slip_text(pasted_text)
                 for slip in slips:
                     if slip.get('result'):
@@ -1949,11 +1950,19 @@ def run_dashboard():
                         conn.close()
                         imported_bets.append(slip)
                 
+                # Display results
                 if approved_props:
                     st.subheader("✅ APPROVED PLAYER PROPS")
                     for prop, res in approved_props:
                         st.markdown(f"**{prop['player']} {prop['pick']} {prop['line']} {prop['market']}**")
                         st.caption(f"Edge: {res['raw_edge']:.1%} | Prob: {res['probability']:.1%} | Units: {res['units']} | Tier: {res['tier']}")
+                
+                if game_recommendations:
+                    st.subheader("🎯 GAME RECOMMENDATIONS")
+                    for rec in game_recommendations:
+                        if rec.get('pick'):
+                            st.markdown(f"**{rec['pick']} {rec.get('odds', '?')}**")
+                            st.caption(f"Edge: {rec.get('edge', 0):.1%} | Units: {rec.get('units', 0)}")
                 
                 if imported_bets:
                     st.subheader("✅ IMPORTED BETS (for learning)")
@@ -1969,19 +1978,17 @@ def run_dashboard():
                                 st.markdown(f"**{prop['player']} {prop['pick']} {prop['line']} {prop['market']}**")
                                 st.caption(f"Reason: {res.get('reject_reason', 'Insufficient edge')}")
                 
-                if not approved_props and not imported_bets and not rejected_items:
+                if not approved_props and not game_recommendations and not imported_bets and not rejected_items:
                     st.warning("No recognizable bets found. Please check format.")
-        
-        st.info("💡 **Tip:** You can paste multiple lines at once. Clarity auto-detects PrizePicks, MyBookie, and Bovada formats.")
 
-    # TAB 3: SCANNERS & ACCURACY
+    # =========================================================================
+    # TAB 3: SCANNERS & ACCURACY (simplified – keep essential)
+    # =========================================================================
     with tab3:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
         st.header("📊 Scanners & Accuracy Dashboard")
-        
         scanner_tabs = st.tabs(["📈 Best Odds", "💰 Arbitrage", "🎯 Middles", "📊 Accuracy"])
-        
         with scanner_tabs[0]:
             st.header("Best Odds Scanner (Powered by Odds-API.io)")
             col1, col2 = st.columns([2,1])
@@ -1999,7 +2006,6 @@ def run_dashboard():
                     st.caption(f"Odds: {bet['odds']} @ {bet['bookmaker']} | Edge: {bet['edge']:.1%} | Prob: {bet['probability']:.1%} | Units: {bet['units']}")
             else:
                 st.info("No +EV props found at this time. Try again when games are live.")
-        
         with scanner_tabs[1]:
             st.header("Arbitrage Detector")
             if st.button("🔍 SCAN FOR ARBITRAGE", type="primary"):
@@ -2015,7 +2021,6 @@ def run_dashboard():
                             st.metric("Arbitrage %", f"{arb['Arb %']}%")
                     else:
                         st.info("No arbitrage opportunities found.")
-        
         with scanner_tabs[2]:
             st.header("Middle Hunter")
             if st.button("🔍 HUNT FOR MIDDLES", type="primary"):
@@ -2031,7 +2036,6 @@ def run_dashboard():
                             st.caption(f"{mid['Leg 1']} | {mid['Leg 2']}")
                     else:
                         st.info("No middle opportunities found.")
-        
         with scanner_tabs[3]:
             st.header("Public Accuracy Dashboard")
             accuracy = engine.get_accuracy_dashboard()
@@ -2040,29 +2044,25 @@ def run_dashboard():
             with col2: st.metric("Win Rate", f"{accuracy['win_rate']}%")
             with col3: st.metric("ROI", f"{accuracy['roi']}%")
             with col4: st.metric("Units Profit", f"+{accuracy['units_profit']}" if accuracy['units_profit']>0 else str(accuracy['units_profit']))
-            
             st.subheader("By Sport")
             if accuracy['by_sport']:
                 sport_df = pd.DataFrame(accuracy['by_sport']).T
                 st.dataframe(sport_df)
             else:
                 st.info("No settled bets by sport yet.")
-            
             st.subheader("By Tier")
             if accuracy['by_tier']:
                 tier_df = pd.DataFrame(accuracy['by_tier']).T
                 st.dataframe(tier_df)
             else:
                 st.info("No settled bets by tier yet.")
-            
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
 
-    # TAB 4: PLAYER PROPS
+    # =========================================================================
+    # TAB 4: PLAYER PROPS (unchanged)
+    # =========================================================================
     with tab4:
-        with st.expander("📅 Optimal Scanning Times (click to expand)"):
-            st.markdown(scanning_info)
-        st.header("🎯 Manual Player Prop Analyzer (Real Rosters)")
-        
+        st.header("Manual Player Prop Analyzer (Real Rosters)")
         c1, c2 = st.columns(2)
         with c1:
             sport = st.selectbox("Sport", all_sports, key="prop_sport")
@@ -2079,8 +2079,7 @@ def run_dashboard():
             use_real_stats = st.checkbox("Fetch real stats & injuries (API-Sports)", value=False)
             st.info("Note: Real stats are currently using BallsDontLie for NBA, fallback for others.")
             odds = st.number_input("Odds (American)", -500, 500, -110, key="prop_odds")
-        
-        if st.button("🚀 ANALYZE PROP", type="primary", use_container_width=True):
+        if st.button("🚀 ANALYZE PROP", type="primary", key="prop_button"):
             if not player or player == "Select team first" or player.startswith("Player "):
                 st.error("Please select a valid player.")
             else:
@@ -2089,21 +2088,60 @@ def run_dashboard():
                     st.success(f"### {result['signal']}")
                     if result.get('season_warning'): st.warning(result['season_warning'])
                     if result.get('injury') != "HEALTHY": st.error(f"⚠️ Injury flag: {result['injury']}")
-                    col1, col2, col3 = st.columns(3)
-                    with col1: st.metric("Projection", f"{result['projection']:.1f}")
-                    with col2: st.metric("Probability", f"{result['probability']:.1%}")
-                    with col3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
+                    c1, c2, c3 = st.columns(3)
+                    with c1: st.metric("Projection", f"{result['projection']:.1f}")
+                    with c2: st.metric("Probability", f"{result['probability']:.1%}")
+                    with c3: st.metric("Edge", f"{result['raw_edge']:+.1%}")
                     st.metric("Tier", result['tier'])
                     st.success(f"RECOMMENDED UNITS: {result['units']} (${result['kelly_stake']:.2f})")
                 else:
                     st.error(f"### {result['signal']}")
                     if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
 
-    # TAB 5: SELF EVALUATION
+    # =========================================================================
+    # TAB 5: IMAGE ANALYSIS (unchanged)
+    # =========================================================================
     with tab5:
-        st.header("🔧 Self Evaluation & Data Management")
-        
-        st.subheader("📈 Auto-Tune History (ROI-based)")
+        st.header("📸 Screenshot Analyzer")
+        uploaded_file = st.file_uploader("Choose an image...", type=["png","jpg","jpeg"])
+        if uploaded_file is not None:
+            st.image(uploaded_file, caption="Uploaded Screenshot", use_column_width=True)
+            if st.button("🔍 ANALYZE SCREENSHOT", type="primary"):
+                with st.spinner("Extracting text via OCR..."):
+                    files = {"file": (uploaded_file.name, uploaded_file.getvalue(), uploaded_file.type)}
+                    data = {"apikey": OCR_SPACE_API_KEY, "language": "eng", "isOverlayRequired": False,
+                            "filetype": uploaded_file.type.split("/")[-1] if uploaded_file.type else "PNG"}
+                    response = requests.post("https://api.ocr.space/parse/image", files=files, data=data, timeout=30)
+                    if response.status_code != 200:
+                        st.error("OCR service failed. Try again.")
+                    else:
+                        result = response.json()
+                        if result.get("IsErroredOnProcessing", True):
+                            st.error(f"OCR Error: {result.get('ErrorMessage', 'Unknown')}")
+                        else:
+                            extracted_text = result["ParsedResults"][0]["ParsedText"]
+                            st.subheader("📝 Extracted Text")
+                            st.text(extracted_text)
+                            bets = parse_pasted_props(extracted_text)
+                            if not bets:
+                                st.warning("No recognizable bets found in the image.")
+                            else:
+                                st.success(f"Found {len(bets)} potential bets.")
+                                for bet in bets:
+                                    result = engine.analyze_prop(bet["player"], bet["market"], bet["line"], bet["pick"],
+                                                                 [], bet.get("sport", "NBA"), -110, None, "HEALTHY")
+                                    if result.get('units', 0) > 0:
+                                        st.markdown(f"**✅ {bet['player']} {bet['pick']} {bet['line']} {bet['market']}**")
+                                        st.caption(f"Edge: {result['raw_edge']:.1%} | Units: {result['units']}")
+                                    else:
+                                        st.markdown(f"❌ **{bet['player']} {bet['pick']} {bet['line']} {bet['market']}**")
+                                        st.caption(f"Reason: {result.get('reject_reason', 'Insufficient edge')}")
+
+    # =========================================================================
+    # TAB 6: AUTO-TUNE (without duplicate slip import)
+    # =========================================================================
+    with tab6:
+        st.header("Auto-Tune History (ROI-based)")
         conn = sqlite3.connect(engine.db_path)
         df = pd.read_sql_query("SELECT * FROM tuning_log ORDER BY id DESC", conn)
         conn.close()
@@ -2111,10 +2149,9 @@ def run_dashboard():
             st.info("No tuning events yet. After 50+ settled bets, auto-tune will run weekly.")
         else:
             st.dataframe(df)
-        
         st.markdown("---")
         
-        st.subheader("📥 Import Player Props (Auto-Settle)")
+        st.subheader("📥 IMPORT PLAYER PROPS (Auto-Settle)")
         st.markdown("""
         **Paste player props in numbered format.** Clarity will automatically fetch actual stats and mark WIN/LOSS.
         Example:
@@ -2128,8 +2165,7 @@ REVERSE
         """)
         prop_text = st.text_area("Paste player props here", height=200, key="player_props_import")
         game_date_input = st.date_input("Game date (default: yesterday)", value=datetime.now() - timedelta(days=1))
-        
-        if st.button("🔍 Import & Auto-Settle Props", type="primary", use_container_width=True):
+        if st.button("🔍 Import & Auto-Settle Props", type="primary", key="import_player_props"):
             if prop_text.strip():
                 with st.spinner("Parsing and settling props..."):
                     props = parse_pasted_props(prop_text, default_date=game_date_input.strftime("%Y-%m-%d"))
@@ -2170,7 +2206,6 @@ REVERSE
         conn = sqlite3.connect(engine.db_path)
         pending_df = pd.read_sql_query("SELECT id, player, sport, market, line, pick, odds, date FROM bets WHERE result = 'PENDING' ORDER BY date DESC", conn)
         conn.close()
-        
         if pending_df.empty:
             st.info("No pending bets.")
         else:
@@ -2179,8 +2214,7 @@ REVERSE
             bet_ids = pending_df['id'].tolist()
             selected_bet_id = st.selectbox("Select bet to settle", bet_ids, format_func=lambda x: pending_df[pending_df['id']==x]['player'].iloc[0])
             actual_result = st.number_input("Actual result", value=0.0, step=0.5)
-            
-            if st.button("Settle Selected Bet", use_container_width=True):
+            if st.button("Settle Selected Bet"):
                 conn = sqlite3.connect(engine.db_path)
                 c = conn.cursor()
                 c.execute("SELECT line, pick, odds FROM bets WHERE id = ?", (selected_bet_id,))
@@ -2205,12 +2239,6 @@ REVERSE
                     engine._auto_retrain_ml()
                     st.rerun()
                 conn.close()
-        
-        st.markdown("---")
-        
-        st.subheader("📊 SEM Score Calibration")
-        st.metric("Current SEM Score", f"{engine.sem_score}/100")
-        st.caption("SEM Score auto-calibrates based on betting accuracy. Higher score = more confident predictions.")
 
 if __name__ == "__main__":
     run_dashboard()
