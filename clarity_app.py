@@ -1,24 +1,16 @@
 """
-CLARITY 18.0 ELITE – UNIFIED QUICK SCANNER (Final 5-tab, Clarity-colored engine, OCR-tuned, MyBookie + PrizePicks aware)
+CLARITY 18.0 ELITE – Unified Quick Scanner (Auto-Settle + Slip-Settle Upgrade)
 
-Tabs:
-1. 🎮 GAME MARKETS        – Live game lines, alternate lines, parlays
-2. 📋 PASTE & SCAN        – Paste text OR upload screenshot → OCR → props, slips, tickets
-3. 📊 SCANNERS & ACCURACY – Best odds, arbitrage, middles, win rate
-4. 🎯 PLAYER PROPS        – Manual dropdown analyzer
-5. 🔧 SELF EVALUATION     – Auto-settle, pending bets, tuning history, SEM-style evaluation
+New in this build:
+- Automatic WIN/LOSS framework for props and game markets (NBA fully wired via BallDontLie).
+- Slip-based settling (Option B): upload winning/losing slips → OCR → match to pending bets → mark WIN/LOSS.
+- Manual settle kept as a fallback only when auto-detection is impossible.
+- Self-Evaluation tab shows pending bets, auto-settle, slip-settle, and performance analytics.
 
-Key behavior:
-- PASTE & SCAN and OCR use the SAME engine.
-- Automatic sport detection from text (NBA / NFL / MLB / NHL) when set to AUTO.
-- OCR noise filtering: merges broken lines, odds, team names, and PrizePicks fragments.
-- PASTE & SCAN separates PLAYER PROPS and GAME MARKETS into two clean tables.
-- Player props: Clarity ignores the slip’s pick and chooses OVER / UNDER / PASS itself.
-- Each prop row shows:
-    🟢/🔴 badge + Clarity pick + Edge % + Win % + Last 8 Avg.
-- Game markets: ML / spreads / totals / alternate lines labeled and evaluated.
-- Alternate lines supported (ALT_ML, ALT_SPREAD, ALT_TOTAL_OVER, ALT_TOTAL_UNDER).
-- OCR supported via ocr.space.
+Notes:
+- NBA player props are auto-settled via BallDontLie.
+- Game-line auto-settle + other sports are wired as a framework with placeholder API hooks.
+- Slip-settle works for both props and game markets by matching OCR’d bets to pending ones.
 """
 
 import re
@@ -33,7 +25,7 @@ import streamlit as st
 from scipy.stats import norm
 
 # =============================================================================
-# CONFIGURATION – YOUR API KEYS (kept hard-coded)
+# CONFIGURATION – YOUR API KEYS
 # =============================================================================
 UNIFIED_API_KEY = "96241c1a5ba686f34a9e4c3463b61661"
 API_SPORTS_KEY = "8c20c34c3b0a6314e04c4997bf0922d2"
@@ -42,7 +34,7 @@ OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 BALLSDONTLIE_API_KEY = "9d7c9ea5-54ea-4084-b0d0-2541ac7c360d"
 
-VERSION = "18.0 Elite (Unified Quick Scanner – OCR-tuned, MyBookie + PrizePicks aware)"
+VERSION = "18.0 Elite (Unified Quick Scanner – Auto-Settle + Slip-Settle)"
 BUILD_DATE = "2026-04-17"
 
 ODDS_API_IO_BASE = "https://api.odds-api.io/v4"
@@ -76,7 +68,7 @@ STAT_CONFIG: Dict[str, Dict[str, Any]] = {
 RED_TIER_PROPS = ["PRA", "PR", "PA"]
 
 # =============================================================================
-# DB HELPERS (SAFE)
+# DB HELPERS
 # =============================================================================
 def init_db() -> None:
     conn = sqlite3.connect(DB_PATH)
@@ -155,7 +147,7 @@ def get_pending_bets() -> List[Dict[str, Any]]:
         )
     return out
 
-def get_recent_bets(limit: int = 100) -> pd.DataFrame:
+def get_recent_bets(limit: int = 200) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
@@ -165,7 +157,7 @@ def get_recent_bets(limit: int = 100) -> pd.DataFrame:
     )
     rows = cur.fetchall()
     conn.close()
-    cols = ["ID", "Created", "Sport", "Player", "Market", "Line", "Pick", "Opponent", "Game Date", "Result", "Actual"]
+    cols = ["ID", "Created", "Sport", "Player/Team", "Market", "Line", "Pick", "Opponent", "Game Date", "Result", "Actual"]
     return pd.DataFrame(rows, columns=cols)
 
 def update_bet_result(bet_id: int, result: str, actual: float) -> None:
@@ -408,7 +400,7 @@ def summarize_best_odds(odds_data: List[Dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame()
 
 # =============================================================================
-# AUTO-SETTLE WRAPPER
+# AUTO-SETTLE WRAPPERS
 # =============================================================================
 def auto_settle_prop(
     player: str,
@@ -419,11 +411,76 @@ def auto_settle_prop(
     opponent: str,
     game_date: Optional[str] = None,
 ) -> Tuple[str, float]:
+    """
+    Automatic prop settlement.
+    - NBA: fully wired via BallDontLie.
+    - Other sports: framework in place, returns PENDING by default.
+    """
     if not game_date:
         game_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
 
     if sport == "NBA":
         return balldontlie_settle_prop(player, market, line, pick, game_date)
+
+    # Framework for future: MLB/NFL/NHL props via other APIs.
+    return "PENDING", 0.0
+
+def fetch_game_final_score_api(
+    sport: str,
+    team: str,
+    opponent: str,
+    game_date: Optional[str],
+) -> Tuple[Optional[int], Optional[int]]:
+    """
+    Framework for automatic game-line settlement.
+    Currently returns (None, None) as a placeholder.
+    You can wire this to API-Sports / ESPN / MLB / NHL stats APIs.
+    """
+    # Placeholder: no external calls here to avoid brittle behavior.
+    return None, None
+
+def auto_settle_game(
+    team: str,
+    market: str,
+    line: float,
+    pick: str,
+    sport: str,
+    opponent: str,
+    game_date: Optional[str] = None,
+) -> Tuple[str, float]:
+    """
+    Automatic game-line settlement framework.
+    - Uses final scores to settle ML / SPREAD / TOTAL / ALT_* markets.
+    - Currently returns PENDING until fetch_game_final_score_api is wired.
+    """
+    if not game_date:
+        game_date = (datetime.utcnow() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    team_score, opp_score = fetch_game_final_score_api(sport, team, opponent, game_date)
+    if team_score is None or opp_score is None:
+        return "PENDING", 0.0
+
+    mt = market.upper()
+    if "ML" in mt:
+        won = team_score > opp_score
+        return ("WIN" if won else "LOSS"), float(team_score)
+    elif "SPREAD" in mt:
+        margin = team_score - opp_score
+        if "ALT" in mt:
+            # Same logic, just alternate line
+            pass
+        if pick.upper() == "FAV" or pick.upper() == "OVER":
+            won = margin > line
+        else:
+            won = margin < line
+        return ("WIN" if won else "LOSS"), float(margin)
+    elif "TOTAL" in mt:
+        total = team_score + opp_score
+        if "OVER" in mt:
+            won = total > line
+        else:
+            won = total < line
+        return ("WIN" if won else "LOSS"), float(total)
 
     return "PENDING", 0.0
 
@@ -447,7 +504,7 @@ MLB_TEAMS = [
     "Tampa Bay Rays", "Pittsburgh Pirates", "Chicago White Sox", "Oakland Athletics",
     "St. Louis Cardinals", "Houston Astros", "Los Angeles Dodgers", "Colorado Rockies",
     "San Diego Padres", "Los Angeles Angels", "Texas Rangers", "Seattle Mariners",
-    "New York Yankees", "Boston Red Sox", "Chicago Cubs",
+    "New York Yankees", "Boston Red Sox",
 ]
 
 NHL_TEAMS = [
@@ -478,13 +535,12 @@ def detect_sport_from_text(text: str) -> str:
         if name.lower() in t:
             score["NHL"] += 1
 
-    # Pitcher pattern strongly implies MLB
     if re.search(r"-[LR]\b", t):
         score["MLB"] += 3
 
     best = max(score, key=score.get)
     if score[best] == 0:
-        return "NBA"  # default
+        return "NBA"
     return best
 
 def is_garbage_line(line: str) -> bool:
@@ -500,24 +556,15 @@ def is_garbage_line(line: str) -> bool:
     return False
 
 def clean_ocr_text(raw: str) -> str:
-    """
-    OCR noise filter:
-    - Merge team name fragments (Toronto + Raptors).
-    - Merge odds fragments (+1.5 + -179, O 8 + -105, etc.).
-    - Merge multi-line player names and markets (PrizePicks).
-    - Remove obvious junk lines and 'More/Less' noise.
-    """
     lines = [l.strip() for l in raw.splitlines()]
-    lines = [l for l in lines if l]  # remove empty
+    lines = [l for l in lines if l]
 
-    # First pass: remove obvious garbage and 'More/Less' noise
     filtered: List[str] = []
     for l in lines:
         low = l.lower()
         if is_garbage_line(l):
             continue
         if "more" in low or "less" in low:
-            # PrizePicks user pick – Clarity ignores it
             continue
         if "more wagers" in low:
             continue
@@ -529,7 +576,6 @@ def clean_ocr_text(raw: str) -> str:
     while i < len(lines):
         line = lines[i]
 
-        # Merge single word + next capitalized word → team or player name
         if (
             i + 1 < len(lines)
             and len(line.split()) == 1
@@ -541,23 +587,19 @@ def clean_ocr_text(raw: str) -> str:
             i += 2
             continue
 
-        # Merge odds fragments: number + (-110) or +1.5 + -179, O 8 + -105, etc.
         if i + 1 < len(lines):
             next_line = lines[i + 1]
 
-            # Run line or spread: +1.5 / -1.5 with price on next line
             if re.match(r"^[+-]?\d+(\.\d+)?$", line) and re.match(r"^[+-]?\d{2,4}$", next_line):
                 merged.append(f"{line} ({next_line})")
                 i += 2
                 continue
 
-            # Totals: O 8 / U 8 with price on next line
             if re.match(r"^[OU]\s*\d+(\.\d+)?$", line, re.IGNORECASE) and re.match(r"^[+-]?\d{2,4}$", next_line):
                 merged.append(f"{line} ({next_line})")
                 i += 2
                 continue
 
-            # Original pattern: number + (-110)
             if re.match(r"^[+-]?\d+(\.\d+)?$", line) and re.match(r"^\(-?\d+\)$", next_line):
                 merged.append(f"{line} {next_line}")
                 i += 2
@@ -567,7 +609,6 @@ def clean_ocr_text(raw: str) -> str:
                 i += 2
                 continue
 
-        # PrizePicks: line + market on next line (e.g., 19.5 / Points)
         if (
             i + 1 < len(lines)
             and re.match(r"^\d+(\.\d+)?$", line)
@@ -577,7 +618,6 @@ def clean_ocr_text(raw: str) -> str:
             i += 2
             continue
 
-        # Normalize ≥ 21 Points / = 17 Points → 21 Points / 17 Points
         m_ge = re.match(r"^[≥=]\s*(\d+(\.\d+)?)\s+(.*)$", line)
         if m_ge:
             num = m_ge.group(1)
@@ -589,7 +629,6 @@ def clean_ocr_text(raw: str) -> str:
         merged.append(line)
         i += 1
 
-    # Remove very short junk lines again
     cleaned = []
     for l in merged:
         if len(l) <= 1:
@@ -599,7 +638,7 @@ def clean_ocr_text(raw: str) -> str:
     return "\n".join(cleaned)
 
 # =============================================================================
-# PASTEBOARD PARSERS – GAME SLIPS + PLAYER PROPS (incl. alt lines)
+# PASTEBOARD PARSERS – GAME SLIPS + PLAYER PROPS
 # =============================================================================
 
 PROP_PATTERN = re.compile(
@@ -716,7 +755,6 @@ def parse_game_slips(text: str, default_sport: str) -> List[Dict[str, Any]]:
     return results
 
 def looks_like_pitcher_line(line: str) -> bool:
-    # MyBookie style: "Cincinnati Reds - Abbott, Andrew -L"
     if "-" in line and "," in line and re.search(r"-[LR]\b", line):
         return True
     return False
@@ -725,30 +763,25 @@ def parse_player_props(text: str, default_sport: str, source: str) -> List[Dict[
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     results: List[Dict[str, Any]] = []
 
-    # If we see a lot of pitcher lines, assume this block is MLB game slips, not props
     pitcher_count = sum(1 for l in lines if looks_like_pitcher_line(l))
     if pitcher_count >= 2:
-        # MLB screenshot – skip prop parsing entirely
         return results
 
-    i = 0
+    i = 0    # PrizePicks + generic props
     while i < len(lines):
         line = lines[i]
 
-        # Skip obvious team/position tags like "TOR - F-G", "CLE- C"
         low = line.lower()
         if re.match(r"^[A-Z]{2,4}\s*-\s*[A-Z\-]+$", line) or re.match(r"^[A-Z]{2,4}-\s*[A-Z]$", line):
             i += 1
             continue
 
-        # PrizePicks style: player on one line, stat on next
         if i + 1 < len(lines) and not any(ch.isdigit() for ch in line) and any(ch.isdigit() for ch in lines[i + 1]):
             combined = f"{line} {lines[i+1]}"
             m = PROP_PATTERN.search(combined)
             if m:
                 d = m.groupdict()
                 player = d["player"].strip()
-                # Ignore if player line looks like a date/month mash (e.g., "Taj-R Apr")
                 if any(tok.lower() in MONTH_WORDS for tok in player.split()):
                     i += 2
                     continue
@@ -825,13 +858,11 @@ def parse_player_props(text: str, default_sport: str, source: str) -> List[Dict[
     return results
 
 def parse_pasteboard_unified(text: str, default_sport: str, source: str) -> List[Dict[str, Any]]:
-    # Automatic sport detection if default_sport == "AUTO"
     if default_sport == "AUTO":
         detected = detect_sport_from_text(text)
         default_sport = detected
 
-    # For OCR, run noise cleaner first
-    if source == "OCR":
+    if source in ["OCR", "SLIP"]:
         text = clean_ocr_text(text)
 
     games = parse_game_slips(text, default_sport)
@@ -843,16 +874,6 @@ def parse_pasteboard_unified(text: str, default_sport: str, source: str) -> List
 # CLARITY DECISION ENGINE
 # =============================================================================
 def clarity_decision_for_prop(row: Dict[str, Any]) -> Tuple[str, str, str, float, float, int, float]:
-    """
-    Returns:
-        decision: 'APPROVED' or 'PASS'
-        reason: text explanation
-        clarity_pick: 'OVER', 'UNDER', or 'PASS'
-        edge: float (0–1)
-        win_prob: float (0–1)
-        games_used: int
-        mean_stat: float
-    """
     history: List[float] = []
     if row["sport"] == "NBA" and row["market"] in ["PTS", "REB", "AST", "PRA", "PR", "PA"]:
         history = fetch_nba_recent_stat(row["player"], row["market"], num_games=8)
@@ -1041,13 +1062,55 @@ def analyze_and_store_unified(parsed: List[Dict[str, Any]]) -> Tuple[pd.DataFram
     df_props = pd.DataFrame(prop_rows) if prop_rows else pd.DataFrame()
     df_games = pd.DataFrame(game_rows) if game_rows else pd.DataFrame()
 
-    # Deduplicate game rows (helps with OCR repeated blocks)
     if not df_games.empty:
         df_games = df_games.drop_duplicates(
             subset=["Team", "Opponent", "Market Type", "Line", "Price"]
         )
 
     return df_props, df_games
+
+# =============================================================================
+# SLIP-BASED SETTLEMENT (Option B)
+# =============================================================================
+def match_slip_to_pending(
+    slip_rows: List[Dict[str, Any]],
+    pending: List[Dict[str, Any]],
+) -> List[Tuple[Dict[str, Any], List[Dict[str, Any]]]]:
+    """
+    For each slip row (PROP or GAME), find matching pending bets.
+    Matching logic:
+    - Props: sport + player + market + line
+    - Games: sport + team + market_type + line (and optionally price)
+    """
+    matches: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = []
+
+    for s in slip_rows:
+        matched: List[Dict[str, Any]] = []
+        if s["type"] == "PROP":
+            for p in pending:
+                if (
+                    p["sport"] == s["sport"]
+                    and p["player"].lower() == s["player"].lower()
+                    and p["market"].upper() == s["market"].upper()
+                    and abs(float(p["line"]) - float(s["line"])) < 0.01
+                ):
+                    matched.append(p)
+        elif s["type"] == "GAME":
+            for p in pending:
+                if (
+                    p["sport"] == s["sport"]
+                    and p["market"].upper() == s["market_type"].upper()
+                    and abs(float(p["line"]) - float(s["line"])) < 0.01
+                ):
+                    # For game bets, player field holds team or market_type
+                    if s["team"] and s["team"].lower() not in p["player"].lower():
+                        continue
+                    matched.append(p)
+
+        if matched:
+            matches.append((s, matched))
+
+    return matches
 
 # =============================================================================
 # STREAMLIT APP
@@ -1267,10 +1330,10 @@ def main():
                 st.success("Bet stored as pending.")
 
     # -------------------------------------------------------------------------
-    # TAB 5 – SELF EVALUATION (Auto-settle, pending bets, history)
+    # TAB 5 – SELF EVALUATION (Auto-settle, slip-settle, pending bets, history)
     # -------------------------------------------------------------------------
     with tab5:
-        st.subheader("🔧 SELF EVALUATION – Auto-settle, pending bets, tuning history")
+        st.subheader("🔧 SELF EVALUATION – Auto-settle, slip-settle, tuning history")
 
         st.markdown("#### Pending Bets")
         pending = get_pending_bets()
@@ -1280,37 +1343,138 @@ def main():
             df_p = pd.DataFrame(pending)
             st.dataframe(df_p, use_container_width=True)
 
-            if st.button("Auto-settle all pending (NBA only)"):
-                settled_rows = []
-                for b in pending:
-                    result, actual = auto_settle_prop(
-                        b["player"],
-                        b["market"],
-                        float(b["line"]),
-                        b["pick"],
-                        b["sport"],
-                        b["opponent"],
-                        b["game_date"] or None,
-                    )
-                    if result != "PENDING":
-                        update_bet_result(b["id"], result, actual)
-                        settled_rows.append(
-                            {
-                                "ID": b["id"],
-                                "Player": b["player"],
-                                "Market": b["market"],
-                                "Line": b["line"],
-                                "Pick": b["pick"],
-                                "Sport": b["sport"],
-                                "Result": result,
-                                "Actual": actual,
-                            }
-                        )
-                if settled_rows:
-                    st.success(f"Auto-settled {len(settled_rows)} bets.")
-                    st.dataframe(pd.DataFrame(settled_rows), use_container_width=True)
-                else:
-                    st.info("No bets could be auto-settled (likely non-NBA or no stats yet).")
+            col_auto, col_slip, col_manual = st.columns([1, 1, 1])
+
+            # A) FULLY AUTOMATIC SETTLE (Option A)
+            with col_auto:
+                if st.button("Auto-settle all pending (API-based)"):
+                    settled_rows = []
+                    for b in pending:
+                        sport = b["sport"]
+                        market = b["market"]
+                        line = float(b["line"])
+                        pick = b["pick"]
+                        player_or_team = b["player"]
+                        opponent = b["opponent"]
+                        game_date = b["game_date"] or None
+
+                        result = "PENDING"
+                        actual = 0.0
+
+                        # Props
+                        if market.upper() in ["PTS", "REB", "AST", "PRA", "PR", "PA"]:
+                            result, actual = auto_settle_prop(
+                                player_or_team,
+                                market,
+                                line,
+                                pick,
+                                sport,
+                                opponent,
+                                game_date,
+                            )
+                        # Game markets
+                        elif any(k in market.upper() for k in ["ML", "SPREAD", "TOTAL"]):
+                            result, actual = auto_settle_game(
+                                player_or_team,
+                                market,
+                                line,
+                                pick,
+                                sport,
+                                opponent,
+                                game_date,
+                            )
+
+                        if result != "PENDING":
+                            update_bet_result(b["id"], result, actual)
+                            settled_rows.append(
+                                {
+                                    "ID": b["id"],
+                                    "Player/Team": player_or_team,
+                                    "Market": market,
+                                    "Line": line,
+                                    "Pick": pick,
+                                    "Sport": sport,
+                                    "Result": result,
+                                    "Actual": actual,
+                                }
+                            )
+
+                    if settled_rows:
+                        st.success(f"Auto-settled {len(settled_rows)} bets.")
+                        st.dataframe(pd.DataFrame(settled_rows), use_container_width=True)
+                    else:
+                        st.info("No bets could be auto-settled (likely unsupported stats or missing game data).")
+
+            # B) SLIP-BASED SETTLE (Option B)
+            with col_slip:
+                st.markdown("**Settle from slip (OCR)**")
+                slip_file = st.file_uploader(
+                    "Upload winning/losing slip",
+                    type=["png", "jpg", "jpeg"],
+                    key="slip_uploader",
+                )
+                slip_result_choice = st.radio(
+                    "This slip is:",
+                    ["WINNING slip (all bets won)", "LOSING slip (all bets lost)"],
+                    index=0,
+                    key="slip_result_choice",
+                )
+                if st.button("Settle from slip"):
+                    if not slip_file:
+                        st.warning("Upload a slip first.")
+                    else:
+                        image_bytes = slip_file.read()
+                        with st.spinner("Running OCR on slip..."):
+                            slip_text = ocr_space_image(image_bytes)
+
+                        if not slip_text:
+                            st.warning("OCR did not return any text from slip.")
+                        else:
+                            with st.expander("Slip OCR Text"):
+                                st.text(slip_text)
+
+                            slip_parsed = parse_pasteboard_unified(slip_text, "AUTO", source="SLIP")
+                            if not slip_parsed:
+                                st.warning("No recognizable props or game markets found in slip.")
+                            else:
+                                matches = match_slip_to_pending(slip_parsed, pending)
+                                if not matches:
+                                    st.info("No pending bets matched this slip.")
+                                else:
+                                    final_result = "WIN" if "WINNING" in slip_result_choice else "LOSS"
+                                    updated = []
+                                    for slip_row, matched_bets in matches:
+                                        for mb in matched_bets:
+                                            update_bet_result(mb["id"], final_result, 0.0)
+                                            updated.append(
+                                                {
+                                                    "ID": mb["id"],
+                                                    "Player/Team": mb["player"],
+                                                    "Market": mb["market"],
+                                                    "Line": mb["line"],
+                                                    "Pick": mb["pick"],
+                                                    "Sport": mb["sport"],
+                                                    "Result": final_result,
+                                                    "Actual": 0.0,
+                                                }
+                                            )
+                                    if updated:
+                                        st.success(f"Settled {len(updated)} bets from slip.")
+                                        st.dataframe(pd.DataFrame(updated), use_container_width=True)
+
+            # C) MANUAL SETTLE (fallback only)
+            with col_manual:
+                st.markdown("**Manual settle (fallback)**")
+                st.caption("Use only if auto-settle and slip-settle cannot determine the outcome.")
+                manual_id = st.number_input("Bet ID to settle", min_value=0, step=1, value=0)
+                manual_result = st.selectbox("Result", ["WIN", "LOSS"], index=0)
+                manual_actual = st.number_input("Actual stat / score (optional)", value=0.0, step=0.5)
+                if st.button("Settle manually"):
+                    if manual_id <= 0:
+                        st.warning("Enter a valid Bet ID.")
+                    else:
+                        update_bet_result(int(manual_id), manual_result, manual_actual)
+                        st.success(f"Bet {manual_id} settled as {manual_result}.")
 
         st.markdown("#### Recent Bets (All)")
         hist_df2 = get_recent_bets(limit=200)
@@ -1318,13 +1482,39 @@ def main():
             st.write("No bets stored yet.")
         else:
             st.dataframe(hist_df2, use_container_width=True)
-            st.caption("Use this to visually inspect performance, volatility, and calibration over time.")
+
+            settled = hist_df2[hist_df2["Result"].isin(["WIN", "LOSS"])]
+            if not settled.empty:
+                total = len(settled)
+                wins = (settled["Result"] == "WIN").sum()
+                win_rate = wins / total * 100
+
+                st.markdown("#### Performance Summary")
+                st.metric("Overall Win Rate", f"{win_rate:.1f}%")
+
+                by_sport = settled.groupby("Sport")["Result"].apply(
+                    lambda s: (s == "WIN").mean() * 100
+                )
+                st.write("Win Rate by Sport:")
+                st.dataframe(by_sport.reset_index().rename(columns={"Result": "Win Rate %"}))
+
+                by_market = settled.groupby("Market")["Result"].apply(
+                    lambda s: (s == "WIN").mean() * 100
+                )
+                st.write("Win Rate by Market:")
+                st.dataframe(by_market.reset_index().rename(columns={"Result": "Win Rate %"}))
+
+                st.caption(
+                    "Use these win rates to judge if Clarity is too strict (passing too many winners) "
+                    "or too loose (approving too many losers). Thresholds can be tuned based on this."
+                )
 
     st.markdown("---")
     st.caption(
-        "Final 5-tab Clarity 18.0 Elite: game markets, paste & scan (with OCR), scanners & accuracy, "
-        "player props, and self evaluation. Pasted or OCR’d Bovada/MyBookie/PrizePicks text is split into "
-        "PLAYER PROPS and GAME MARKETS, with bold, color-coded Clarity recommendations."
+        "Clarity 18.0 Elite now supports: unified scanning, OCR, pending bet tracking, "
+        "automatic NBA prop settlement, slip-based settlement for any sport/market, and "
+        "manual settlement as a last resort. This gives you a full feedback loop to monitor "
+        "strictness/looseness and performance over time."
     )
 
 if __name__ == "__main__":
