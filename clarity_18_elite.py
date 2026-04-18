@@ -806,7 +806,7 @@ class EnsemblePredictor:
 ensemble = EnsemblePredictor()
 
 # =============================================================================
-# CLARITY ENGINE
+# CLARITY ENGINE - COMPLETE CLASS DEFINITION
 # =============================================================================
 class Clarity18Elite:
     def __init__(self):
@@ -1586,7 +1586,7 @@ def parse_game_slip_analysis(text: str) -> Optional[Dict]:
     return None
 
 # =============================================================================
-# STREAMLIT DASHBOARD
+# STREAMLIT DASHBOARD - CREATE ENGINE INSTANCE AFTER ALL CLASSES ARE DEFINED
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -1648,9 +1648,7 @@ def run_dashboard():
     - **EPL / La Liga**: Afternoon (2 PM) the day before matches
     """
 
-    # =========================================================================
     # TAB 1: GAME MARKETS
-    # =========================================================================
     with tab1:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
@@ -1892,9 +1890,7 @@ def run_dashboard():
                 st.metric("Edge", f"{result['edge']:+.1%}")
                 st.info(f"Value: {result['value']}")
 
-    # =========================================================================
     # TAB 2: PASTE & SCAN
-    # =========================================================================
     with tab2:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
@@ -1978,9 +1974,7 @@ def run_dashboard():
         
         st.info("💡 **Tip:** You can paste multiple lines at once. Clarity auto-detects PrizePicks, MyBookie, and Bovada formats.")
 
-    # =========================================================================
     # TAB 3: SCANNERS & ACCURACY
-    # =========================================================================
     with tab3:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
@@ -2063,9 +2057,7 @@ def run_dashboard():
             
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
 
-    # =========================================================================
     # TAB 4: PLAYER PROPS
-    # =========================================================================
     with tab4:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
@@ -2107,9 +2099,7 @@ def run_dashboard():
                     st.error(f"### {result['signal']}")
                     if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
 
-    # =========================================================================
     # TAB 5: SELF EVALUATION
-    # =========================================================================
     with tab5:
         st.header("🔧 Self Evaluation & Data Management")
         
