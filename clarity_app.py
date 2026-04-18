@@ -1,5 +1,5 @@
 """
-CLARITY 18.0 ELITE – FINAL WORKING VERSION
+CLARITY 18.0 ELITE – FINAL WORKING VERSION (with unique widget keys)
 """
 
 import streamlit as st
@@ -162,7 +162,7 @@ def auto_settle_prop(player, market, line, pick, sport, opponent, game_date):
     return "PENDING", 0.0
 
 # =============================================================================
-# STREAMLIT DASHBOARD
+# STREAMLIT DASHBOARD – WITH UNIQUE KEYS FOR ALL WIDGETS
 # =============================================================================
 def run_dashboard():
     st.set_page_config(layout="wide")
@@ -173,20 +173,22 @@ def run_dashboard():
         "🎮 GAME MARKETS", "📋 PASTE & SCAN", "📊 SCANNERS & ACCURACY", "🎯 PLAYER PROPS", "🔧 SELF EVALUATION"
     ])
 
+    # TAB 1: GAME MARKETS
     with tab1:
         st.header("Game Markets")
-        sport = st.selectbox("Sport", list(SPORT_MODELS.keys()))
+        sport = st.selectbox("Sport", list(SPORT_MODELS.keys()), key="tab1_sport")
         teams = engine.get_teams(sport)
-        home = st.selectbox("Home", teams)
-        away = st.selectbox("Away", teams)
-        if st.button("Analyze"):
+        home = st.selectbox("Home", teams, key="tab1_home")
+        away = st.selectbox("Away", teams, key="tab1_away")
+        if st.button("Analyze Moneyline", key="btn_analyze_ml"):
             ml = engine.analyze_moneyline(home, away, sport, -150, +130)
             st.success(f"Moneyline: {ml['pick']} – Edge {ml['edge']:.1%}")
 
+    # TAB 2: PASTE & SCAN
     with tab2:
         st.header("Paste & Scan")
-        text = st.text_area("Paste props or slips", height=200)
-        if st.button("Analyze"):
+        text = st.text_area("Paste props or slips", height=200, key="paste_text")
+        if st.button("Analyze Paste", key="btn_analyze_paste"):
             props = parse_pasted_props(text)
             if props:
                 for p in props:
@@ -198,24 +200,27 @@ def run_dashboard():
             else:
                 st.warning("No props recognized")
 
+    # TAB 3: SCANNERS & ACCURACY
     with tab3:
         st.header("Scanners")
-        if st.button("Scan Best Odds"):
+        if st.button("Scan Best Odds", key="btn_scan_odds"):
             bets = engine.run_best_odds_scan(["NBA"])
             for b in bets:
                 st.write(f"{b['player']} {b['market']} {b['pick']} {b['line']} @ {b['odds']}")
         acc = engine.get_accuracy_dashboard()
         st.metric("Win Rate", f"{acc['win_rate']}%")
 
+    # TAB 4: PLAYER PROPS
     with tab4:
         st.header("Player Props")
-        player = st.text_input("Player", "LeBron James")
-        market = st.selectbox("Market", ["PTS", "REB", "AST"])
-        line = st.number_input("Line", 10.0, 50.0, 25.5)
-        if st.button("Analyze Prop"):
+        player = st.text_input("Player", "LeBron James", key="prop_player")
+        market = st.selectbox("Market", ["PTS", "REB", "AST"], key="prop_market")
+        line = st.number_input("Line", 10.0, 50.0, 25.5, step=0.5, key="prop_line")
+        if st.button("Analyze Prop", key="btn_analyze_prop"):
             res = engine.analyze_prop(player, market, line, "OVER", [], "NBA", -110)
             st.success(f"Approved – Projection {res['projection']:.1f}, Edge {res['raw_edge']:.1%}")
 
+    # TAB 5: SELF EVALUATION
     with tab5:
         st.header("Self Evaluation")
         st.metric("Current SEM Score", f"{engine.sem_score}/100")
