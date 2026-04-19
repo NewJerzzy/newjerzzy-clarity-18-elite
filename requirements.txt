@@ -3,5 +3,5 @@ pandas
 numpy
 scipy
 requests
-sportly
 lightgbm
+pillow
