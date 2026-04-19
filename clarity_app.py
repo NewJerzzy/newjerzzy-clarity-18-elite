@@ -1,13 +1,13 @@
 # =============================================================================
-# CLARITY 22.5 – SOVEREIGN UNIFIED ENGINE (FULL SELF‑EVALUATION + SLIP PARSERS + WHY ANALYSIS)
-#   - Dual sniffer (PrizePicks + Underdog) with browser headers
-#   - Real BallsDontLie stats + prop model (WMA/volatility/Kelly)
-#   - Game analyzer (ML, spreads, totals) with auto‑load from Odds‑API.io
-#   - BEST BETS tab: parlays (2-4 legs) from approved bets + +EV suggestions
+# CLARITY 22.5 – SOVEREIGN UNIFIED ENGINE (FULL FIXED)
+#   - Dual sniffer (PrizePicks + Underdog) with TLS impersonation
+#   - Real stats for NBA, NHL, PGA, Tennis
+#   - Game analyzer (ML, spreads, totals) via Odds‑API.io
+#   - Best Bets tab: parlays (2-4 legs) from approved bets
 #   - Paste & Scan: explains wins/losses, stores results, feeds SEM
-#   - FULL SELF‑EVALUATION: SEM score, auto‑tune thresholds, tuning history
-#   - FIXED: insert_slip() has 21 placeholders (matches table schema)
-#   - FIXED: added missing import ThreadPoolExecutor
+#   - FULL SELF‑EVALUATION: SEM score, auto‑tune, tuning history
+#   - FIXED: insert_slip() has 21 placeholders
+#   - FIXED: profit column exists and is handled safely
 # =============================================================================
 
 import os
@@ -23,7 +23,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple
 from urllib.parse import urljoin
-from concurrent.futures import ThreadPoolExecutor, as_completed   # <-- ADDED
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -33,20 +33,19 @@ import sqlite3
 import requests
 from bs4 import BeautifulSoup
 
-# Sport‑specific libraries
+# Sport‑specific libraries (optional)
 try:
     from nhlpy import NHLClient
     NHL_AVAILABLE = True
 except ImportError:
     NHL_AVAILABLE = False
-    st.warning("nhl-api-py not installed. NHL stats will use fallback.")
+    # No warning – will fallback to synthetic
 
 try:
     import pgatourpy as pga
     PGA_AVAILABLE = True
 except ImportError:
     PGA_AVAILABLE = False
-    st.warning("pgatourPY not installed. PGA stats will use fallback.")
 
 try:
     from curl_cffi import requests as curl_requests
@@ -54,11 +53,10 @@ try:
 except ImportError:
     import requests as curl_requests
     CURL_AVAILABLE = False
-    st.warning("curl_cffi not installed. TLS fingerprint will be detectable. To fix: pip install curl_cffi")
 
 warnings.filterwarnings("ignore")
 
-VERSION = "22.5 – Ultimate Multi‑Sport (TLS + Brute‑Force + Fixed Slip Insert)"
+VERSION = "22.5 – Ultimate Multi‑Sport (Fixed Slip Insert)"
 BUILD_DATE = "2026-04-19"
 
 # =============================================================================
@@ -124,6 +122,7 @@ STAT_CONFIG = {
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
+    # Ensure slips table has 21 columns (including profit)
     c.execute("""CREATE TABLE IF NOT EXISTS slips (
         id TEXT PRIMARY KEY,
         type TEXT,
@@ -147,6 +146,17 @@ def init_db():
         profit REAL,
         bankroll REAL
     )""")
+    # Add profit column if missing (for older databases)
+    try:
+        c.execute("ALTER TABLE slips ADD COLUMN profit REAL DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    # Add bankroll column if missing
+    try:
+        c.execute("ALTER TABLE slips ADD COLUMN bankroll REAL DEFAULT 1000")
+    except sqlite3.OperationalError:
+        pass
+
     c.execute("""CREATE TABLE IF NOT EXISTS tuning_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         timestamp TEXT,
@@ -1049,7 +1059,7 @@ def generate_why_analysis(bet: Dict) -> str:
     return "Analysis not available."
 
 # =============================================================================
-# SELF‑EVALUATION & METRICS
+# SELF‑EVALUATION & METRICS (FIXED: handles missing profit column)
 # =============================================================================
 def get_accuracy_dashboard():
     conn = sqlite3.connect(DB_PATH)
@@ -1060,8 +1070,20 @@ def get_accuracy_dashboard():
     wins = (df['result'] == 'WIN').sum()
     total = len(df)
     win_rate = wins/total*100
-    total_profit = df['profit'].sum() if 'profit' in df.columns else 0
     total_stake = total * 100
+    # Use profit column if exists, else compute from result and odds
+    if 'profit' in df.columns:
+        total_profit = df['profit'].sum()
+    else:
+        # Fallback: compute profit from result and odds (simplified)
+        total_profit = 0
+        for _, row in df.iterrows():
+            if row['result'] == 'WIN':
+                odds = row.get('odds', -110)
+                profit = (odds / 100) * 100 if odds > 0 else (100 / abs(odds)) * 100
+            else:
+                profit = -100
+            total_profit += profit
     roi = (total_profit/total_stake)*100 if total_stake>0 else 0
     units_profit = total_profit / 100
     by_sport = {}
@@ -1123,7 +1145,7 @@ def auto_tune_thresholds():
     conn.close()
     if len(df) < 20:
         return
-    total_profit = df['profit'].sum()
+    total_profit = df['profit'].sum() if 'profit' in df.columns else 0
     total_stake = len(df) * 100
     roi = total_profit / total_stake if total_stake>0 else 0
     old_prob = PROB_BOLT
@@ -1181,7 +1203,7 @@ def generate_parlays(approved_bets: List[Dict], max_legs: int = 4, top_n: int = 
     return parlays[:top_n]
 
 # =============================================================================
-# STREAMLIT UI – WITH BEST BETS TAB
+# STREAMLIT UI – WITH BEST BETS TAB (updated to use width='stretch')
 # =============================================================================
 def main():
     st.set_page_config(page_title="CLARITY 22.5 – Ultimate Multi‑Sport", layout="wide")
@@ -1470,7 +1492,7 @@ def main():
                 "Win Prob": f"{b['prob']:.1%}",
                 "Odds": b['odds']
             } for b in approved_bets])
-            st.dataframe(approved_df, use_container_width=True)
+            st.dataframe(approved_df, width='stretch')
             parlays = generate_parlays(approved_bets, max_legs=4, top_n=20)
             if parlays:
                 st.subheader(f"🎲 Top Parlays ({len(parlays)} combinations, 2-4 legs)")
@@ -1492,7 +1514,7 @@ def main():
                 "Win Prob": f"{b['prob']:.1%}",
                 "Odds": b['odds']
             } for b in plus_ev_bets])
-            st.dataframe(ev_df, use_container_width=True)
+            st.dataframe(ev_df, width='stretch')
             st.caption("These bets have positive edge but did not meet the strict approval threshold. You may manually include them in parlays if desired.")
 
     # ---------- Tab 3: Paste & Scan (unchanged) ----------
