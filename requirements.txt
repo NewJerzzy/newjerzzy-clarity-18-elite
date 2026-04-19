@@ -5,3 +5,6 @@ scipy
 requests
 curl_cffi
 beautifulsoup4
+nhl-api-py
+git+https://github.com/WalrusQuant/pgatourPY.git
+apify-client
