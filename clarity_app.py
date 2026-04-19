@@ -7,6 +7,7 @@
 #   - Paste & Scan: explains wins/losses, stores results, feeds SEM
 #   - FULL SELF‑EVALUATION: SEM score, auto‑tune thresholds, tuning history
 #   - FIXED: insert_slip() has 21 placeholders (matches table schema)
+#   - FIXED: added missing import ThreadPoolExecutor
 # =============================================================================
 
 import os
@@ -22,6 +23,7 @@ from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple
 from urllib.parse import urljoin
+from concurrent.futures import ThreadPoolExecutor, as_completed   # <-- ADDED
 
 import numpy as np
 import pandas as pd
