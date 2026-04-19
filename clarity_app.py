@@ -1,9 +1,9 @@
 # =============================================================================
-# CLARITY 22.5 – SOVEREIGN UNIFIED ENGINE (BEST BETS + PARLAYS)
-#   - Dual sniffer (PrizePicks + Underdog) with browser headers
+# CLARITY 22.5 – SOVEREIGN UNIFIED ENGINE (FIXED SNIFFER + BEST BETS)
+#   - Dual sniffer (PrizePicks + Underdog) with robust endpoint fallback
 #   - Real BallsDontLie stats + prop model (WMA/volatility/Kelly)
 #   - Game analyzer (ML, spreads, totals) with auto‑load from Odds‑API.io
-#   - NEW: "🏆 Best Bets" tab – parlays from approved bets (2‑4 legs) + +EV suggestions
+#   - BEST BETS tab: parlays (2-4 legs) from approved bets + +EV suggestions
 #   - Paste & Scan: explains wins/losses, stores results, feeds SEM
 #   - FULL SELF‑EVALUATION: SEM score, auto‑tune thresholds
 # =============================================================================
@@ -30,7 +30,7 @@ import requests
 
 warnings.filterwarnings("ignore")
 
-VERSION = "22.5 – Best Bets + Parlays"
+VERSION = "22.5 – Robust Sniffer + Best Bets"
 BUILD_DATE = "2026-04-18"
 
 # =============================================================================
@@ -454,7 +454,7 @@ class GameScanner:
 game_scanner = GameScanner(ODDS_API_KEY, ODDS_API_IO_KEY)
 
 # =============================================================================
-# SNIFFER BASE (shared session & headers)
+# SNIFFER BASE (shared session & headers) – IMPROVED WITH MORE ENDPOINTS
 # =============================================================================
 try:
     from curl_cffi import requests as curl_requests
@@ -480,19 +480,40 @@ BASE_HEADERS = {
     "Referer": "https://app.prizepicks.com/",
 }
 
+# Additional headers that PrizePicks might require
+EXTRA_HEADERS = {
+    "x-api-key": "prizepicks-web",  # sometimes needed
+    "x-app-version": "1.0.0",
+}
+
 def make_session():
     if CURL_AVAILABLE:
         s = curl_requests.Session(impersonate="chrome124")
     else:
         s = curl_requests.Session()
     s.headers.update(BASE_HEADERS)
+    s.headers.update(EXTRA_HEADERS)
     return s
 
 # =============================================================================
-# PRIZEPICKS SNIFFER
+# PRIZEPICKS SNIFFER – ROBUST WITH MULTIPLE ENDPOINTS & BASE URLS
 # =============================================================================
-PRIZEPICKS_BASE = "https://api.prizepicks.com"
-PRIZEPICKS_ENDPOINTS = ["/projections", "/v1/projections", "/v2/projections"]
+PRIZEPICKS_BASE_URLS = [
+    "https://api.prizepicks.com",
+    "https://app.prizepicks.com/api",
+    "https://www.prizepicks.com/api",
+]
+
+PRIZEPICKS_ENDPOINTS = [
+    "/projections",
+    "/v1/projections",
+    "/v2/projections",
+    "/v3/projections",
+    "/v4/projections",
+    "/bff/v1/projections",
+    "/bff/v2/projections",
+    "/bff/v3/projections",
+]
 
 @dataclass
 class PlayerProp:
@@ -576,29 +597,34 @@ def extract_prizepicks_props(records, included_map):
     return props
 
 def fetch_prizepicks_props(league_filter=None):
-    for endpoint in PRIZEPICKS_ENDPOINTS:
-        url = f"{PRIZEPICKS_BASE}{endpoint}"
-        params = {"page[size]": 250, "single_stat": True}
-        try:
-            records, included = fetch_all_pages(url, params=params, max_pages=30)
-            if records:
-                included_map = {}
-                for inc in included:
-                    t = inc.get("type", "")
-                    i = str(inc.get("id", ""))
-                    attrs = {**inc.get("attributes", {}), "_id": i}
-                    included_map.setdefault(t, {})[i] = attrs
-                props = extract_prizepicks_props(records, included_map)
-                if league_filter:
-                    league_upper = league_filter.upper()
-                    props = [p for p in props if league_upper in p.league.upper()]
-                return props
-        except Exception:
-            continue
+    """Try multiple base URLs and endpoints until one works."""
+    for base_url in PRIZEPICKS_BASE_URLS:
+        for endpoint in PRIZEPICKS_ENDPOINTS:
+            url = f"{base_url}{endpoint}"
+            params = {"page[size]": 250, "single_stat": True}
+            try:
+                records, included = fetch_all_pages(url, params=params, max_pages=30)
+                if records and len(records) > 0:
+                    included_map = {}
+                    for inc in included:
+                        t = inc.get("type", "")
+                        i = str(inc.get("id", ""))
+                        attrs = {**inc.get("attributes", {}), "_id": i}
+                        included_map.setdefault(t, {})[i] = attrs
+                    props = extract_prizepicks_props(records, included_map)
+                    if league_filter:
+                        league_upper = league_filter.upper()
+                        props = [p for p in props if league_upper in p.league.upper()]
+                    if props:
+                        return props  # success
+            except Exception as e:
+                continue
+    # If we reach here, no endpoint worked
+    st.error("❌ Could not fetch props from PrizePicks. The API may have changed. Please report this issue.")
     return []
 
 # =============================================================================
-# UNDERDOG SNIFFER
+# UNDERDOG SNIFFER (unchanged, but also made robust)
 # =============================================================================
 UNDERDOG_BASE = "https://api.underdogfantasy.com"
 UNDERDOG_ENDPOINTS = ["/bff/v3/projections", "/v3/projections", "/projections"]
@@ -680,6 +706,7 @@ def fetch_underdog_props(league_filter=None):
                 return props
         except Exception:
             continue
+    st.error("❌ Could not fetch props from Underdog. The API may have changed.")
     return []
 
 # =============================================================================
@@ -988,13 +1015,15 @@ def main():
                         live = fetch_underdog_props(league_filter=sport)
                     st.session_state['live_props'] = live
                     st.session_state['last_platform'] = platform
-                    st.success(f"✅ Fetched {len(live)} props")
+                    if live:
+                        st.success(f"✅ Fetched {len(live)} props from {platform}")
+                    else:
+                        st.warning(f"No props found on {platform} for {sport}. API may be down or no games available.")
                 except Exception as e:
-                    st.error(f"Failed: {e}")
+                    st.error(f"Failed to fetch: {e}")
                     st.session_state['live_props'] = []
         if 'live_props' in st.session_state and st.session_state['live_props']:
             st.subheader("Live Props")
-            # Removed "Show Best Bets" button – now in Best Bets tab
             prop_list = st.session_state['live_props']
             options = {f"{p.player_name} - {p.stat_type} {p.line_score}": p for p in prop_list}
             sel = st.selectbox("Select a prop to analyze manually", list(options.keys()))
@@ -1043,7 +1072,7 @@ def main():
                         st.session_state["auto_games"] = games
                         st.success(f"Loaded {len(games)} games")
                     else:
-                        st.warning("No games found.")
+                        st.warning("No games found. Try a different sport or date.")
         if "auto_games" in st.session_state and st.session_state["auto_games"]:
             for idx, game in enumerate(st.session_state["auto_games"]):
                 home = game.get('home', '')
@@ -1243,7 +1272,6 @@ def main():
             st.warning("No approved bets (edge > 4% for props, >2% for games). Load games or fetch props first.")
         else:
             st.subheader(f"📈 Approved Bets ({len(approved_bets)} legs available)")
-            # Show approved bets table
             approved_df = pd.DataFrame([{
                 "Bet": b['description'],
                 "Edge": f"{b['edge']:.1%}",
