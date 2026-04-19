@@ -7,6 +7,7 @@
 #   - FULL SELF‑EVALUATION: SEM score, auto‑tune thresholds, tuning history
 #   - Bovada, MyBookie, PrizePicks slip parsers with WIN/LOSS detection
 #   - **WHY ANALYSIS** in Paste & Scan: explains why a slip won or lost using real stats
+#   - **FIXED**: insert_slip() now has 21 placeholders (matches table schema)
 # =============================================================================
 
 import os
@@ -32,7 +33,7 @@ import requests
 
 warnings.filterwarnings("ignore")
 
-VERSION = "22.5 – Unified + Self‑Evaluation + Why Analysis"
+VERSION = "22.5 – Unified + Self‑Evaluation + Why Analysis (Fixed)"
 BUILD_DATE = "2026-04-18"
 
 # =============================================================================
@@ -135,7 +136,8 @@ def insert_slip(entry: dict):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     slip_id = hashlib.md5(f"{entry.get('player','')}{entry.get('team','')}{entry.get('market','')}{datetime.now()}".encode()).hexdigest()[:12]
-    c.execute("""INSERT OR REPLACE INTO slips VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+    # Fixed: 21 placeholders for 21 columns
+    c.execute("""INSERT OR REPLACE INTO slips VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
         slip_id,
         entry.get("type", "PROP"),
         entry.get("sport", ""),
