@@ -6,9 +6,9 @@
 #   - Best Bets tab: parlays (2-4 legs) from approved bets
 #   - Paste & Scan: explains wins/losses, stores results, feeds SEM
 #   - FULL SELF‑EVALUATION: SEM score, auto‑tune, tuning history
-#   - FIXED: insert_slip() uses explicit column names (21 values)
-#   - FIXED: profit column exists and is handled safely
-#   - FIXED: schema enforcement to prevent column mismatch
+#   - FIXED: schema enforcement (ensure_slips_schema) guarantees 21 columns
+#   - FIXED: insert_slip uses explicit 21 values
+#   - FIXED: profit column handled safely in get_accuracy_dashboard
 # =============================================================================
 
 import os
@@ -142,7 +142,6 @@ def ensure_slips_schema():
             elif col == "bankroll":
                 c.execute("ALTER TABLE slips ADD COLUMN bankroll REAL DEFAULT 1000")
             else:
-                # For text columns, add with default empty string
                 c.execute(f"ALTER TABLE slips ADD COLUMN {col} TEXT DEFAULT ''")
     conn.commit()
     conn.close()
@@ -199,6 +198,8 @@ def init_db():
 
 def insert_slip(entry: dict):
     """Insert a slip with explicit column names – 21 values exactly."""
+    ensure_slips_schema()  # ensure the table is ready before insert
+
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     slip_id = hashlib.md5(f"{entry.get('player','')}{entry.get('team','')}{entry.get('market','')}{datetime.now()}".encode()).hexdigest()[:12]
