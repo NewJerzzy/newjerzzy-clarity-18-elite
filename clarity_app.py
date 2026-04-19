@@ -1,21 +1,7 @@
 # =============================================================================
 # CLARITY 23.0 – ELITE MULTI‑SPORT ENGINE (FULLY UPGRADED)
-#   - All prior fixes (21‑column insert, profit column safety, schema enforcement)
-#   - ✅ Caching with TTL for all external API calls (st.cache_data)
-#   - ✅ Retry logic with tenacity for all HTTP requests
-#   - ✅ Realistic fallback stats (historical league averages, not random)
-#   - ✅ Database indexes for speed
-#   - ✅ Bankroll persistence across sessions
-#   - ✅ Proper logging (file + console)
-#   - ✅ Docstrings on all major functions
-#   - ✅ Fractional Kelly (0.25x) for conservative staking
-#   - ✅ Parlay correlation & same‑sport validation
-#   - ✅ Deprecation fixes (use_container_width → width)
-#   - ✅ Toast notifications & progress indicators
-#   - ✅ All API keys moved to st.secrets
-#   - ✅ Full PrizePicks + Underdog sniffer with TLS impersonation
-#   - ✅ Apify fallback integration (commented, ready to enable)
-#   - ✅ Improved slip parser for multi‑line sportsbook slips
+#   - All prior features (sniffer, caching, bankroll, auto‑tune, SEM, etc.)
+#   - Added "Clear" button in Paste & Scan tab
 # =============================================================================
 
 import os
@@ -1688,80 +1674,93 @@ def main():
     with tabs[3]:
         st.header("Paste & Scan Slips")
         st.markdown("Paste any slip (single game, parlay, multiple sports) – Clarity will extract individual bets and explain why you won or lost.")
-        text = st.text_area("Paste slip text", height=300)
-        if st.button("🔍 Scan & Analyze", type="primary"):
-            if not text.strip():
-                st.warning("Please paste some slip text.")
-            else:
-                parsed_bets = parse_complex_slip(text)
-                if not parsed_bets:
-                    st.error("No bets recognized. Check format.")
+        
+        # Initialize session state for the text area if not exists
+        if 'slip_text' not in st.session_state:
+            st.session_state.slip_text = ""
+        
+        text = st.text_area("Paste slip text", height=300, key="slip_text_input", value=st.session_state.slip_text)
+        
+        col_clear, col_scan = st.columns([1, 4])
+        with col_clear:
+            if st.button("🗑️ Clear", use_container_width=True):
+                st.session_state.slip_text = ""
+                st.rerun()
+        
+        with col_scan:
+            if st.button("🔍 Scan & Analyze", type="primary", use_container_width=True):
+                if not text.strip():
+                    st.warning("Please paste some slip text.")
                 else:
-                    st.success(f"Detected {len(parsed_bets)} bets.")
-                    for bet in parsed_bets:
-                        if bet.get('type') == 'PARLAY':
-                            with st.expander(f"PARLAY – {bet.get('result', 'Unknown')}"):
-                                st.markdown(bet.get('raw', ''))
-                                st.info("Parlay legs cannot be auto‑analyzed because individual lines are missing. Overall result recorded.")
-                                profit = 0
-                                if bet.get('result') == 'WIN':
+                    parsed_bets = parse_complex_slip(text)
+                    if not parsed_bets:
+                        st.error("No bets recognized. Check format.")
+                    else:
+                        st.success(f"Detected {len(parsed_bets)} bets.")
+                        for bet in parsed_bets:
+                            if bet.get('type') == 'PARLAY':
+                                with st.expander(f"PARLAY – {bet.get('result', 'Unknown')}"):
+                                    st.markdown(bet.get('raw', ''))
+                                    st.info("Parlay legs cannot be auto‑analyzed because individual lines are missing. Overall result recorded.")
                                     profit = 0
-                                else:
-                                    profit = -100
-                                insert_slip({
-                                    "type": "PARLAY",
-                                    "sport": "MULTI",
-                                    "player": "",
-                                    "team": "",
-                                    "opponent": "",
-                                    "market": "PARLAY",
-                                    "line": 0,
-                                    "pick": "",
-                                    "odds": 0,
-                                    "edge": 0,
-                                    "prob": 0.5,
-                                    "kelly": 0,
-                                    "tier": "",
-                                    "bolt_signal": "",
-                                    "result": bet.get('result'),
-                                    "actual": 0,
-                                    "settled_date": datetime.now().strftime("%Y-%m-%d"),
-                                    "profit": profit,
-                                    "bankroll": new_bankroll
-                                })
-                                st.success("Parlay result added to history (self‑evaluation updated).")
-                        else:
-                            explanation = generate_why_analysis(bet)
-                            with st.expander(f"{bet.get('sport', 'UNK')} – {bet.get('team', '')} {bet.get('market_type', 'ML')} at {bet.get('odds', '?')}"):
-                                st.markdown(explanation)
-                                profit = 0
-                                if bet.get('result') == 'WIN':
-                                    odds = bet.get('odds', -110)
-                                    profit = (odds / 100) * 100 if odds > 0 else (100 / abs(odds)) * 100
-                                else:
-                                    profit = -100
-                                insert_slip({
-                                    "type": "GAME",
-                                    "sport": bet.get('sport', 'NBA'),
-                                    "player": "",
-                                    "team": bet.get('team', ''),
-                                    "opponent": bet.get('opponent', ''),
-                                    "market": bet.get('market_type', 'ML'),
-                                    "line": bet.get('line', 0),
-                                    "pick": bet.get('pick', bet.get('team', '')),
-                                    "odds": bet.get('odds', -110),
-                                    "edge": 0,
-                                    "prob": 0.5,
-                                    "kelly": 0,
-                                    "tier": "",
-                                    "bolt_signal": "",
-                                    "result": bet.get('result'),
-                                    "actual": 0,
-                                    "settled_date": datetime.now().strftime("%Y-%m-%d"),
-                                    "profit": profit,
-                                    "bankroll": new_bankroll
-                                })
-                                st.success("Bet added to history (self‑evaluation updated).")
+                                    if bet.get('result') == 'WIN':
+                                        profit = 0
+                                    else:
+                                        profit = -100
+                                    insert_slip({
+                                        "type": "PARLAY",
+                                        "sport": "MULTI",
+                                        "player": "",
+                                        "team": "",
+                                        "opponent": "",
+                                        "market": "PARLAY",
+                                        "line": 0,
+                                        "pick": "",
+                                        "odds": 0,
+                                        "edge": 0,
+                                        "prob": 0.5,
+                                        "kelly": 0,
+                                        "tier": "",
+                                        "bolt_signal": "",
+                                        "result": bet.get('result'),
+                                        "actual": 0,
+                                        "settled_date": datetime.now().strftime("%Y-%m-%d"),
+                                        "profit": profit,
+                                        "bankroll": new_bankroll
+                                    })
+                                    st.success("Parlay result added to history (self‑evaluation updated).")
+                            else:
+                                explanation = generate_why_analysis(bet)
+                                with st.expander(f"{bet.get('sport', 'UNK')} – {bet.get('team', '')} {bet.get('market_type', 'ML')} at {bet.get('odds', '?')}"):
+                                    st.markdown(explanation)
+                                    profit = 0
+                                    if bet.get('result') == 'WIN':
+                                        odds = bet.get('odds', -110)
+                                        profit = (odds / 100) * 100 if odds > 0 else (100 / abs(odds)) * 100
+                                    else:
+                                        profit = -100
+                                    insert_slip({
+                                        "type": "GAME",
+                                        "sport": bet.get('sport', 'NBA'),
+                                        "player": "",
+                                        "team": bet.get('team', ''),
+                                        "opponent": bet.get('opponent', ''),
+                                        "market": bet.get('market_type', 'ML'),
+                                        "line": bet.get('line', 0),
+                                        "pick": bet.get('pick', bet.get('team', '')),
+                                        "odds": bet.get('odds', -110),
+                                        "edge": 0,
+                                        "prob": 0.5,
+                                        "kelly": 0,
+                                        "tier": "",
+                                        "bolt_signal": "",
+                                        "result": bet.get('result'),
+                                        "actual": 0,
+                                        "settled_date": datetime.now().strftime("%Y-%m-%d"),
+                                        "profit": profit,
+                                        "bankroll": new_bankroll
+                                    })
+                                    st.success("Bet added to history (self‑evaluation updated).")
 
     # ---------- Tab 4: History & Metrics ----------
     with tabs[4]:
