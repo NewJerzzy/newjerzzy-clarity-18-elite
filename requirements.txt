@@ -3,5 +3,4 @@ pandas
 numpy
 scipy
 requests
-lightgbm
-pillow
+curl_cffi
