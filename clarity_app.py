@@ -1,7 +1,7 @@
 # =============================================================================
 # CLARITY 23.0 – ELITE MULTI‑SPORT ENGINE (FULLY UPGRADED)
 #   - All prior features (sniffer, caching, bankroll, auto‑tune, SEM, etc.)
-#   - Added "Clear" button in Paste & Scan tab
+#   - Fixed: Clear button now erases the text area and analysis results
 # =============================================================================
 
 import os
@@ -1670,21 +1670,20 @@ def main():
             st.dataframe(ev_df, use_container_width=True)
             st.caption("These bets have positive edge but did not meet the strict approval threshold. You may manually include them in parlays if desired.")
 
-    # ---------- Tab 3: Paste & Scan ----------
+    # ---------- Tab 3: Paste & Scan (with fixed Clear button) ----------
     with tabs[3]:
         st.header("Paste & Scan Slips")
         st.markdown("Paste any slip (single game, parlay, multiple sports) – Clarity will extract individual bets and explain why you won or lost.")
         
-        # Initialize session state for the text area if not exists
-        if 'slip_text' not in st.session_state:
-            st.session_state.slip_text = ""
-        
-        text = st.text_area("Paste slip text", height=300, key="slip_text_input", value=st.session_state.slip_text)
+        # Use the text area's key to store its value; no extra session state variable needed
+        text = st.text_area("Paste slip text", height=300, key="slip_text_input")
         
         col_clear, col_scan = st.columns([1, 4])
         with col_clear:
             if st.button("🗑️ Clear", use_container_width=True):
-                st.session_state.slip_text = ""
+                # Clear the text area by deleting its session state key
+                if "slip_text_input" in st.session_state:
+                    del st.session_state["slip_text_input"]
                 st.rerun()
         
         with col_scan:
