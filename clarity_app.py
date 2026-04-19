@@ -6,7 +6,7 @@
 #   - Best Bets tab: parlays (2-4 legs) from approved bets
 #   - Paste & Scan: explains wins/losses, stores results, feeds SEM
 #   - FULL SELF‑EVALUATION: SEM score, auto‑tune, tuning history
-#   - FIXED: insert_slip() has 21 placeholders
+#   - FIXED: insert_slip() uses explicit column names (21 values)
 #   - FIXED: profit column exists and is handled safely
 # =============================================================================
 
@@ -178,11 +178,18 @@ def init_db():
     conn.close()
 
 def insert_slip(entry: dict):
+    """Insert a slip with explicit column names – 21 values exactly."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     slip_id = hashlib.md5(f"{entry.get('player','')}{entry.get('team','')}{entry.get('market','')}{datetime.now()}".encode()).hexdigest()[:12]
-    # 21 placeholders – one for each column in the table
-    c.execute("""INSERT OR REPLACE INTO slips VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+
+    c.execute("""
+        INSERT OR REPLACE INTO slips (
+            id, type, sport, player, team, opponent, market, line, pick, odds,
+            edge, prob, kelly, tier, bolt_signal, result, actual, date, settled_date,
+            profit, bankroll
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (
         slip_id,
         entry.get("type", "PROP"),
         entry.get("sport", ""),
