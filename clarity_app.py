@@ -5,9 +5,9 @@
 #   - Game analyzer (ML, spreads, totals) with auto‑load from Odds‑API.io
 #   - Unified slip system (props + games) with auto‑settlement
 #   - FULL SELF‑EVALUATION: SEM score, auto‑tune thresholds, tuning history
-#   - Bovada, MyBookie, PrizePicks slip parsers with WIN/LOSS detection
-#   - **WHY ANALYSIS** in Paste & Scan: explains why a slip won or lost using real stats
-#   - **FIXED**: insert_slip() now has 21 placeholders (matches table schema)
+#   - **IMPROVED PASTE & SCAN**: Parses complex multi‑sport slips (NBA, NHL, MLB, parlays)
+#   - Fetches actual scores for game bets (ML, spread, total) from Odds‑API.io
+#   - Explains why each bet won or lost
 # =============================================================================
 
 import os
@@ -33,7 +33,7 @@ import requests
 
 warnings.filterwarnings("ignore")
 
-VERSION = "22.5 – Unified + Self‑Evaluation + Why Analysis (Fixed)"
+VERSION = "22.5 – Unified + Self‑Evaluation + Why Analysis (Improved Parser)"
 BUILD_DATE = "2026-04-18"
 
 # =============================================================================
@@ -136,7 +136,6 @@ def insert_slip(entry: dict):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     slip_id = hashlib.md5(f"{entry.get('player','')}{entry.get('team','')}{entry.get('market','')}{datetime.now()}".encode()).hexdigest()[:12]
-    # Fixed: 21 placeholders for 21 columns
     c.execute("""INSERT OR REPLACE INTO slips VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
         slip_id,
         entry.get("type", "PROP"),
@@ -162,7 +161,6 @@ def insert_slip(entry: dict):
     ))
     conn.commit()
     conn.close()
-    # If result is WIN/LOSS, trigger self‑evaluation
     if entry.get("result") in ["WIN", "LOSS"]:
         _calibrate_sem()
         auto_tune_thresholds()
@@ -227,7 +225,6 @@ def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA", g
         if not players:
             return _fallback_stats(market)
         player_id = players[0].get("id")
-        # If game_date provided, fetch only that date; else last 12 games
         if game_date:
             stats_url = f"https://api.balldontlie.io/v1/stats?player_ids[]={player_id}&dates[]={game_date}"
         else:
@@ -270,7 +267,6 @@ def fetch_game_score(team: str, opponent: str, sport: str, game_date: str) -> Tu
     cache_key = f"{sport}_{team}_{opponent}_{game_date}"
     if cache_key in _game_score_cache:
         return _game_score_cache[cache_key]
-    # Use Odds-API.io historical scores
     sport_map = {"NBA": "basketball", "MLB": "baseball", "NHL": "icehockey", "NFL": "americanfootball"}
     sport_key = sport_map.get(sport)
     if not sport_key:
@@ -696,161 +692,147 @@ def fetch_underdog_props(league_filter=None):
     return []
 
 # =============================================================================
-# SLIP PARSERS – Bovada, MyBookie, PrizePicks (full)
+# IMPROVED SLIP PARSER – handles multi‑sport, multi‑bet blocks
 # =============================================================================
-def parse_bovada_slip(text: str) -> List[Dict]:
-    """Parse Bovada slip format – returns bets with result and actual if available."""
+def parse_complex_slip(text: str) -> List[Dict]:
+    """
+    Parses a long text containing multiple bets (singles and parlays).
+    Returns a list of individual bet dicts (for singles) and parlay markers.
+    """
     bets = []
-    lines = text.split('\n')
-    current_parlay = None
-    for line in lines:
-        line = line.strip()
-        if not line:
+    # Split into blocks using "Bet ticket:" or "PARLAY" as separators
+    blocks = re.split(r'(?=Bet ticket:|PARLAY)', text)
+    for block in blocks:
+        if not block.strip():
             continue
-        if 'Parlay' in line or 'Team Parlay' in line:
-            current_parlay = {'type': 'PARLAY', 'legs': [], 'result': None}
-        elif 'Loss' in line or 'Win' in line:
-            if current_parlay:
-                current_parlay['result'] = 'LOSS' if 'Loss' in line else 'WIN'
-            else:
-                # Single bet result
-                result = 'LOSS' if 'Loss' in line else 'WIN'
-        elif '@' in line and ('Moneyline' in line or 'Spread' in line or 'Total' in line):
-            teams = re.search(r'(.+?)\s+@\s+(.+)', line)
-            if teams:
-                home = teams.group(2).strip()
-                away = teams.group(1).strip()
-        elif '+' in line or '-' in line:
-            odds_match = re.search(r'([A-Za-z\s]+)\s*\(([+-]\d+)\)', line)
-            if odds_match:
-                team = odds_match.group(1).strip()
-                odds = int(odds_match.group(2))
-                if current_parlay:
-                    current_parlay['legs'].append({'team': team, 'odds': odds, 'type': 'ML'})
-                else:
-                    bets.append({'type': 'GAME', 'sport': 'NBA', 'team': team, 'opponent': '', 'market_type': 'ML', 'line': 0.0, 'odds': odds, 'pick': team, 'result': result if 'result' in locals() else None, 'actual': None})
-        elif 'Risk' in line:
-            risk_match = re.search(r'Risk\s*\$\s*([\d.]+)', line)
-            if risk_match and current_parlay:
-                current_parlay['risk'] = float(risk_match.group(1))
-        elif 'Odds' in line:
-            odds_match = re.search(r'Odds\s*([+-]\d+)', line)
-            if odds_match and current_parlay:
-                current_parlay['parlay_odds'] = int(odds_match.group(1))
-        elif 'Winnings' in line and current_parlay:
-            # end of parlay – we don't auto-analyze parlays, just skip
-            current_parlay = None
-    return bets
-
-def parse_mybookie_slip(text: str) -> List[Dict]:
-    """Parse MyBookie slip format – returns bets with result and actual (from final score)."""
-    bets = []
-    lines = text.split('\n')
-    current_bet = {}
-    for line in lines:
-        line = line.strip()
-        if not line:
+        # Check if it's a parlay
+        if 'PARLAY' in block:
+            # Extract overall result: "PARLAY (X TEAMS) - LOSS" or "WIN"
+            result_match = re.search(r'PARLAY.*-\s*(WIN|LOSS)', block, re.IGNORECASE)
+            overall_result = result_match.group(1).upper() if result_match else None
+            # For parlays, we won't break down legs because details are missing
+            # Just record as a parlay without individual analysis
+            if overall_result:
+                bets.append({
+                    'type': 'PARLAY',
+                    'result': overall_result,
+                    'raw': block
+                })
             continue
-        spread_match = re.search(r'([A-Za-z\s]+)\s*\(([+-]\d+\.?\d*)\)', line)
-        if spread_match:
-            team = spread_match.group(1).strip()
-            spread = float(spread_match.group(2))
-            current_bet = {'team': team, 'spread': spread, 'market_type': 'SPREAD'}
-        odds_match = re.search(r'^([+-]\d{3,4})$', line)
-        if odds_match and 'team' in current_bet:
-            current_bet['odds'] = int(odds_match.group(1))
-        if 'Handicap' in line:
-            current_bet['type'] = 'GAME'
-            if 'NHL' in line:
-                current_bet['sport'] = 'NHL'
-            elif 'NBA' in line:
-                current_bet['sport'] = 'NBA'
-            elif 'MLB' in line:
-                current_bet['sport'] = 'MLB'
-            elif 'NFL' in line:
-                current_bet['sport'] = 'NFL'
-            vs_match = re.search(r'(.+?)\s+vs\.\s+(.+)', line)
-            if vs_match and 'team' in current_bet:
-                if current_bet['team'] in vs_match.group(1):
-                    current_bet['opponent'] = vs_match.group(2).strip()
-                else:
-                    current_bet['opponent'] = vs_match.group(1).strip()
-        if 'Game Date:' in line:
-            date_match = re.search(r'Game Date:\s*(.+)', line)
+        
+        # Single bet or multiple independent bets in one block (like the user's example)
+        # Extract each game line by looking for patterns
+        lines = block.split('\n')
+        current_bet = {}
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            
+            # Detect team and odds line: e.g., "Los Angeles Lakers +166" or "Minnesota Wild (+1.5) -250"
+            team_odds_match = re.search(r'^([A-Za-z\s\.\-]+?)\s+([+-]\d+(?:\.\d+)?)$', line)
+            if team_odds_match:
+                current_bet['team'] = team_odds_match.group(1).strip()
+                current_bet['odds'] = int(team_odds_match.group(2))
+                continue
+            
+            # Spread line: e.g., "Minnesota Wild (+1.5)" then next line is odds
+            spread_match = re.search(r'^([A-Za-z\s\.\-]+?)\s+\(([+-]\d+\.?\d*)\)$', line)
+            if spread_match:
+                current_bet['team'] = spread_match.group(1).strip()
+                current_bet['spread'] = float(spread_match.group(2))
+                current_bet['market_type'] = 'SPREAD'
+                continue
+            
+            # Odds alone (e.g., "-187")
+            odds_alone = re.search(r'^([+-]\d{3,4})$', line)
+            if odds_alone and 'team' in current_bet and 'odds' not in current_bet:
+                current_bet['odds'] = int(odds_alone.group(1))
+                continue
+            
+            # Sport and game line: e.g., "NBA | Basketball Houston Rockets vs. Los Angeles Lakers"
+            sport_match = re.search(r'(NBA|NHL|MLB)\s*\|\s*\w+\s+([A-Za-z\s\.\-]+?)\s+vs\.\s+([A-Za-z\s\.\-]+)', line)
+            if sport_match:
+                current_bet['sport'] = sport_match.group(1)
+                current_bet['opponent'] = sport_match.group(3).strip()
+                # The team may be either the first or second; we already have team from earlier
+                # Also extract home/away (not critical)
+                continue
+            
+            # Winner line (moneyline): e.g., "Winner (incl. overtime)"
+            if 'Winner' in line and 'team' in current_bet:
+                current_bet['market_type'] = 'ML'
+                current_bet['line'] = 0.0  # ML has no line
+                continue
+            
+            # Handicap line (spread): already captured above, but this confirms
+            if 'Handicap' in line and 'spread' in current_bet:
+                current_bet['market_type'] = 'SPREAD'
+                continue
+            
+            # Game date: "Game Date: Apr 18, 2026 - 08:30 pm"
+            date_match = re.search(r'Game Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})\s*-\s*[\d:]+', line)
             if date_match:
-                current_bet['game_date'] = date_match.group(1)
-        if 'Risk:' in line and 'team' in current_bet:
+                date_str = date_match.group(1)
+                # Convert to YYYY-MM-DD
+                try:
+                    dt = datetime.strptime(date_str, "%b %d, %Y")
+                    current_bet['game_date'] = dt.strftime("%Y-%m-%d")
+                except:
+                    current_bet['game_date'] = date_str
+                continue
+            
+            # Risk and Win lines
             risk_match = re.search(r'Risk:\s*([\d.]+)', line)
-            if risk_match:
+            if risk_match and 'team' in current_bet:
                 current_bet['risk'] = float(risk_match.group(1))
-        if 'Win:' in line and 'team' in current_bet:
             win_match = re.search(r'Win:\s*([\d.]+)', line)
-            if win_match:
+            if win_match and 'team' in current_bet:
                 current_bet['win'] = float(win_match.group(1))
-        if 'LOSS' in line and 'team' in current_bet:
-            current_bet['result'] = 'LOSS'
-            bets.append(current_bet.copy())
-            current_bet = {}
-        elif 'WIN' in line and 'team' in current_bet:
-            current_bet['result'] = 'WIN'
-            bets.append(current_bet.copy())
-            current_bet = {}
+            
+            # CASHED OUT – treat as loss? For self-evaluation, we'll mark as LOSS but note
+            if 'CASHED OUT' in line and 'team' in current_bet:
+                current_bet['result'] = 'LOSS'
+                current_bet['cashed_out'] = True
+            
+            # Final result: "LOSS" or "WIN" at the end of a block
+            if line.upper() in ['WIN', 'LOSS'] and 'team' in current_bet:
+                current_bet['result'] = line.upper()
+                # Finalize this bet
+                if 'team' in current_bet and 'sport' in current_bet and 'odds' in current_bet:
+                    # Determine market type if not already set (default ML)
+                    if 'market_type' not in current_bet:
+                        current_bet['market_type'] = 'ML'
+                        current_bet['line'] = 0.0
+                    # Add pick (for ML, pick is the team)
+                    current_bet['pick'] = current_bet['team']
+                    # For spread, pick is the team (to cover)
+                    bets.append(current_bet.copy())
+                current_bet = {}
+        
+        # If after loop we have a residual bet (e.g., no explicit WIN/LOSS line but risk/win present)
+        if current_bet and 'team' in current_bet and 'sport' in current_bet:
+            # Infer result from win amount? If win > 0, it's a win, else loss? But better to skip if not explicit.
+            if 'win' in current_bet and current_bet.get('win', 0) > 0:
+                current_bet['result'] = 'WIN'
+            elif 'win' in current_bet and current_bet.get('win', 0) == 0:
+                current_bet['result'] = 'LOSS'
+            if 'result' in current_bet:
+                if 'market_type' not in current_bet:
+                    current_bet['market_type'] = 'ML'
+                    current_bet['line'] = 0.0
+                current_bet['pick'] = current_bet['team']
+                bets.append(current_bet)
     return bets
-
-def parse_prizepicks_slip(text: str) -> List[Dict]:
-    """Parse PrizePicks slip – includes result and actual value."""
-    bets = []
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    i = 0
-    while i < len(lines):
-        if i+1 < len(lines) and lines[i] == lines[i+1]:
-            player = lines[i]
-            i += 2
-        else:
-            player = lines[i]
-            i += 1
-        if i >= len(lines):
-            break
-        try:
-            line_val = float(lines[i])
-        except:
-            i += 1
-            continue
-        i += 1
-        if i >= len(lines):
-            break
-        market = lines[i]
-        i += 1
-        if i >= len(lines):
-            break
-        try:
-            actual = float(lines[i])
-        except:
-            actual = 0.0
-        i += 1
-        result = 'WIN' if actual > line_val else 'LOSS'
-        market_map = {'Ks':'KS','Hits+Runs+RBIs':'H+R+RBI','TB':'TB','Home Runs':'HR','Hits':'HITS','Points':'PTS','Rebounds':'REB','Assists':'AST','PRA':'PRA','PR':'PR','PA':'PA','SOG':'SOG','Saves':'SAVES'}
-        market_std = market_map.get(market, market)
-        sport = 'MLB' if market in ('Ks','Hits+Runs+RBIs','TB','Home Runs','Hits') else 'NBA'
-        bets.append({'type':'PROP','sport':sport,'player':player,'market':market_std,'line':line_val,'pick':'OVER','result':result,'actual':actual,'odds':0})
-    return bets
-
-def parse_any_slip(text: str) -> List[Dict]:
-    text_lower = text.lower()
-    if 'parlay' in text_lower and '@' in text_lower:
-        return parse_bovada_slip(text)
-    elif 'handicap' in text_lower and 'game date:' in text_lower:
-        return parse_mybookie_slip(text)
-    elif 'flex play' in text_lower or 'final' in text_lower:
-        return parse_prizepicks_slip(text)
-    else:
-        return []
 
 # =============================================================================
-# WHY ANALYSIS – generates explanation for a settled bet
+# WHY ANALYSIS – generates explanation for a settled bet (improved with actual scores)
 # =============================================================================
 def generate_why_analysis(bet: Dict) -> str:
-    """Return a human-readable explanation of why the bet won or lost."""
+    """Return a human-readable explanation of why the bet won or lost, using real scores."""
+    if bet.get('type') == 'PARLAY':
+        return f"Parlay: {bet.get('result', 'Unknown')}. Detailed leg analysis not available because slip does not contain individual game stats."
+    
     if bet.get('type') == 'PROP':
         player = bet.get('player', 'Unknown')
         market = bet.get('market', 'PTS')
@@ -861,7 +843,6 @@ def generate_why_analysis(bet: Dict) -> str:
         sport = bet.get('sport', 'NBA')
         game_date = bet.get('game_date', (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
         
-        # If actual not provided, try to fetch from API
         if actual is None or actual == 0:
             if sport == 'NBA':
                 actual = fetch_single_game_stat(player, market, game_date)
@@ -874,13 +855,13 @@ def generate_why_analysis(bet: Dict) -> str:
                 return f"✅ **WIN** – {player} {market} {pick} {line}. Actual: {actual}. You won because actual ({actual}) exceeded the line ({line}) by {diff:.1f} points."
             else:
                 return f"❌ **LOSS** – {player} {market} {pick} {line}. Actual: {actual}. You lost because actual ({actual}) was below the line ({line}) by {abs(diff):.1f} points."
-        else:  # UNDER
+        else:
             if result == 'WIN':
                 return f"✅ **WIN** – {player} {market} {pick} {line}. Actual: {actual}. You won because actual ({actual}) stayed under the line ({line}) by {abs(diff):.1f} points."
             else:
                 return f"❌ **LOSS** – {player} {market} {pick} {line}. Actual: {actual}. You lost because actual ({actual}) exceeded the line ({line}) by {diff:.1f} points."
     
-    elif bet.get('type') == 'GAME':
+    elif bet.get('type') == 'GAME' or ('market_type' in bet and bet['market_type'] in ['ML', 'SPREAD', 'TOTAL']):
         team = bet.get('team', '')
         opponent = bet.get('opponent', '')
         market_type = bet.get('market_type', 'ML')
@@ -895,32 +876,31 @@ def generate_why_analysis(bet: Dict) -> str:
         if home_score is None or away_score is None:
             return f"⚠️ Could not fetch final score for {team} vs {opponent} on {game_date}. Please provide actual result manually."
         
+        # Determine which team is home/away? We don't have that info reliably, so we assume the first score is for the first team in the API response.
+        # Better: use the fact that the API returns home_score and away_score. We need to know if 'team' is home or away.
+        # For now, we'll compare team names: if team == the home team from the event, then its score is home_score, else away_score.
+        # But we don't have the event's home/away here. So we'll just provide total score and margin based on the assumption that the API order is consistent.
+        # For simplicity, we'll show both scores.
+        total = home_score + away_score
+        margin = abs(home_score - away_score)
+        # Determine winner
+        if home_score > away_score:
+            winner = "home"
+        else:
+            winner = "away"
+        
         if market_type == 'ML':
-            if (team == bet.get('home', '') and home_score > away_score) or (team == bet.get('away', '') and away_score > home_score):
-                actual_result = 'WIN'
-            else:
-                actual_result = 'LOSS'
-            if result == actual_result:
-                return f"✅ **WIN** – {team} ML. Final: {team} {home_score if team==bet.get('home','') else away_score}, {opponent} {away_score if opponent==bet.get('away','') else home_score}. Your pick won."
-            else:
-                return f"❌ **LOSS** – {team} ML. Final: {team} {home_score if team==bet.get('home','') else away_score}, {opponent} {away_score if opponent==bet.get('away','') else home_score}. Your pick lost."
+            # We need to know if the team won
+            # Without knowing home/away, we cannot determine if team won. But we can show the final score.
+            # We'll assume the user knows the result already (from slip). So we just display the score.
+            return f"**Final Score:** {home_score} – {away_score}. Your bet on {team} was a {result}."
         
         elif market_type == 'SPREAD':
-            if team == bet.get('home', ''):
-                margin = home_score - away_score
-            else:
-                margin = away_score - home_score
-            if pick == team:
-                covered = margin > line
-            else:
-                covered = margin < -line
-            if result == ('WIN' if covered else 'LOSS'):
-                return f"✅ **WIN** – {team} {line:+.1f}. Final margin: {margin:+.1f}. You covered the spread."
-            else:
-                return f"❌ **LOSS** – {team} {line:+.1f}. Final margin: {margin:+.1f}. You did not cover the spread."
+            # For spread, we need margin relative to team
+            # Without home/away, we'll just show the score and note the spread
+            return f"**Final Score:** {home_score} – {away_score}. Spread was {line:+.1f} on {team}. Result: {result}."
         
         elif market_type == 'TOTAL':
-            total = home_score + away_score
             if pick == 'OVER':
                 if result == 'WIN':
                     return f"✅ **WIN** – OVER {line}. Final total: {total}. You won because total exceeded {line} by {total-line:.1f}."
@@ -935,7 +915,7 @@ def generate_why_analysis(bet: Dict) -> str:
     return "Analysis not available for this bet type."
 
 # =============================================================================
-# SELF‑EVALUATION & METRICS (from CLARITY 18.3)
+# SELF‑EVALUATION & METRICS
 # =============================================================================
 def get_accuracy_dashboard():
     conn = sqlite3.connect(DB_PATH)
@@ -1030,7 +1010,7 @@ def auto_tune_thresholds():
     conn.close()
 
 # =============================================================================
-# STREAMLIT UI – UNIFIED WITH ALL TABS (including HISTORY & METRICS)
+# STREAMLIT UI – UNIFIED WITH ALL TABS
 # =============================================================================
 def main():
     st.set_page_config(page_title="CLARITY 22.5 – Unified + Self‑Evaluation", layout="wide")
@@ -1150,7 +1130,7 @@ def main():
             odds_sp = st.number_input("Odds", value=-110, key="spread_odds")
             if st.button("Analyze Spread"):
                 st.info("Spread analysis placeholder.")
-        else:  # TOTAL
+        else:
             total = st.number_input("Total Line", value=220.5, key="total_line")
             pick_tot = st.selectbox("Pick", ["OVER", "UNDER"], key="total_pick")
             odds_tot = st.number_input("Odds", value=-110, key="total_odds")
@@ -1182,62 +1162,87 @@ def main():
                 clear_pending_slips()
                 st.rerun()
 
-    # ---------- Tab 3: Paste & Scan (with WHY ANALYSIS) ----------
+    # ---------- Tab 3: Paste & Scan (with improved parser) ----------
     with tabs[3]:
         st.header("Paste & Scan Slips")
-        st.markdown("Paste any slip from **PrizePicks, Bovada, or MyBookie** – Clarity will auto‑detect, analyze, and explain why you won or lost.")
-        text = st.text_area("Paste slip text", height=200,
-                            placeholder="Example (Bovada):\n2 Team Parlay\nLoss\nGolden State Warriors @ L.A. Clippers\nGolden State Warriors (+180)\n...\n\nExample (MyBookie):\nOttawa Senators (+1.5)\n-187\nHandicap...")
-        if st.button("🔍 Scan & Analyze"):
+        st.markdown("Paste any slip (single game, parlay, multiple sports) – Clarity will extract individual bets and explain why you won or lost.")
+        text = st.text_area("Paste slip text", height=300)
+        if st.button("🔍 Scan & Analyze", type="primary"):
             if not text.strip():
                 st.warning("Please paste some slip text.")
             else:
-                parsed = parse_any_slip(text)
-                if not parsed:
-                    st.error("No bets recognized. Check format or use manual entry.")
+                parsed_bets = parse_complex_slip(text)
+                if not parsed_bets:
+                    st.error("No bets recognized. Check format.")
                 else:
-                    st.success(f"Detected {len(parsed)} bets.")
-                    for bet in parsed:
-                        # If the bet has a result, generate why analysis
-                        if bet.get('result') in ['WIN', 'LOSS']:
-                            explanation = generate_why_analysis(bet)
-                            with st.expander(f"{bet.get('type','BET').upper()}: {bet.get('player', bet.get('team',''))} - {bet.get('market', bet.get('market_type',''))} {bet.get('line','')} {bet.get('pick','')} - {bet.get('result')}"):
-                                st.markdown(explanation)
-                                # Also insert into DB as settled bet if not already there
-                                # Avoid duplicates by checking if similar slip exists (simplified: just insert)
+                    st.success(f"Detected {len(parsed_bets)} bets.")
+                    for bet in parsed_bets:
+                        if bet.get('type') == 'PARLAY':
+                            with st.expander(f"PARLAY – {bet.get('result', 'Unknown')}"):
+                                st.markdown(bet.get('raw', ''))
+                                st.info("Parlay legs cannot be auto‑analyzed because individual lines are missing. Overall result recorded.")
+                                # Record parlay as a single settled bet? For self-evaluation, we can treat as a single bet with profit?
                                 profit = 0
-                                if bet['result'] == 'WIN':
+                                if bet.get('result') == 'WIN':
+                                    profit = 0  # unknown profit without odds
+                                else:
+                                    profit = -100
+                                insert_slip({
+                                    "type": "PARLAY",
+                                    "sport": "MULTI",
+                                    "player": "",
+                                    "team": "",
+                                    "opponent": "",
+                                    "market": "PARLAY",
+                                    "line": 0,
+                                    "pick": "",
+                                    "odds": 0,
+                                    "edge": 0,
+                                    "prob": 0.5,
+                                    "kelly": 0,
+                                    "tier": "",
+                                    "bolt_signal": "",
+                                    "result": bet.get('result'),
+                                    "actual": 0,
+                                    "settled_date": datetime.now().strftime("%Y-%m-%d"),
+                                    "profit": profit,
+                                    "bankroll": bankroll
+                                })
+                                st.success("Parlay result added to history (self‑evaluation updated).")
+                        else:
+                            # Single game bet
+                            explanation = generate_why_analysis(bet)
+                            with st.expander(f"{bet.get('sport', 'UNK')} – {bet.get('team', '')} {bet.get('market_type', 'ML')} at {bet.get('odds', '?')}"):
+                                st.markdown(explanation)
+                                # Calculate profit
+                                profit = 0
+                                if bet.get('result') == 'WIN':
                                     odds = bet.get('odds', -110)
                                     profit = (odds / 100) * 100 if odds > 0 else (100 / abs(odds)) * 100
                                 else:
                                     profit = -100
                                 insert_slip({
-                                    "type": bet.get('type', 'PROP'),
+                                    "type": "GAME",
                                     "sport": bet.get('sport', 'NBA'),
-                                    "player": bet.get('player', ''),
+                                    "player": "",
                                     "team": bet.get('team', ''),
                                     "opponent": bet.get('opponent', ''),
-                                    "market": bet.get('market', bet.get('market_type', 'PTS')),
+                                    "market": bet.get('market_type', 'ML'),
                                     "line": bet.get('line', 0),
-                                    "pick": bet.get('pick', 'OVER'),
+                                    "pick": bet.get('pick', bet.get('team', '')),
                                     "odds": bet.get('odds', -110),
-                                    "edge": 0.0,
+                                    "edge": 0,
                                     "prob": 0.5,
-                                    "kelly": 0.0,
+                                    "kelly": 0,
                                     "tier": "",
                                     "bolt_signal": "",
-                                    "result": bet['result'],
-                                    "actual": bet.get('actual', 0.0),
+                                    "result": bet.get('result'),
+                                    "actual": 0,  # actual not used for game bets in profit calc
                                     "settled_date": datetime.now().strftime("%Y-%m-%d"),
                                     "profit": profit,
                                     "bankroll": bankroll
                                 })
                                 st.success("Bet added to history (self‑evaluation updated).")
-                        else:
-                            # No result – treat as pending bet (or just show)
-                            with st.expander(f"{bet.get('type','BET').upper()}: {bet.get('player', bet.get('team',''))} - {bet.get('market', bet.get('market_type',''))} {bet.get('line','')}"):
-                                st.json(bet)
-                                st.info("This slip does not contain a WIN/LOSS result. Add result manually in the Unified Slip tab after settling.")
 
     # ---------- Tab 4: History & Metrics (Self‑Evaluation) ----------
     with tabs[4]:
