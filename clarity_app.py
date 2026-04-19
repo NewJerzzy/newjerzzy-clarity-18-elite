@@ -15,6 +15,7 @@
 #   - ✅ All API keys moved to st.secrets
 #   - ✅ Full PrizePicks + Underdog sniffer with TLS impersonation
 #   - ✅ Apify fallback integration (commented, ready to enable)
+#   - ✅ Improved slip parser for multi‑line sportsbook slips
 # =============================================================================
 
 import os
@@ -935,101 +936,186 @@ class GameScanner:
 game_scanner = GameScanner()
 
 # =============================================================================
-# SLIP PARSER – complex multi‑sport (for Paste & Scan)
+# IMPROVED SLIP PARSER – handles multi‑line sportsbook slips
 # =============================================================================
 def parse_complex_slip(text: str) -> List[Dict]:
-    """Parse pasted slip text into a list of individual bet dicts."""
+    """
+    Parse pasted slip text into a list of individual bet dicts.
+    Handles the format shown by the user:
+        Mitch Keller
+        Mitch Keller
+        P
+        MLB
+        PIT
+        6
+        TB
+        3
+        Final
+        94.5
+        Pitches Thrown
+        89
+    (and similar for other players)
+    Also handles standard prop lines, moneylines, spreads, totals.
+    """
     bets = []
-    blocks = re.split(r'(?=Bet ticket:|PARLAY)', text, flags=re.IGNORECASE)
-    for block in blocks:
-        if not block.strip():
-            continue
-        if 'PARLAY' in block.upper():
-            result_match = re.search(r'PARLAY.*-\s*(WIN|LOSS)', block, re.IGNORECASE)
-            overall_result = result_match.group(1).upper() if result_match else None
-            if overall_result:
-                bets.append({'type': 'PARLAY', 'result': overall_result, 'raw': block})
-            continue
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return bets
 
-        lines = block.split('\n')
-        current_bet = {}
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            # Team with odds: "Team Name +120"
-            team_odds_match = re.search(r'^([A-Za-z\s\.\-]+?)\s+([+-]\d+(?:\.\d+)?)$', line)
-            if team_odds_match:
-                current_bet['team'] = team_odds_match.group(1).strip()
-                current_bet['odds'] = int(team_odds_match.group(2))
-                continue
-            # Spread: "Team Name (-5.5)"
-            spread_match = re.search(r'^([A-Za-z\s\.\-]+?)\s+\(([+-]\d+\.?\d*)\)$', line)
-            if spread_match:
-                current_bet['team'] = spread_match.group(1).strip()
-                current_bet['spread'] = float(spread_match.group(2))
-                current_bet['market_type'] = 'SPREAD'
-                continue
-            # Odds alone
-            odds_alone = re.search(r'^([+-]\d{3,4})$', line)
-            if odds_alone and 'team' in current_bet and 'odds' not in current_bet:
-                current_bet['odds'] = int(odds_alone.group(1))
-                continue
-            # Sport and opponent: "NBA | Team A vs Team B"
-            sport_match = re.search(r'(NBA|NHL|MLB|NFL)\s*\|\s*\w+\s+([A-Za-z\s\.\-]+?)\s+vs\.\s+([A-Za-z\s\.\-]+)', line, re.IGNORECASE)
-            if sport_match:
-                current_bet['sport'] = sport_match.group(1).upper()
-                current_bet['opponent'] = sport_match.group(3).strip()
-                continue
-            # Winner or Handicap
-            if 'Winner' in line and 'team' in current_bet:
-                current_bet['market_type'] = 'ML'
-                current_bet['line'] = 0.0
-                continue
-            if 'Handicap' in line and 'spread' in current_bet:
-                current_bet['market_type'] = 'SPREAD'
-                continue
-            # Game date
-            date_match = re.search(r'Game Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', line, re.IGNORECASE)
-            if date_match:
+    # First, try to detect if the slip uses the block format (player name repeated, etc.)
+    # Look for patterns: two identical names in a row, then position, then league, etc.
+    i = 0
+    while i < len(lines):
+        # Check if we have a player block: line i and i+1 are the same name
+        if i + 1 < len(lines) and lines[i] == lines[i+1]:
+            # This looks like a player block
+            player_name = lines[i]
+            # Expected sequence: name, name, position, league, team, team_score, opponent, opponent_score, "Final", line, market, actual
+            # Let's try to extract systematically
+            block_lines = []
+            j = i
+            while j < len(lines) and not (j > i and lines[j] == ""):
+                block_lines.append(lines[j])
+                j += 1
+                # Stop if we hit another player name pattern (two identical lines)
+                if j+1 < len(lines) and lines[j] == lines[j+1]:
+                    break
+            # Now parse block_lines
+            # Typical block: [name, name, position, league, team, team_score, opponent, opponent_score, "Final", line, market, actual]
+            if len(block_lines) >= 12:
                 try:
-                    dt = datetime.strptime(date_match.group(1), "%b %d, %Y")
-                    current_bet['game_date'] = dt.strftime("%Y-%m-%d")
-                except:
-                    current_bet['game_date'] = date_match.group(1)
+                    league = block_lines[3].upper()
+                    team = block_lines[4]
+                    opponent = block_lines[6]
+                    line_val = float(block_lines[9])
+                    market_raw = block_lines[10]
+                    actual_val = float(block_lines[11])
+                    
+                    # Determine market
+                    market = "PTS"  # default
+                    if "Pitches" in market_raw:
+                        market = "PITCHES"
+                    elif "Pts" in market_raw or "Rebs" in market_raw or "Ast" in market_raw:
+                        market = market_raw.replace("+", "").replace(" ", "")
+                    else:
+                        market = market_raw.upper()
+                    
+                    # Determine result (win/loss) by comparing actual vs line
+                    # For over bets, if actual > line -> WIN, else LOSS
+                    # For under bets, we need to know pick. Default to OVER for props.
+                    # In many slips, the bet is OVER unless stated otherwise.
+                    # We'll assume OVER for now; user can adjust later.
+                    pick = "OVER"
+                    result = "WIN" if actual_val > line_val else "LOSS"
+                    
+                    bet = {
+                        "type": "PROP",
+                        "player": player_name,
+                        "sport": league,
+                        "team": team,
+                        "opponent": opponent,
+                        "market": market,
+                        "line": line_val,
+                        "pick": pick,
+                        "result": result,
+                        "actual": actual_val,
+                        "odds": -110,  # default
+                    }
+                    bets.append(bet)
+                    i = j
+                    continue
+                except Exception as e:
+                    logging.warning(f"Error parsing player block for {player_name}: {e}")
+                    i += 1
+                    continue
+        else:
+            # Not a player block – try standard line parsing
+            line = lines[i]
+            # Try prop format: "Player OVER 25.5 PTS"
+            m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)$', line, re.IGNORECASE)
+            if m:
+                bet = {
+                    "type": "PROP",
+                    "player": m.group(1).strip(),
+                    "pick": m.group(2).upper(),
+                    "line": float(m.group(3)),
+                    "market": m.group(4).upper(),
+                    "sport": "NBA",
+                    "odds": -110,
+                }
+                bets.append(bet)
+                i += 1
                 continue
-            # Risk / Win amounts
-            risk_match = re.search(r'Risk:\s*([\d.]+)', line, re.IGNORECASE)
-            if risk_match and 'team' in current_bet:
-                current_bet['risk'] = float(risk_match.group(1))
-            win_match = re.search(r'Win:\s*([\d.]+)', line, re.IGNORECASE)
-            if win_match and 'team' in current_bet:
-                current_bet['win'] = float(win_match.group(1))
-            # Cashed out
-            if 'CASHED OUT' in line.upper() and 'team' in current_bet:
-                current_bet['result'] = 'LOSS'
-                current_bet['cashed_out'] = True
-            # Result line: WIN or LOSS
-            if line.upper() in ['WIN', 'LOSS'] and 'team' in current_bet:
-                current_bet['result'] = line.upper()
-                if 'market_type' not in current_bet:
-                    current_bet['market_type'] = 'ML'
-                    current_bet['line'] = 0.0
-                current_bet['pick'] = current_bet['team']
-                bets.append(current_bet.copy())
-                current_bet = {}
-        # If we have a partial bet at the end
-        if current_bet and 'team' in current_bet and 'sport' in current_bet:
-            if 'win' in current_bet and current_bet.get('win', 0) > 0:
-                current_bet['result'] = 'WIN'
-            elif 'win' in current_bet and current_bet.get('win', 0) == 0:
-                current_bet['result'] = 'LOSS'
-            if 'result' in current_bet:
-                if 'market_type' not in current_bet:
-                    current_bet['market_type'] = 'ML'
-                    current_bet['line'] = 0.0
-                current_bet['pick'] = current_bet['team']
-                bets.append(current_bet)
+            
+            # Try prop format: "Player PTS OVER 25.5"
+            m = re.search(r'^(.+?)\s+(\w+)\s+(OVER|UNDER)\s+([\d\.]+)$', line, re.IGNORECASE)
+            if m:
+                bet = {
+                    "type": "PROP",
+                    "player": m.group(1).strip(),
+                    "market": m.group(2).upper(),
+                    "pick": m.group(3).upper(),
+                    "line": float(m.group(4)),
+                    "sport": "NBA",
+                    "odds": -110,
+                }
+                bets.append(bet)
+                i += 1
+                continue
+            
+            # Try moneyline: "Team A vs Team B ML -110"
+            m = re.search(r'^([A-Za-z\s\.\-]+?)\s+(?:vs\.?\s+([A-Za-z\s\.\-]+?))?\s+ML\s+([+-]\d+)$', line, re.IGNORECASE)
+            if m:
+                bet = {
+                    "type": "GAME",
+                    "team": m.group(1).strip(),
+                    "opponent": m.group(2).strip() if m.group(2) else "",
+                    "odds": int(m.group(3)),
+                    "market_type": "ML",
+                    "line": 0.0,
+                    "pick": m.group(1).strip(),
+                    "sport": "NBA",
+                }
+                bets.append(bet)
+                i += 1
+                continue
+            
+            # Try spread: "Team A -5.5 (-110)"
+            m = re.search(r'^([A-Za-z\s\.\-]+?)\s+([+-][\d\.]+)\s*\(([+-]\d+)\)$', line, re.IGNORECASE)
+            if m:
+                bet = {
+                    "type": "GAME",
+                    "team": m.group(1).strip(),
+                    "spread": float(m.group(2)),
+                    "odds": int(m.group(3)),
+                    "market_type": "SPREAD",
+                    "line": float(m.group(2)),
+                    "pick": m.group(1).strip(),
+                    "sport": "NBA",
+                }
+                bets.append(bet)
+                i += 1
+                continue
+            
+            # Try total: "OVER 220.5 (-110)"
+            m = re.search(r'^(OVER|UNDER)\s+([\d\.]+)\s*\(([+-]\d+)\)$', line, re.IGNORECASE)
+            if m:
+                bet = {
+                    "type": "GAME",
+                    "pick": m.group(1).upper(),
+                    "line": float(m.group(2)),
+                    "odds": int(m.group(3)),
+                    "market_type": "TOTAL",
+                    "sport": "NBA",
+                }
+                bets.append(bet)
+                i += 1
+                continue
+            
+            # If nothing matched, just move on
+            logging.warning(f"Unrecognized line: {line}")
+            i += 1
+    
     return bets
 
 # =============================================================================
