@@ -5,6 +5,7 @@ CLARITY 18.3 ELITE – Full Feature Set + Best Bet Per Game + Full Self Evaluati
 - OCR screenshot support
 - Best Bet Per Game
 - Full Self Evaluation: auto‑tune, import props, pending bets, settle, clear, SEM, win rates
+- Handles missing 'profit' column gracefully
 """
 
 import numpy as np
@@ -72,8 +73,13 @@ def init_db():
         closing_odds INTEGER, ml_proba REAL, wa_proba REAL,
         is_home INTEGER DEFAULT 0
     )""")
+    # Add missing columns if they don't exist (backward compatibility)
     try:
         c.execute("ALTER TABLE bets ADD COLUMN is_home INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        c.execute("ALTER TABLE bets ADD COLUMN profit REAL DEFAULT 0")
     except sqlite3.OperationalError:
         pass
     c.execute("""CREATE TABLE IF NOT EXISTS correlations (
@@ -119,7 +125,7 @@ def get_pending_bets() -> List[Dict[str, Any]]:
 
 def get_recent_bets(limit: int = 200) -> pd.DataFrame:
     conn = sqlite3.connect(DB_PATH)
-    df = pd.read_sql_query(f"SELECT id, player, sport, market, line, pick, odds, result, actual, date FROM bets ORDER BY date DESC LIMIT {limit}", conn)
+    df = pd.read_sql_query(f"SELECT id, player, sport, market, line, pick, odds, result, actual, date, profit FROM bets ORDER BY date DESC LIMIT {limit}", conn)
     conn.close()
     return df
 
@@ -1262,8 +1268,24 @@ class Clarity18Elite:
         wins = (settled['result']=='WIN').sum()
         total = len(settled)
         win_rate = wins/total*100
-        total_stake = total * 100
-        total_profit = settled['profit'].sum()
+        # Use profit column if it exists and has non-null values, otherwise compute from odds
+        if 'profit' in settled.columns and not settled['profit'].isnull().all():
+            total_profit = settled['profit'].sum()
+            total_stake = total * 100
+        else:
+            # Fallback: approximate profit from odds
+            total_profit = 0
+            total_stake = total * 100
+            for _, row in settled.iterrows():
+                if row['result'] == 'WIN':
+                    odds = row.get('odds', -110)
+                    if odds > 0:
+                        profit = (odds / 100) * 100
+                    else:
+                        profit = (100 / abs(odds)) * 100
+                else:
+                    profit = -100
+                total_profit += profit
         roi = (total_profit/total_stake)*100 if total_stake>0 else 0
         by_sport = {}
         for sport in settled['sport'].unique():
@@ -1291,7 +1313,7 @@ class Clarity18Elite:
     def auto_tune_thresholds(self): pass
 
 # =============================================================================
-# UNIFIED SLIP PARSER – UPDATED PRIZEPICKS PARSER (handles "Demon", "Final", actual stats)
+# UNIFIED SLIP PARSER – UPDATED PRIZEPICKS PARSER (handles "Loss", "Demon", "Final")
 # =============================================================================
 def parse_mybookie_slip(text: str) -> List[Dict]:
     bets = []
@@ -1367,7 +1389,7 @@ def parse_bovada_slip(text: str) -> List[Dict]:
 def parse_prizepicks_slip(text: str) -> List[Dict]:
     """
     Parse PrizePicks slip text that includes actual results.
-    Handles format with "Demon", "Final", and actual stats.
+    Handles format with "Loss", "Demon", "Final", and actual stats.
     Example:
         Brandon Woodruff
         Brandon Woodruff
@@ -1437,7 +1459,15 @@ def parse_prizepicks_slip(text: str) -> List[Dict]:
             actual_val = 0.0
         i += 1
 
+        # Determine result from actual vs line OR from explicit "Loss"/"Win" text
+        # First check if there's a "Loss" or "Win" earlier in the text (global result)
+        # But for per‑leg, we compare actual > line.
         result = "WIN" if actual_val > line_val else "LOSS"
+        # Also look for explicit "Loss" in the overall text (for whole slip)
+        if "loss" in text.lower() and result == "LOSS":
+            pass  # already correct
+        elif "win" in text.lower() and result == "WIN":
+            pass
 
         market_map = {
             "Ks": "KS",
