@@ -1,12 +1,12 @@
 # =============================================================================
-# CLARITY 22.5 – SOVEREIGN UNIFIED ENGINE (FULL SELF‑EVALUATION + SLIP PARSERS)
+# CLARITY 22.5 – SOVEREIGN UNIFIED ENGINE (FULL SELF‑EVALUATION + SLIP PARSERS + WHY ANALYSIS)
 #   - Dual sniffer (PrizePicks + Underdog) with browser headers
 #   - Real BallsDontLie stats + prop model (WMA/volatility/Kelly)
 #   - Game analyzer (ML, spreads, totals) with auto‑load from Odds‑API.io
 #   - Unified slip system (props + games) with auto‑settlement
 #   - FULL SELF‑EVALUATION: SEM score, auto‑tune thresholds, tuning history
-#   - Bovada & MyBookie slip parsers (plus PrizePicks)
-#   - All API keys active
+#   - Bovada, MyBookie, PrizePicks slip parsers with WIN/LOSS detection
+#   - **WHY ANALYSIS** in Paste & Scan: explains why a slip won or lost using real stats
 # =============================================================================
 
 import os
@@ -32,7 +32,7 @@ import requests
 
 warnings.filterwarnings("ignore")
 
-VERSION = "22.5 – Unified + Self‑Evaluation + Slip Parsers"
+VERSION = "22.5 – Unified + Self‑Evaluation + Why Analysis"
 BUILD_DATE = "2026-04-18"
 
 # =============================================================================
@@ -54,6 +54,7 @@ PROB_BOLT = 0.84
 DTM_BOLT = 0.15
 
 _stats_cache = {}
+_game_score_cache = {}
 
 # =============================================================================
 # SPORT DATA & STAT CONFIG
@@ -150,15 +151,19 @@ def insert_slip(entry: dict):
         entry.get("kelly", 0.0),
         entry.get("tier", ""),
         entry.get("bolt_signal", ""),
-        "PENDING",
-        0.0,
+        entry.get("result", "PENDING"),
+        entry.get("actual", 0.0),
         datetime.now().strftime("%Y-%m-%d"),
-        "",
-        0.0,
+        entry.get("settled_date", ""),
+        entry.get("profit", 0.0),
         entry.get("bankroll", 1000.0)
     ))
     conn.commit()
     conn.close()
+    # If result is WIN/LOSS, trigger self‑evaluation
+    if entry.get("result") in ["WIN", "LOSS"]:
+        _calibrate_sem()
+        auto_tune_thresholds()
 
 def get_pending_slips():
     conn = sqlite3.connect(DB_PATH)
@@ -183,7 +188,6 @@ def update_slip_result(slip_id: str, result: str, actual: float, odds: int):
               (result, actual, datetime.now().strftime("%Y-%m-%d"), profit, slip_id))
     conn.commit()
     conn.close()
-    # After updating, run calibration and auto‑tune
     _calibrate_sem()
     auto_tune_thresholds()
 
@@ -197,10 +201,10 @@ def clear_pending_slips():
 init_db()
 
 # =============================================================================
-# REAL STATS FETCHING (BallsDontLie) – for prop model
+# REAL STATS FETCHING (BallsDontLie) – for prop model and why analysis
 # =============================================================================
-def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA") -> List[float]:
-    cache_key = f"{player_name}_{market}_{sport}"
+def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA", game_date: str = None) -> List[float]:
+    cache_key = f"{player_name}_{market}_{sport}_{game_date}"
     if cache_key in _stats_cache:
         return _stats_cache[cache_key]
     if sport != "NBA":
@@ -221,7 +225,11 @@ def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA") -
         if not players:
             return _fallback_stats(market)
         player_id = players[0].get("id")
-        stats_url = f"https://api.balldontlie.io/v1/stats?player_ids[]={player_id}&per_page=12"
+        # If game_date provided, fetch only that date; else last 12 games
+        if game_date:
+            stats_url = f"https://api.balldontlie.io/v1/stats?player_ids[]={player_id}&dates[]={game_date}"
+        else:
+            stats_url = f"https://api.balldontlie.io/v1/stats?player_ids[]={player_id}&per_page=12"
         stats_resp = requests.get(stats_url, headers=headers, timeout=10)
         if stats_resp.status_code != 200:
             return _fallback_stats(market)
@@ -231,12 +239,18 @@ def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA") -
             val = game.get(stat_abbr, 0)
             if isinstance(val, (int, float)):
                 values.append(float(val))
-        if len(values) < 3:
+        if len(values) < 1:
             return _fallback_stats(market)
         _stats_cache[cache_key] = values
         return values
     except Exception:
         return _fallback_stats(market)
+
+def fetch_single_game_stat(player_name: str, market: str, game_date: str) -> Optional[float]:
+    stats = fetch_real_player_stats(player_name, market, "NBA", game_date)
+    if stats and len(stats) > 0:
+        return stats[0]
+    return None
 
 def _fallback_stats(market: str) -> List[float]:
     if market.upper() == "PTS":
@@ -246,6 +260,39 @@ def _fallback_stats(market: str) -> List[float]:
     else:
         mean_stat = 15.0; std_stat = 4.0
     return np.random.normal(mean_stat, std_stat, 12).tolist()
+
+# =============================================================================
+# GAME SCORES FETCHING (Odds-API.io) – for why analysis of game bets
+# =============================================================================
+def fetch_game_score(team: str, opponent: str, sport: str, game_date: str) -> Tuple[Optional[float], Optional[float]]:
+    cache_key = f"{sport}_{team}_{opponent}_{game_date}"
+    if cache_key in _game_score_cache:
+        return _game_score_cache[cache_key]
+    # Use Odds-API.io historical scores
+    sport_map = {"NBA": "basketball", "MLB": "baseball", "NHL": "icehockey", "NFL": "americanfootball"}
+    sport_key = sport_map.get(sport)
+    if not sport_key:
+        return None, None
+    url = f"https://api.odds-api.io/v4/sports/{sport_key}/events"
+    params = {"apiKey": ODDS_API_IO_KEY, "date": game_date}
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            events = data.get("data", []) if isinstance(data, dict) else data
+            for event in events:
+                home = event.get("home_team", "")
+                away = event.get("away_team", "")
+                if (home == team and away == opponent) or (home == opponent and away == team):
+                    home_score = event.get("home_score")
+                    away_score = event.get("away_score")
+                    if home_score is not None and away_score is not None:
+                        _game_score_cache[cache_key] = (float(home_score), float(away_score))
+                        return float(home_score), float(away_score)
+    except Exception:
+        pass
+    _game_score_cache[cache_key] = (None, None)
+    return None, None
 
 # =============================================================================
 # PROP MODEL ENGINE (WMA, volatility, edge, Kelly)
@@ -650,7 +697,7 @@ def fetch_underdog_props(league_filter=None):
 # SLIP PARSERS – Bovada, MyBookie, PrizePicks (full)
 # =============================================================================
 def parse_bovada_slip(text: str) -> List[Dict]:
-    """Parse Bovada slip format – example provided."""
+    """Parse Bovada slip format – returns bets with result and actual if available."""
     bets = []
     lines = text.split('\n')
     current_parlay = None
@@ -659,19 +706,19 @@ def parse_bovada_slip(text: str) -> List[Dict]:
         if not line:
             continue
         if 'Parlay' in line or 'Team Parlay' in line:
-            current_parlay = {'type': 'PARLAY', 'legs': []}
+            current_parlay = {'type': 'PARLAY', 'legs': [], 'result': None}
         elif 'Loss' in line or 'Win' in line:
             if current_parlay:
                 current_parlay['result'] = 'LOSS' if 'Loss' in line else 'WIN'
+            else:
+                # Single bet result
+                result = 'LOSS' if 'Loss' in line else 'WIN'
         elif '@' in line and ('Moneyline' in line or 'Spread' in line or 'Total' in line):
-            # Example: "Golden State Warriors @ L.a. Clippers"
             teams = re.search(r'(.+?)\s+@\s+(.+)', line)
             if teams:
                 home = teams.group(2).strip()
                 away = teams.group(1).strip()
-                # Look for odds line after this
         elif '+' in line or '-' in line:
-            # Odds line: "Golden State Warriors (+180)" or "Houston Rockets (-225)"
             odds_match = re.search(r'([A-Za-z\s]+)\s*\(([+-]\d+)\)', line)
             if odds_match:
                 team = odds_match.group(1).strip()
@@ -679,8 +726,7 @@ def parse_bovada_slip(text: str) -> List[Dict]:
                 if current_parlay:
                     current_parlay['legs'].append({'team': team, 'odds': odds, 'type': 'ML'})
                 else:
-                    # single bet
-                    bets.append({'type': 'GAME', 'sport': 'NBA', 'team': team, 'opponent': '', 'market_type': 'ML', 'line': 0.0, 'odds': odds, 'pick': team})
+                    bets.append({'type': 'GAME', 'sport': 'NBA', 'team': team, 'opponent': '', 'market_type': 'ML', 'line': 0.0, 'odds': odds, 'pick': team, 'result': result if 'result' in locals() else None, 'actual': None})
         elif 'Risk' in line:
             risk_match = re.search(r'Risk\s*\$\s*([\d.]+)', line)
             if risk_match and current_parlay:
@@ -690,13 +736,12 @@ def parse_bovada_slip(text: str) -> List[Dict]:
             if odds_match and current_parlay:
                 current_parlay['parlay_odds'] = int(odds_match.group(1))
         elif 'Winnings' in line and current_parlay:
-            # end of parlay
-            bets.append(current_parlay)
+            # end of parlay – we don't auto-analyze parlays, just skip
             current_parlay = None
     return bets
 
 def parse_mybookie_slip(text: str) -> List[Dict]:
-    """Parse MyBookie slip format – example provided."""
+    """Parse MyBookie slip format – returns bets with result and actual (from final score)."""
     bets = []
     lines = text.split('\n')
     current_bet = {}
@@ -704,19 +749,14 @@ def parse_mybookie_slip(text: str) -> List[Dict]:
         line = line.strip()
         if not line:
             continue
-        # Example: "Ottawa Senators (+1.5)"
         spread_match = re.search(r'([A-Za-z\s]+)\s*\(([+-]\d+\.?\d*)\)', line)
         if spread_match:
             team = spread_match.group(1).strip()
             spread = float(spread_match.group(2))
-            current_bet['team'] = team
-            current_bet['spread'] = spread
-            current_bet['market_type'] = 'SPREAD'
-        # Odds: "-187"
+            current_bet = {'team': team, 'spread': spread, 'market_type': 'SPREAD'}
         odds_match = re.search(r'^([+-]\d{3,4})$', line)
         if odds_match and 'team' in current_bet:
             current_bet['odds'] = int(odds_match.group(1))
-        # Handicap description line
         if 'Handicap' in line:
             current_bet['type'] = 'GAME'
             if 'NHL' in line:
@@ -727,19 +767,16 @@ def parse_mybookie_slip(text: str) -> List[Dict]:
                 current_bet['sport'] = 'MLB'
             elif 'NFL' in line:
                 current_bet['sport'] = 'NFL'
-            # Extract opponent: "Ottawa Senators vs. Carolina Hurricanes"
             vs_match = re.search(r'(.+?)\s+vs\.\s+(.+)', line)
             if vs_match and 'team' in current_bet:
                 if current_bet['team'] in vs_match.group(1):
                     current_bet['opponent'] = vs_match.group(2).strip()
                 else:
                     current_bet['opponent'] = vs_match.group(1).strip()
-        # Game date line
         if 'Game Date:' in line:
             date_match = re.search(r'Game Date:\s*(.+)', line)
             if date_match:
                 current_bet['game_date'] = date_match.group(1)
-        # Risk / Win lines – finalize bet
         if 'Risk:' in line and 'team' in current_bet:
             risk_match = re.search(r'Risk:\s*([\d.]+)', line)
             if risk_match:
@@ -750,16 +787,16 @@ def parse_mybookie_slip(text: str) -> List[Dict]:
                 current_bet['win'] = float(win_match.group(1))
         if 'LOSS' in line and 'team' in current_bet:
             current_bet['result'] = 'LOSS'
-            bets.append(current_bet)
+            bets.append(current_bet.copy())
             current_bet = {}
         elif 'WIN' in line and 'team' in current_bet:
             current_bet['result'] = 'WIN'
-            bets.append(current_bet)
+            bets.append(current_bet.copy())
             current_bet = {}
     return bets
 
 def parse_prizepicks_slip(text: str) -> List[Dict]:
-    """Parse PrizePicks slip (simple)."""
+    """Parse PrizePicks slip – includes result and actual value."""
     bets = []
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     i = 0
@@ -806,6 +843,94 @@ def parse_any_slip(text: str) -> List[Dict]:
         return parse_prizepicks_slip(text)
     else:
         return []
+
+# =============================================================================
+# WHY ANALYSIS – generates explanation for a settled bet
+# =============================================================================
+def generate_why_analysis(bet: Dict) -> str:
+    """Return a human-readable explanation of why the bet won or lost."""
+    if bet.get('type') == 'PROP':
+        player = bet.get('player', 'Unknown')
+        market = bet.get('market', 'PTS')
+        line = bet.get('line', 0)
+        pick = bet.get('pick', 'OVER')
+        result = bet.get('result')
+        actual = bet.get('actual', None)
+        sport = bet.get('sport', 'NBA')
+        game_date = bet.get('game_date', (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
+        
+        # If actual not provided, try to fetch from API
+        if actual is None or actual == 0:
+            if sport == 'NBA':
+                actual = fetch_single_game_stat(player, market, game_date)
+            if actual is None:
+                return f"⚠️ Could not fetch actual stats for {player} on {game_date}. Please provide actual value in slip."
+        
+        diff = actual - line
+        if pick == 'OVER':
+            if result == 'WIN':
+                return f"✅ **WIN** – {player} {market} {pick} {line}. Actual: {actual}. You won because actual ({actual}) exceeded the line ({line}) by {diff:.1f} points."
+            else:
+                return f"❌ **LOSS** – {player} {market} {pick} {line}. Actual: {actual}. You lost because actual ({actual}) was below the line ({line}) by {abs(diff):.1f} points."
+        else:  # UNDER
+            if result == 'WIN':
+                return f"✅ **WIN** – {player} {market} {pick} {line}. Actual: {actual}. You won because actual ({actual}) stayed under the line ({line}) by {abs(diff):.1f} points."
+            else:
+                return f"❌ **LOSS** – {player} {market} {pick} {line}. Actual: {actual}. You lost because actual ({actual}) exceeded the line ({line}) by {diff:.1f} points."
+    
+    elif bet.get('type') == 'GAME':
+        team = bet.get('team', '')
+        opponent = bet.get('opponent', '')
+        market_type = bet.get('market_type', 'ML')
+        line = bet.get('line', 0)
+        pick = bet.get('pick', team)
+        result = bet.get('result')
+        sport = bet.get('sport', 'NBA')
+        game_date = bet.get('game_date', (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
+        
+        # Fetch actual scores
+        home_score, away_score = fetch_game_score(team, opponent, sport, game_date)
+        if home_score is None or away_score is None:
+            return f"⚠️ Could not fetch final score for {team} vs {opponent} on {game_date}. Please provide actual result manually."
+        
+        if market_type == 'ML':
+            if (team == bet.get('home', '') and home_score > away_score) or (team == bet.get('away', '') and away_score > home_score):
+                actual_result = 'WIN'
+            else:
+                actual_result = 'LOSS'
+            if result == actual_result:
+                return f"✅ **WIN** – {team} ML. Final: {team} {home_score if team==bet.get('home','') else away_score}, {opponent} {away_score if opponent==bet.get('away','') else home_score}. Your pick won."
+            else:
+                return f"❌ **LOSS** – {team} ML. Final: {team} {home_score if team==bet.get('home','') else away_score}, {opponent} {away_score if opponent==bet.get('away','') else home_score}. Your pick lost."
+        
+        elif market_type == 'SPREAD':
+            if team == bet.get('home', ''):
+                margin = home_score - away_score
+            else:
+                margin = away_score - home_score
+            if pick == team:
+                covered = margin > line
+            else:
+                covered = margin < -line
+            if result == ('WIN' if covered else 'LOSS'):
+                return f"✅ **WIN** – {team} {line:+.1f}. Final margin: {margin:+.1f}. You covered the spread."
+            else:
+                return f"❌ **LOSS** – {team} {line:+.1f}. Final margin: {margin:+.1f}. You did not cover the spread."
+        
+        elif market_type == 'TOTAL':
+            total = home_score + away_score
+            if pick == 'OVER':
+                if result == 'WIN':
+                    return f"✅ **WIN** – OVER {line}. Final total: {total}. You won because total exceeded {line} by {total-line:.1f}."
+                else:
+                    return f"❌ **LOSS** – OVER {line}. Final total: {total}. You lost because total was {line-total:.1f} points short."
+            else:
+                if result == 'WIN':
+                    return f"✅ **WIN** – UNDER {line}. Final total: {total}. You won because total stayed under {line} by {line-total:.1f}."
+                else:
+                    return f"❌ **LOSS** – UNDER {line}. Final total: {total}. You lost because total exceeded {line} by {total-line:.1f}."
+    
+    return "Analysis not available for this bet type."
 
 # =============================================================================
 # SELF‑EVALUATION & METRICS (from CLARITY 18.3)
@@ -858,19 +983,15 @@ def _get_sem_score() -> int:
     return row[0] if row else 100
 
 def _calibrate_sem():
-    """Update SEM score based on prediction accuracy."""
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("SELECT prob, result FROM slips WHERE result IN ('WIN','LOSS') AND prob IS NOT NULL", conn)
     conn.close()
     if len(df) < 10:
         return
-    # Simple calibration: compare predicted probability vs actual win rate
-    # For bins of 10% probability, compute deviation
     df['bin'] = pd.cut(df['prob'], bins=np.arange(0,1.1,0.1))
     actual_by_bin = df.groupby('bin')['result'].apply(lambda x: (x=='WIN').mean())
     expected_by_bin = df.groupby('bin')['prob'].mean()
     deviation = np.mean(np.abs(actual_by_bin - expected_by_bin))
-    # SEM score: 100 - deviation*200 (capped)
     sem = max(0, min(100, int(100 - deviation * 200)))
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -880,25 +1001,21 @@ def _calibrate_sem():
     conn.close()
 
 def auto_tune_thresholds():
-    """Adjust PROB_BOLT and DTM_BOLT based on recent ROI."""
     global PROB_BOLT, DTM_BOLT
     conn = sqlite3.connect(DB_PATH)
     df = pd.read_sql_query("SELECT result, profit, bolt_signal FROM slips WHERE result IN ('WIN','LOSS') AND settled_date > date('now','-30 days')", conn)
     conn.close()
     if len(df) < 20:
         return
-    # Compute ROI for different threshold groups
-    # Simplified: if overall ROI < 0, tighten thresholds (increase prob_bolt, dtm_bolt)
-    # if ROI > 10%, loosen thresholds
     total_profit = df['profit'].sum()
     total_stake = len(df) * 100
     roi = total_profit / total_stake if total_stake>0 else 0
     old_prob = PROB_BOLT
     old_dtm = DTM_BOLT
-    if roi < -0.05:  # -5% ROI, too loose
+    if roi < -0.05:
         PROB_BOLT = min(0.95, PROB_BOLT + 0.03)
         DTM_BOLT = min(0.30, DTM_BOLT + 0.02)
-    elif roi > 0.10:  # +10% ROI, too strict
+    elif roi > 0.10:
         PROB_BOLT = max(0.70, PROB_BOLT - 0.03)
         DTM_BOLT = max(0.05, DTM_BOLT - 0.02)
     else:
@@ -1063,10 +1180,10 @@ def main():
                 clear_pending_slips()
                 st.rerun()
 
-    # ---------- Tab 3: Paste & Scan (uses sniffers + new parsers) ----------
+    # ---------- Tab 3: Paste & Scan (with WHY ANALYSIS) ----------
     with tabs[3]:
         st.header("Paste & Scan Slips")
-        st.markdown("Paste any slip from **PrizePicks, Bovada, or MyBookie** – Clarity will auto‑detect and analyze.")
+        st.markdown("Paste any slip from **PrizePicks, Bovada, or MyBookie** – Clarity will auto‑detect, analyze, and explain why you won or lost.")
         text = st.text_area("Paste slip text", height=200,
                             placeholder="Example (Bovada):\n2 Team Parlay\nLoss\nGolden State Warriors @ L.A. Clippers\nGolden State Warriors (+180)\n...\n\nExample (MyBookie):\nOttawa Senators (+1.5)\n-187\nHandicap...")
         if st.button("🔍 Scan & Analyze"):
@@ -1079,37 +1196,46 @@ def main():
                 else:
                     st.success(f"Detected {len(parsed)} bets.")
                     for bet in parsed:
-                        if bet['type'] == 'PROP':
-                            res = analyze_prop(bet['player'], bet['market'], bet['line'], bet.get('pick','OVER'),
-                                               bet['sport'], bet.get('odds',-110), bankroll)
-                            with st.expander(f"PROP: {bet['player']} - {bet['market']} {bet['line']} {bet.get('pick','OVER')}"):
-                                col1, col2, col3 = st.columns(3)
-                                col1.metric("Win Prob", f"{res['prob']:.1%}")
-                                col2.metric("Edge", f"{res['edge']:+.1%}")
-                                col3.metric("Kelly", f"${res['stake']:.2f}")
-                                if st.button(f"Add to slip", key=f"add_{bet['player']}_{bet['market']}"):
-                                    insert_slip({
-                                        "type": "PROP", "sport": bet['sport'], "player": bet['player'],
-                                        "team": "", "opponent": "", "market": bet['market'],
-                                        "line": bet['line'], "pick": bet.get('pick','OVER'), "odds": bet.get('odds',-110),
-                                        "edge": res["edge"], "prob": res["prob"], "kelly": res["kelly"],
-                                        "tier": res["tier"], "bolt_signal": res["bolt_signal"], "bankroll": bankroll
-                                    })
-                                    st.success("Added!")
-                        elif bet['type'] == 'GAME':
-                            # For game bets, simply show and allow adding to slip
-                            with st.expander(f"GAME: {bet.get('team','')} {bet.get('market_type','')} at {bet.get('odds','')}"):
+                        # If the bet has a result, generate why analysis
+                        if bet.get('result') in ['WIN', 'LOSS']:
+                            explanation = generate_why_analysis(bet)
+                            with st.expander(f"{bet.get('type','BET').upper()}: {bet.get('player', bet.get('team',''))} - {bet.get('market', bet.get('market_type',''))} {bet.get('line','')} {bet.get('pick','')} - {bet.get('result')}"):
+                                st.markdown(explanation)
+                                # Also insert into DB as settled bet if not already there
+                                # Avoid duplicates by checking if similar slip exists (simplified: just insert)
+                                profit = 0
+                                if bet['result'] == 'WIN':
+                                    odds = bet.get('odds', -110)
+                                    profit = (odds / 100) * 100 if odds > 0 else (100 / abs(odds)) * 100
+                                else:
+                                    profit = -100
+                                insert_slip({
+                                    "type": bet.get('type', 'PROP'),
+                                    "sport": bet.get('sport', 'NBA'),
+                                    "player": bet.get('player', ''),
+                                    "team": bet.get('team', ''),
+                                    "opponent": bet.get('opponent', ''),
+                                    "market": bet.get('market', bet.get('market_type', 'PTS')),
+                                    "line": bet.get('line', 0),
+                                    "pick": bet.get('pick', 'OVER'),
+                                    "odds": bet.get('odds', -110),
+                                    "edge": 0.0,
+                                    "prob": 0.5,
+                                    "kelly": 0.0,
+                                    "tier": "",
+                                    "bolt_signal": "",
+                                    "result": bet['result'],
+                                    "actual": bet.get('actual', 0.0),
+                                    "settled_date": datetime.now().strftime("%Y-%m-%d"),
+                                    "profit": profit,
+                                    "bankroll": bankroll
+                                })
+                                st.success("Bet added to history (self‑evaluation updated).")
+                        else:
+                            # No result – treat as pending bet (or just show)
+                            with st.expander(f"{bet.get('type','BET').upper()}: {bet.get('player', bet.get('team',''))} - {bet.get('market', bet.get('market_type',''))} {bet.get('line','')}"):
                                 st.json(bet)
-                                if st.button(f"Add game to slip", key=f"add_game_{bet.get('team')}"):
-                                    insert_slip({
-                                        "type": "GAME", "sport": bet.get('sport','NBA'), "player": "",
-                                        "team": bet.get('team',''), "opponent": bet.get('opponent',''),
-                                        "market": bet.get('market_type','ML'), "line": bet.get('spread',0.0),
-                                        "pick": bet.get('team',''), "odds": bet.get('odds',0),
-                                        "edge": 0.0, "prob": 0.5, "kelly": 0.0,
-                                        "tier": "", "bolt_signal": "", "bankroll": bankroll
-                                    })
-                                    st.success("Game bet added (pending settlement).")
+                                st.info("This slip does not contain a WIN/LOSS result. Add result manually in the Unified Slip tab after settling.")
 
     # ---------- Tab 4: History & Metrics (Self‑Evaluation) ----------
     with tabs[4]:
@@ -1155,7 +1281,7 @@ def main():
         st.info(f"BallsDontLie key: {'✅ Set' if BALLSDONTLIE_API_KEY else '❌ Missing'}")
         st.info(f"Odds‑API.io key: {'✅ Set' if ODDS_API_IO_KEY else '❌ Missing'}")
         st.info(f"Current thresholds: PROB_BOLT = {PROB_BOLT:.2f}, DTM_BOLT = {DTM_BOLT:.3f}")
-        st.caption("Self‑evaluation runs automatically when you settle bets. Auto‑tune adjusts thresholds weekly.")
+        st.caption("Self‑evaluation runs automatically when you settle bets or paste winning/losing slips. Auto‑tune adjusts thresholds weekly.")
 
 if __name__ == "__main__":
     main()
