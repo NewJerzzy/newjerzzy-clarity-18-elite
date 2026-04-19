@@ -1,10 +1,10 @@
 """
-CLARITY 18.3 ELITE – Full Feature Set + Best Bet Per Game + Full Self Evaluation + Unified Slip Parser
+CLARITY 18.3 ELITE – Full Feature Set + Best Bet Per Game + Unified Slip Parser
 - Complete 5‑tab dashboard
 - Unified slip parser (MyBookie, Bovada, PrizePicks) with auto‑settlement
 - OCR screenshot support
 - Best Bet Per Game
-- Full Self Evaluation: auto‑tune, import props, pending bets, settle, clear, SEM, win rates
+- HISTORY & METRICS tab: settled bets, win rates, auto‑tune, SEM score (no redundant settlement)
 - Handles missing 'profit' column gracefully
 """
 
@@ -50,7 +50,7 @@ OCR_SPACE_API_KEY = "K89641020988957"
 ODDS_API_IO_KEY = "17d53b439b1e8dd6dfa35744326b3797408246c1fd2f9f2f252a48a1df690630"
 BALLSDONTLIE_API_KEY = "9d7c9ea5-54ea-4084-b0d0-2541ac7c360d"
 
-VERSION = "18.3 Elite (Full Feature + Parsers + Best Bet + Self Eval)"
+VERSION = "18.3 Elite (Full Feature + History & Metrics)"
 BUILD_DATE = "2026-04-18"
 
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -73,7 +73,6 @@ def init_db():
         closing_odds INTEGER, ml_proba REAL, wa_proba REAL,
         is_home INTEGER DEFAULT 0
     )""")
-    # Add missing columns if they don't exist (backward compatibility)
     try:
         c.execute("ALTER TABLE bets ADD COLUMN is_home INTEGER DEFAULT 0")
     except sqlite3.OperationalError:
@@ -190,7 +189,7 @@ def check_scan_timing(sport: str) -> None:
             st.warning("🏈 NFL lines are best scanned Monday 10 AM, Tuesday 6 AM, or Sunday 10 AM. Current time may not capture optimal value.")
 
 # =============================================================================
-# SPORT MODELS
+# SPORT MODELS (full)
 # =============================================================================
 SPORT_MODELS = {
     "NBA": {"distribution": "nbinom", "variance_factor": 1.15, "avg_total": 228.5, "home_advantage": 3.0},
@@ -253,7 +252,7 @@ STAT_CONFIG = {
 RED_TIER_PROPS = ["PRA", "PR", "PA", "H+R+RBI", "HITTER_FS", "PITCHER_FS"]
 
 # =============================================================================
-# HARDCODED TEAMS
+# HARDCODED TEAMS (full list)
 # =============================================================================
 HARDCODED_TEAMS = {
     "NBA": ["Atlanta Hawks", "Boston Celtics", "Brooklyn Nets", "Charlotte Hornets", "Chicago Bulls",
@@ -1268,12 +1267,10 @@ class Clarity18Elite:
         wins = (settled['result']=='WIN').sum()
         total = len(settled)
         win_rate = wins/total*100
-        # Use profit column if it exists and has non-null values, otherwise compute from odds
         if 'profit' in settled.columns and not settled['profit'].isnull().all():
             total_profit = settled['profit'].sum()
             total_stake = total * 100
         else:
-            # Fallback: approximate profit from odds
             total_profit = 0
             total_stake = total * 100
             for _, row in settled.iterrows():
@@ -1313,7 +1310,7 @@ class Clarity18Elite:
     def auto_tune_thresholds(self): pass
 
 # =============================================================================
-# UNIFIED SLIP PARSER – UPDATED PRIZEPICKS PARSER (handles "Loss", "Demon", "Final")
+# UNIFIED SLIP PARSER – MyBookie, Bovada, PrizePicks (handles "Loss"/"Win")
 # =============================================================================
 def parse_mybookie_slip(text: str) -> List[Dict]:
     bets = []
@@ -1387,56 +1384,28 @@ def parse_bovada_slip(text: str) -> List[Dict]:
     return bets
 
 def parse_prizepicks_slip(text: str) -> List[Dict]:
-    """
-    Parse PrizePicks slip text that includes actual results.
-    Handles format with "Loss", "Demon", "Final", and actual stats.
-    Example:
-        Brandon Woodruff
-        Brandon Woodruff
-        P
-        MLB
-        MIL
-        5
-        vs
-        MIA
-        2
-        Final
-        Demon
-        5.5
-        Ks
-        4
-    """
     bets = []
     lines = [l.strip() for l in text.split('\n') if l.strip()]
     i = 0
     while i < len(lines):
-        # Look for player name (sometimes repeated on two lines)
         if i + 1 < len(lines) and lines[i] == lines[i+1]:
             player = lines[i]
             i += 2
         else:
             player = lines[i]
             i += 1
-
-        # Skip lines until we find "Final" or a number that could be the line
         while i < len(lines) and lines[i] not in ("Final", "Demon") and not lines[i].replace('.', '').isdigit():
             i += 1
         if i >= len(lines):
             break
-
-        # If we hit "Final", move to next line (should be "Demon" or a number)
         if lines[i] == "Final":
             i += 1
         if i >= len(lines):
             break
-
-        # Next line might be "Demon" or the line value
         if lines[i] == "Demon":
             i += 1
         if i >= len(lines):
             break
-
-        # Now the line value (e.g., "5.5")
         try:
             line_val = float(lines[i])
         except ValueError:
@@ -1445,60 +1414,27 @@ def parse_prizepicks_slip(text: str) -> List[Dict]:
         i += 1
         if i >= len(lines):
             break
-
-        # Market (e.g., "Ks")
         market = lines[i]
         i += 1
         if i >= len(lines):
             break
-
-        # Actual value (e.g., "4")
         try:
             actual_val = float(lines[i])
         except ValueError:
             actual_val = 0.0
         i += 1
-
-        # Determine result from actual vs line OR from explicit "Loss"/"Win" text
-        # First check if there's a "Loss" or "Win" earlier in the text (global result)
-        # But for per‑leg, we compare actual > line.
         result = "WIN" if actual_val > line_val else "LOSS"
-        # Also look for explicit "Loss" in the overall text (for whole slip)
-        if "loss" in text.lower() and result == "LOSS":
-            pass  # already correct
-        elif "win" in text.lower() and result == "WIN":
-            pass
-
         market_map = {
-            "Ks": "KS",
-            "Hits+Runs+RBIs": "H+R+RBI",
-            "TB": "TB",
-            "Home Runs": "HR",
-            "Hits": "HITS",
-            "Points": "PTS",
-            "Rebounds": "REB",
-            "Assists": "AST",
-            "PRA": "PRA",
-            "PR": "PR",
-            "PA": "PA",
-            "SOG": "SOG",
-            "Saves": "SAVES",
+            "Ks": "KS", "Hits+Runs+RBIs": "H+R+RBI", "TB": "TB", "Home Runs": "HR", "Hits": "HITS",
+            "Points": "PTS", "Rebounds": "REB", "Assists": "AST", "PRA": "PRA", "PR": "PR", "PA": "PA",
+            "SOG": "SOG", "Saves": "SAVES",
         }
         market_std = market_map.get(market, market)
         sport = "MLB" if market in ("Ks", "Hits+Runs+RBIs", "TB", "Home Runs", "Hits") else "NBA"
-
         bets.append({
-            "type": "PROP",
-            "sport": sport,
-            "player": player,
-            "market": market_std,
-            "line": line_val,
-            "pick": "OVER",
-            "result": result,
-            "actual": actual_val,
-            "price": 0
+            "type": "PROP", "sport": sport, "player": player, "market": market_std,
+            "line": line_val, "pick": "OVER", "result": result, "actual": actual_val, "price": 0
         })
-
     return bets
 
 def parse_any_slip(text: str) -> List[Dict]:
@@ -1647,7 +1583,7 @@ def get_best_bet_for_game(game: Dict, engine: Clarity18Elite) -> Optional[Dict]:
     return best
 
 # =============================================================================
-# STREAMLIT DASHBOARD – FULL (with Best Bet and Self Evaluation)
+# STREAMLIT DASHBOARD – 5 TABS (HISTORY & METRICS instead of SELF EVALUATION)
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -1663,7 +1599,7 @@ def run_dashboard():
     col_title_left, col_title_center, col_title_right = st.columns([1,2,1])
     with col_title_center:
         st.title("🔮 CLARITY 18.3 ELITE")
-        st.markdown(f"<p style='text-align: center;'>Unified Quick Scanner | Auto-Settle | Best Bet Per Game | Full Self Evaluation | {VERSION}</p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='text-align: center;'>Unified Quick Scanner | Auto-Settle | Best Bet Per Game | History & Metrics | {VERSION}</p>", unsafe_allow_html=True)
     
     with st.sidebar:
         st.header("🚀 SYSTEM STATUS")
@@ -1697,7 +1633,7 @@ def run_dashboard():
         with col_metrics5: st.metric("DTM Bolt", f"{engine.dtm_bolt:.3f}")
 
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🎮 GAME MARKETS", "📋 PASTE & SCAN", "📊 SCANNERS & ACCURACY", "🎯 PLAYER PROPS", "🔧 SELF EVALUATION"
+        "🎮 GAME MARKETS", "📋 PASTE & SCAN", "📊 SCANNERS & ACCURACY", "🎯 PLAYER PROPS", "📊 HISTORY & METRICS"
     ])
 
     all_sports = ["NBA", "MLB", "NHL", "NFL", "SOCCER_EPL", "SOCCER_LALIGA", "COLLEGE_BASKETBALL", "COLLEGE_FOOTBALL", "ESPORTS_LOL", "ESPORTS_CS2"]
@@ -1709,14 +1645,12 @@ def run_dashboard():
     """
 
     # =========================================================================
-    # TAB 1: GAME MARKETS (with Best Bet Per Game)
+    # TAB 1: GAME MARKETS (Best Bet Per Game + auto-load + manual)
     # =========================================================================
     with tab1:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
         st.header("🎮 Game Markets")
-        
-        # Best Bet Per Game
         st.subheader("🏆 Best Bet Per Game (Clarity Picks Highest Edge)")
         col1, col2, col3 = st.columns([2,1,1])
         with col1:
@@ -1747,8 +1681,6 @@ def run_dashboard():
                     else:
                         st.warning(f"No games found for {best_sport}.")
         st.markdown("---")
-
-        # Existing Auto-Load Games (all lines)
         st.subheader("📅 Auto-Load Games (All Lines)")
         col1, col2, col3 = st.columns([2,1,1])
         with col1:
@@ -1974,7 +1906,7 @@ def run_dashboard():
                 st.info(f"Value: {result['value']}")
 
     # =========================================================================
-    # TAB 2: PASTE & SCAN – FULL WITH UNIFIED PARSER
+    # TAB 2: PASTE & SCAN (unchanged, includes all parsing)
     # =========================================================================
     with tab2:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
@@ -2185,10 +2117,12 @@ def run_dashboard():
                     if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
 
     # =========================================================================
-    # TAB 5: SELF EVALUATION – FULL
+    # TAB 5: HISTORY & METRICS (simplified – no settlement actions, only history and metrics)
     # =========================================================================
     with tab5:
-        st.header("🔧 Self Evaluation & Data Management")
+        st.header("📊 HISTORY & METRICS")
+        st.markdown("All settled bets appear below. Use this tab to review past performance and model tuning.")
+        
         st.subheader("📈 Auto-Tune History (ROI-based)")
         conn = sqlite3.connect(DB_PATH)
         df_tune = pd.read_sql_query("SELECT * FROM tuning_log ORDER BY id DESC", conn)
@@ -2197,104 +2131,34 @@ def run_dashboard():
             st.info("No tuning events yet. After 50+ settled bets, auto-tune will run weekly.")
         else:
             st.dataframe(df_tune)
+        
         st.markdown("---")
-        st.subheader("📥 Import Player Props (Auto-Settle)")
-        st.markdown("""
-        **Paste player props in numbered format.** Clarity will automatically fetch actual stats and mark WIN/LOSS.
-        Example:
-1
-Brandin Podziemski
-GSW vs LAC · PRA
-22.5
-NONE
-REVERSE
-0.0
-        """)
-        prop_text = st.text_area("Paste player props here", height=200, key="self_prop_text")
-        game_date_input = st.date_input("Game date (default: yesterday)", value=datetime.now() - timedelta(days=1), key="self_game_date")
-        if st.button("🔍 Import & Auto-Settle Props", type="primary", use_container_width=True, key="self_import"):
-            if prop_text.strip():
-                with st.spinner("Parsing and settling props..."):
-                    props = parse_pasted_props(prop_text, default_date=game_date_input.strftime("%Y-%m-%d"))
-                    if not props:
-                        st.warning("No props recognized. Check format.")
-                    else:
-                        imported_count = 0
-                        for prop in props:
-                            result, actual = auto_settle_prop(
-                                prop["player"], prop["market"], prop["line"], prop["pick"],
-                                prop.get("sport", "NBA"), prop.get("opponent", ""), prop["game_date"]
-                            )
-                            odds = -110
-                            profit = (abs(odds)/100 * 100) if result == "WIN" else -100
-                            if odds > 0:
-                                profit = (odds/100 * 100) if result == "WIN" else -100
-                            bet_id = hashlib.md5(f"{prop['player']}{prop['market']}{prop['line']}{datetime.now()}".encode()).hexdigest()[:12]
-                            conn = sqlite3.connect(DB_PATH)
-                            c = conn.cursor()
-                            c.execute("INSERT INTO bets (id, player, sport, market, line, pick, odds, edge, result, actual, date, settled_date, bolt_signal, profit) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                                      (bet_id, prop['player'], prop.get('sport','NBA'), prop['market'], prop['line'],
-                                       prop['pick'], odds, 0.0, result, actual,
-                                       prop['game_date'], datetime.now().strftime("%Y-%m-%d"), "AUTO_SETTLED", profit))
-                            conn.commit()
-                            conn.close()
-                            imported_count += 1
-                        st.success(f"✅ Imported and settled {imported_count} props!")
-                        engine._calibrate_sem()
-                        engine.auto_tune_thresholds()
-                        engine._auto_retrain_ml()
-                        st.rerun()
-            else:
-                st.warning("Please paste some props.")
-        st.markdown("---")
-        st.subheader("📋 Pending Bets")
-        conn = sqlite3.connect(DB_PATH)
-        pending_df = pd.read_sql_query("SELECT id, player, sport, market, line, pick, odds, date FROM bets WHERE result = 'PENDING' ORDER BY date DESC", conn)
-        conn.close()
-        if pending_df.empty:
-            st.info("No pending bets.")
+        st.subheader("📋 Recent Bets")
+        df_hist = get_recent_bets(200)
+        if df_hist.empty:
+            st.info("No bets stored yet. Paste slips in the PASTE & SCAN tab to get started.")
         else:
-            st.dataframe(pending_df)
-            st.subheader("Settle a Pending Bet")
-            bet_ids = pending_df['id'].tolist()
-            selected_bet_id = st.selectbox("Select bet to settle", bet_ids, format_func=lambda x: pending_df[pending_df['id']==x]['player'].iloc[0], key="self_bet_select")
-            actual_result = st.number_input("Actual result", value=0.0, step=0.5, key="self_actual_result")
-            if st.button("Settle Selected Bet", use_container_width=True, key="self_settle"):
-                conn = sqlite3.connect(DB_PATH)
-                c = conn.cursor()
-                c.execute("SELECT line, pick, odds FROM bets WHERE id = ?", (selected_bet_id,))
-                row = c.fetchone()
-                if row:
-                    line, pick, odds = row
-                    if pick and line:
-                        won = (actual_result > line) if pick == "OVER" else (actual_result < line)
-                        result = "WIN" if won else "LOSS"
-                        profit = (abs(odds)/100 * 100) if won else -100
-                        if odds > 0:
-                            profit = (odds/100 * 100) if won else -100
-                        c.execute("UPDATE bets SET result = ?, actual = ?, settled_date = ?, profit = ? WHERE id = ?",
-                                  (result, actual_result, datetime.now().strftime("%Y-%m-%d"), profit, selected_bet_id))
-                    else:
-                        c.execute("UPDATE bets SET result = ?, settled_date = ? WHERE id = ?",
-                                  ("SETTLED", datetime.now().strftime("%Y-%m-%d"), selected_bet_id))
-                    conn.commit()
-                    st.success(f"Bet settled")
-                    engine._calibrate_sem()
-                    engine.auto_tune_thresholds()
-                    engine._auto_retrain_ml()
-                    st.rerun()
-                conn.close()
-        st.markdown("---")
-        st.subheader("🧹 Clear Pending Bets (Testing Only)")
-        st.caption("This will delete ONLY pending bets (test data). Settled bets (WIN/LOSS) remain for self‑evaluation.")
-        if st.button("Clear Pending Bets", use_container_width=True, key="self_clear"):
-            clear_pending_bets()
-            st.success("All pending bets have been cleared. Settled history remains intact.")
-            st.rerun()
+            st.dataframe(df_hist)
+            st.caption("Settled bets are shown with WIN/LOSS result and actual value.")
+        
         st.markdown("---")
         st.subheader("📊 SEM Score Calibration")
         st.metric("Current SEM Score", f"{engine.sem_score}/100")
         st.caption("SEM Score auto‑calibrates based on betting accuracy. Higher score = more confident predictions.")
+        
+        st.markdown("---")
+        st.subheader("🏆 Win Rate by Sport & Market (Settled Bets Only)")
+        acc = engine.get_accuracy_dashboard()
+        if acc['total_bets'] > 0:
+            st.metric("Overall Win Rate", f"{acc['win_rate']}%")
+            if acc['by_sport']:
+                st.write("**By Sport**")
+                st.dataframe(pd.DataFrame(acc['by_sport']).T)
+            if acc['by_tier']:
+                st.write("**By Tier**")
+                st.dataframe(pd.DataFrame(acc['by_tier']).T)
+        else:
+            st.info("No settled bets yet.")
 
 if __name__ == "__main__":
     run_dashboard()
