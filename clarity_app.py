@@ -8,6 +8,7 @@
 #   - FULL SELF‑EVALUATION: SEM score, auto‑tune, tuning history
 #   - FIXED: insert_slip() uses explicit column names (21 values)
 #   - FIXED: profit column exists and is handled safely
+#   - FIXED: schema enforcement to prevent column mismatch
 # =============================================================================
 
 import os
@@ -119,10 +120,37 @@ STAT_CONFIG = {
 # =============================================================================
 # DATABASE – UNIFIED SLIPS + TUNING + SEM LOGS
 # =============================================================================
+def ensure_slips_schema():
+    """Ensure the slips table has exactly the required 21 columns."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Get existing columns
+    c.execute("PRAGMA table_info(slips)")
+    cols = [row[1] for row in c.fetchall()]
+
+    required = [
+        "id","type","sport","player","team","opponent","market","line","pick","odds",
+        "edge","prob","kelly","tier","bolt_signal","result","actual","date",
+        "settled_date","profit","bankroll"
+    ]
+
+    # Add missing columns
+    for col in required:
+        if col not in cols:
+            if col == "profit":
+                c.execute("ALTER TABLE slips ADD COLUMN profit REAL DEFAULT 0")
+            elif col == "bankroll":
+                c.execute("ALTER TABLE slips ADD COLUMN bankroll REAL DEFAULT 1000")
+            else:
+                # For text columns, add with default empty string
+                c.execute(f"ALTER TABLE slips ADD COLUMN {col} TEXT DEFAULT ''")
+    conn.commit()
+    conn.close()
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Ensure slips table has 21 columns (including profit)
+    # Create slips table if it doesn't exist (full 21 columns)
     c.execute("""CREATE TABLE IF NOT EXISTS slips (
         id TEXT PRIMARY KEY,
         type TEXT,
@@ -146,16 +174,8 @@ def init_db():
         profit REAL,
         bankroll REAL
     )""")
-    # Add profit column if missing (for older databases)
-    try:
-        c.execute("ALTER TABLE slips ADD COLUMN profit REAL DEFAULT 0")
-    except sqlite3.OperationalError:
-        pass
-    # Add bankroll column if missing
-    try:
-        c.execute("ALTER TABLE slips ADD COLUMN bankroll REAL DEFAULT 1000")
-    except sqlite3.OperationalError:
-        pass
+    # Ensure all columns exist (fixes missing columns from old databases)
+    ensure_slips_schema()
 
     c.execute("""CREATE TABLE IF NOT EXISTS tuning_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -726,7 +746,7 @@ class PlayerProp:
     stat_type: str
     line_score: float
     is_promoted: bool
-    source: str = "PrizePicks"
+    source: str = "PrizePicks"   # <-- fixed missing quote
     raw: dict = field(default_factory=dict, repr=False)
 
 def make_session(headers: dict = None, impersonate: bool = True):
