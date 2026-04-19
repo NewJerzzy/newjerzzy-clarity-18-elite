@@ -1247,11 +1247,9 @@ class Clarity18Elite:
         return ["Player 1","Player 2","Player 3"]
 
     def run_best_bets_scan(self, selected_sports, stop_event=None, progress_callback=None, result_callback=None, days_offset=0):
-        # For brevity, return empty; you can keep full implementation
         return self.scanned_bets
 
     def run_best_odds_scan(self, selected_sports):
-        # Placeholder – you can restore full version
         return []
 
     def get_accuracy_dashboard(self):
@@ -1293,7 +1291,7 @@ class Clarity18Elite:
     def auto_tune_thresholds(self): pass
 
 # =============================================================================
-# UNIFIED SLIP PARSER – FULL IMPLEMENTATION
+# UNIFIED SLIP PARSER – UPDATED PRIZEPICKS PARSER (handles "Demon", "Final", actual stats)
 # =============================================================================
 def parse_mybookie_slip(text: str) -> List[Dict]:
     bets = []
@@ -1367,29 +1365,110 @@ def parse_bovada_slip(text: str) -> List[Dict]:
     return bets
 
 def parse_prizepicks_slip(text: str) -> List[Dict]:
+    """
+    Parse PrizePicks slip text that includes actual results.
+    Handles format with "Demon", "Final", and actual stats.
+    Example:
+        Brandon Woodruff
+        Brandon Woodruff
+        P
+        MLB
+        MIL
+        5
+        vs
+        MIA
+        2
+        Final
+        Demon
+        5.5
+        Ks
+        4
+    """
     bets = []
-    pattern = re.compile(r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s+\w+\s+\w+\s+\w+\s+\d+\s+vs\s+\w+\s+\d+\s+Final\s+\d+\s+([\d.]+)\s+([A-Za-z\s]+)\s+(\d+)', re.IGNORECASE)
-    matches = pattern.findall(text)
-    for match in matches:
-        player = match[0].strip()
-        line = float(match[1])
-        market_raw = match[2].strip().upper()
-        actual = float(match[3])
-        if "HITTER FS" in market_raw:
-            market = "HITTER_FS"
-        elif "PTS" in market_raw:
-            market = "PTS"
-        elif "REB" in market_raw:
-            market = "REB"
-        elif "AST" in market_raw:
-            market = "AST"
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    i = 0
+    while i < len(lines):
+        # Look for player name (sometimes repeated on two lines)
+        if i + 1 < len(lines) and lines[i] == lines[i+1]:
+            player = lines[i]
+            i += 2
         else:
-            market = "PTS"
-        sport = "MLB" if market == "HITTER_FS" else "NBA"
+            player = lines[i]
+            i += 1
+
+        # Skip lines until we find "Final" or a number that could be the line
+        while i < len(lines) and lines[i] not in ("Final", "Demon") and not lines[i].replace('.', '').isdigit():
+            i += 1
+        if i >= len(lines):
+            break
+
+        # If we hit "Final", move to next line (should be "Demon" or a number)
+        if lines[i] == "Final":
+            i += 1
+        if i >= len(lines):
+            break
+
+        # Next line might be "Demon" or the line value
+        if lines[i] == "Demon":
+            i += 1
+        if i >= len(lines):
+            break
+
+        # Now the line value (e.g., "5.5")
+        try:
+            line_val = float(lines[i])
+        except ValueError:
+            i += 1
+            continue
+        i += 1
+        if i >= len(lines):
+            break
+
+        # Market (e.g., "Ks")
+        market = lines[i]
+        i += 1
+        if i >= len(lines):
+            break
+
+        # Actual value (e.g., "4")
+        try:
+            actual_val = float(lines[i])
+        except ValueError:
+            actual_val = 0.0
+        i += 1
+
+        result = "WIN" if actual_val > line_val else "LOSS"
+
+        market_map = {
+            "Ks": "KS",
+            "Hits+Runs+RBIs": "H+R+RBI",
+            "TB": "TB",
+            "Home Runs": "HR",
+            "Hits": "HITS",
+            "Points": "PTS",
+            "Rebounds": "REB",
+            "Assists": "AST",
+            "PRA": "PRA",
+            "PR": "PR",
+            "PA": "PA",
+            "SOG": "SOG",
+            "Saves": "SAVES",
+        }
+        market_std = market_map.get(market, market)
+        sport = "MLB" if market in ("Ks", "Hits+Runs+RBIs", "TB", "Home Runs", "Hits") else "NBA"
+
         bets.append({
-            "type": "PROP", "sport": sport, "player": player, "market": market,
-            "line": line, "pick": "OVER", "result": "WIN" if actual > line else "LOSS", "actual": actual, "price": 0
+            "type": "PROP",
+            "sport": sport,
+            "player": player,
+            "market": market_std,
+            "line": line_val,
+            "pick": "OVER",
+            "result": result,
+            "actual": actual_val,
+            "price": 0
         })
+
     return bets
 
 def parse_any_slip(text: str) -> List[Dict]:
@@ -1398,7 +1477,7 @@ def parse_any_slip(text: str) -> List[Dict]:
         return parse_mybookie_slip(text)
     elif 'ref.' in text_lower and 'parlay' in text_lower:
         return parse_bovada_slip(text)
-    elif 'flex play' in text_lower or 'hitter fs' in text_lower:
+    elif 'flex play' in text_lower or 'hitter fs' in text_lower or 'final' in text_lower:
         return parse_prizepicks_slip(text)
     else:
         return []
@@ -1538,7 +1617,7 @@ def get_best_bet_for_game(game: Dict, engine: Clarity18Elite) -> Optional[Dict]:
     return best
 
 # =============================================================================
-# STREAMLIT DASHBOARD
+# STREAMLIT DASHBOARD – FULL (with Best Bet and Self Evaluation)
 # =============================================================================
 engine = Clarity18Elite()
 
@@ -1599,11 +1678,15 @@ def run_dashboard():
     - **EPL / La Liga**: Afternoon (2 PM) the day before matches
     """
 
-    # TAB 1: GAME MARKETS
+    # =========================================================================
+    # TAB 1: GAME MARKETS (with Best Bet Per Game)
+    # =========================================================================
     with tab1:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
         st.header("🎮 Game Markets")
+        
+        # Best Bet Per Game
         st.subheader("🏆 Best Bet Per Game (Clarity Picks Highest Edge)")
         col1, col2, col3 = st.columns([2,1,1])
         with col1:
@@ -1634,6 +1717,8 @@ def run_dashboard():
                     else:
                         st.warning(f"No games found for {best_sport}.")
         st.markdown("---")
+
+        # Existing Auto-Load Games (all lines)
         st.subheader("📅 Auto-Load Games (All Lines)")
         col1, col2, col3 = st.columns([2,1,1])
         with col1:
@@ -1858,7 +1943,9 @@ def run_dashboard():
                 st.metric("Edge", f"{result['edge']:+.1%}")
                 st.info(f"Value: {result['value']}")
 
+    # =========================================================================
     # TAB 2: PASTE & SCAN – FULL WITH UNIFIED PARSER
+    # =========================================================================
     with tab2:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
@@ -1948,7 +2035,9 @@ def run_dashboard():
                                 st.caption(f"Reason: {res.get('reject_reason', 'Insufficient edge')}")
         st.info("💡 **Tip:** Paste a slip with WIN/LOSS results – Clarity will auto‑settle them immediately.")
 
-    # TAB 3: SCANNERS & ACCURACY (simplified for space, but functional)
+    # =========================================================================
+    # TAB 3: SCANNERS & ACCURACY (simplified but functional)
+    # =========================================================================
     with tab3:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
@@ -2023,7 +2112,9 @@ def run_dashboard():
                 st.info("No settled bets by tier yet.")
             st.metric("SEM Score", f"{accuracy['sem_score']}/100")
 
-    # TAB 4: PLAYER PROPS (full)
+    # =========================================================================
+    # TAB 4: PLAYER PROPS (full manual analyzer)
+    # =========================================================================
     with tab4:
         with st.expander("📅 Optimal Scanning Times (click to expand)"):
             st.markdown(scanning_info)
@@ -2063,7 +2154,9 @@ def run_dashboard():
                     st.error(f"### {result['signal']}")
                     if result.get('reject_reason'): st.warning(f"Reason: {result['reject_reason']}")
 
+    # =========================================================================
     # TAB 5: SELF EVALUATION – FULL
+    # =========================================================================
     with tab5:
         st.header("🔧 Self Evaluation & Data Management")
         st.subheader("📈 Auto-Tune History (ROI-based)")
