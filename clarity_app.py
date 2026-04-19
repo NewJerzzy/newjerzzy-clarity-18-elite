@@ -1,11 +1,10 @@
 # =============================================================================
-# CLARITY 22.5 – SOVEREIGN UNIFIED ENGINE (STREAMLINED + PARLAY SUGGESTIONS)
+# CLARITY 22.5 – SOVEREIGN UNIFIED ENGINE (BEST BETS + PARLAYS)
 #   - Dual sniffer (PrizePicks + Underdog) with browser headers
 #   - Real BallsDontLie stats + prop model (WMA/volatility/Kelly)
 #   - Game analyzer (ML, spreads, totals) with auto‑load from Odds‑API.io
-#   - NO UNIFIED SLIP TAB (removed for simplicity)
+#   - NEW: "🏆 Best Bets" tab – parlays from approved bets (2‑4 legs) + +EV suggestions
 #   - Paste & Scan: explains wins/losses, stores results, feeds SEM
-#   - NEW: "Clarity Suggestions" tab – builds 2‑5 leg parlays from top approved bets, ranked by confidence
 #   - FULL SELF‑EVALUATION: SEM score, auto‑tune thresholds
 # =============================================================================
 
@@ -31,7 +30,7 @@ import requests
 
 warnings.filterwarnings("ignore")
 
-VERSION = "22.5 – Streamlined + Parlay Suggestions (2-5 legs)"
+VERSION = "22.5 – Best Bets + Parlays"
 BUILD_DATE = "2026-04-18"
 
 # =============================================================================
@@ -332,19 +331,19 @@ def analyze_moneyline(home_team: str, away_team: str, sport: str, home_odds: flo
     away_prob = 1 - home_prob
     home_edge = home_prob - implied_prob(home_odds)
     away_edge = away_prob - implied_prob(away_odds)
-    return {"home": home_team, "away": away_team, "home_edge": home_edge, "away_edge": away_edge}
+    return {"home": home_team, "away": away_team, "home_edge": home_edge, "away_edge": away_edge, "home_prob": home_prob, "away_prob": away_prob}
 
 def analyze_spread(home_team: str, away_team: str, spread: float, spread_odds: float, sport: str) -> Dict:
     home_cover_prob = 0.5
     home_edge = home_cover_prob - implied_prob(spread_odds)
     away_edge = -home_edge
-    return {"home": home_team, "away": away_team, "spread": spread, "home_edge": home_edge, "away_edge": away_edge}
+    return {"home": home_team, "away": away_team, "spread": spread, "home_edge": home_edge, "away_edge": away_edge, "home_prob": home_cover_prob, "away_prob": 1-home_cover_prob}
 
 def analyze_total(total_line: float, over_odds: float, under_odds: float, sport: str) -> Dict:
     over_prob = 0.5
     over_edge = over_prob - implied_prob(over_odds)
     under_edge = -over_edge
-    return {"total": total_line, "over_edge": over_edge, "under_edge": under_edge}
+    return {"total": total_line, "over_edge": over_edge, "under_edge": under_edge, "over_prob": over_prob, "under_prob": 1-over_prob}
 
 # =============================================================================
 # GAME SCANNER (Odds-API.io)
@@ -927,17 +926,11 @@ def auto_tune_thresholds():
     conn.close()
 
 # =============================================================================
-# PARLAY GENERATION (2-5 legs from approved bets)
+# PARLAY GENERATION (2-4 legs from approved bets)
 # =============================================================================
-def generate_parlays(approved_bets: List[Dict], max_legs: int = 5, top_n: int = 20) -> List[Dict]:
-    """
-    approved_bets: list of dicts with keys: description, edge, prob (win probability), odds (american)
-    Generates all combinations of 2..max_legs legs, ensures no duplicate players/teams/games.
-    Returns list sorted by total edge descending, then by confidence (product of probs).
-    """
+def generate_parlays(approved_bets: List[Dict], max_legs: int = 4, top_n: int = 20) -> List[Dict]:
     if len(approved_bets) < 2:
         return []
-    # Remove potential duplicates (same player/game)
     unique = {}
     for bet in approved_bets:
         key = bet.get('unique_key', bet['description'])
@@ -953,7 +946,6 @@ def generate_parlays(approved_bets: List[Dict], max_legs: int = 5, top_n: int = 
             decimal_odds = 1.0
             for b in combo:
                 total_prob *= b['prob']
-                # Convert american odds to decimal
                 if b['odds'] > 0:
                     dec = b['odds'] / 100 + 1
                 else:
@@ -967,23 +959,22 @@ def generate_parlays(approved_bets: List[Dict], max_legs: int = 5, top_n: int = 
                 'estimated_odds': estimated_american,
                 'num_legs': n
             })
-    # Sort by total_edge descending, then confidence descending
     parlays.sort(key=lambda x: (-x['total_edge'], -x['confidence']))
     return parlays[:top_n]
 
 # =============================================================================
-# STREAMLIT UI – WITH NEW "CLARITY SUGGESTIONS" TAB
+# STREAMLIT UI – WITH "🏆 BEST BETS" TAB (replaces old Clarity Suggestions)
 # =============================================================================
 def main():
-    st.set_page_config(page_title="CLARITY 22.5 – Parlay Suggestions", layout="wide")
+    st.set_page_config(page_title="CLARITY 22.5 – Best Bets + Parlays", layout="wide")
     st.title(f"CLARITY {VERSION}")
-    st.caption(f"Sniffer (PrizePicks/Underdog) + Prop Model + Game Analyzer + Parlay Suggestions • {BUILD_DATE}")
+    st.caption(f"Sniffer (PrizePicks/Underdog) + Prop Model + Game Analyzer + Best Bets (Parlays) • {BUILD_DATE}")
 
     bankroll = st.sidebar.number_input("Your Bankroll ($)", value=1000.0, min_value=100.0, step=50.0)
 
-    tabs = st.tabs(["🎯 Player Props", "🏟️ Game Analyzer", "📋 Paste & Scan", "💡 Clarity Suggestions", "📊 History & Metrics", "⚙️ Tools"])
+    tabs = st.tabs(["🎯 Player Props", "🏟️ Game Analyzer", "🏆 Best Bets", "📋 Paste & Scan", "📊 History & Metrics", "⚙️ Tools"])
 
-    # ---------- Tab 0: Player Props (with "Show Best Bets" button) ----------
+    # ---------- Tab 0: Player Props (fetch + manual) ----------
     with tabs[0]:
         st.header("Player Props Analyzer")
         sport = st.selectbox("Sport", list(SPORT_MODELS.keys()), key="pp_sport")
@@ -1003,40 +994,10 @@ def main():
                     st.session_state['live_props'] = []
         if 'live_props' in st.session_state and st.session_state['live_props']:
             st.subheader("Live Props")
-            # Show "Show Best Bets" button
-            if st.button("🏆 Show Best Bets (Edge > 4%)"):
-                best = []
-                for prop in st.session_state['live_props']:
-                    # Analyze prop with default pick OVER (since we don't know pick from sniffer)
-                    # We'll evaluate both OVER and UNDER and take the higher edge
-                    res_over = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "OVER", sport, -110, bankroll)
-                    res_under = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "UNDER", sport, -110, bankroll)
-                    if res_over['edge'] > res_under['edge']:
-                        best_edge = res_over['edge']
-                        best_pick = "OVER"
-                        res = res_over
-                    else:
-                        best_edge = res_under['edge']
-                        best_pick = "UNDER"
-                        res = res_under
-                    if best_edge > 0.04:
-                        best.append({
-                            "Player": prop.player_name,
-                            "Market": prop.stat_type,
-                            "Line": prop.line_score,
-                            "Recommended Pick": best_pick,
-                            "Edge": f"{best_edge:.1%}",
-                            "Win Prob": f"{res['prob']:.1%}",
-                            "Kelly Stake": f"${res['stake']:.2f}"
-                        })
-                if best:
-                    st.dataframe(pd.DataFrame(best))
-                else:
-                    st.info("No props with edge > 4% found.")
-            # Also allow manual selection (optional)
+            # Removed "Show Best Bets" button – now in Best Bets tab
             prop_list = st.session_state['live_props']
             options = {f"{p.player_name} - {p.stat_type} {p.line_score}": p for p in prop_list}
-            sel = st.selectbox("Or select a specific prop to analyze", list(options.keys()))
+            sel = st.selectbox("Select a prop to analyze manually", list(options.keys()))
             prop = options[sel]
             st.session_state.pp_player = prop.player_name
             st.session_state.pp_market = prop.stat_type
@@ -1065,9 +1026,8 @@ def main():
             else:
                 st.error("### PASS — No edge")
             st.line_chart(pd.DataFrame({"Game": range(1, len(res["stats"])+1), "Stat": res["stats"]}).set_index("Game"))
-            # No "Add to Slip" button – removed to avoid pending bets
 
-    # ---------- Tab 1: Game Analyzer (auto‑approval) ----------
+    # ---------- Tab 1: Game Analyzer (auto‑load + approval) ----------
     with tabs[1]:
         st.header("Game Analyzer – ML, Spreads, Totals with Clarity Approval")
         sport2 = st.selectbox("Sport", ["NBA", "NFL", "MLB", "NHL"], index=0, key="game_sport")
@@ -1089,17 +1049,14 @@ def main():
                 home = game.get('home', '')
                 away = game.get('away', '')
                 st.subheader(f"{home} vs {away}")
-                # Moneyline
                 if game.get('home_ml') and game.get('away_ml'):
                     ml_res = analyze_moneyline(home, away, sport2, game['home_ml'], game['away_ml'])
                     st.markdown(f"**Moneyline:** {home} {game['home_ml']} → {'✅ APPROVED' if ml_res['home_edge'] > 0.02 else '❌ PASS'} (Edge: {ml_res['home_edge']:.1%})")
                     st.markdown(f"**Moneyline:** {away} {game['away_ml']} → {'✅ APPROVED' if ml_res['away_edge'] > 0.02 else '❌ PASS'} (Edge: {ml_res['away_edge']:.1%})")
-                # Spread
                 if game.get('spread') is not None and game.get('spread_odds'):
                     spread_res = analyze_spread(home, away, game['spread'], game['spread_odds'], sport2)
                     st.markdown(f"**Spread {game['spread']:+.1f}:** {home} → {'✅ APPROVED' if spread_res['home_edge'] > 0.02 else '❌ PASS'} (Edge: {spread_res['home_edge']:.1%})")
                     st.markdown(f"**Spread {game['spread']:+.1f}:** {away} → {'✅ APPROVED' if spread_res['away_edge'] > 0.02 else '❌ PASS'} (Edge: {spread_res['away_edge']:.1%})")
-                # Total
                 if game.get('total') is not None and game.get('over_odds') and game.get('under_odds'):
                     total_res = analyze_total(game['total'], game['over_odds'], game['under_odds'], sport2)
                     st.markdown(f"**Total {game['total']}:** OVER {game['over_odds']} → {'✅ APPROVED' if total_res['over_edge'] > 0.02 else '❌ PASS'} (Edge: {total_res['over_edge']:.1%})")
@@ -1133,8 +1090,195 @@ def main():
                 st.markdown(f"OVER {total}: {'✅ APPROVED' if res['over_edge'] > 0.02 else '❌ PASS'} (Edge: {res['over_edge']:.1%})")
                 st.markdown(f"UNDER {total}: {'✅ APPROVED' if res['under_edge'] > 0.02 else '❌ PASS'} (Edge: {res['under_edge']:.1%})")
 
-    # ---------- Tab 2: Paste & Scan (unchanged) ----------
+    # ---------- Tab 2: BEST BETS (parlays from approved bets + +EV suggestions) ----------
     with tabs[2]:
+        st.header("🏆 Best Bets – Parlays (2-4 legs) from Clarity Approved")
+        st.markdown("Automatically generated from fetched props (edge > 4%) and loaded game lines (edge > 2%). Minimum 2 legs required.")
+        if st.button("🔄 Refresh Best Bets"):
+            st.session_state['generate_best_bets'] = True
+        # Collect approved bets
+        approved_bets = []
+        plus_ev_bets = []  # edge positive but below threshold
+        # Props
+        if 'live_props' in st.session_state and st.session_state['live_props']:
+            for prop in st.session_state['live_props']:
+                res_over = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "OVER", "NBA", -110, bankroll)
+                res_under = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "UNDER", "NBA", -110, bankroll)
+                if res_over['edge'] > res_under['edge']:
+                    best_edge = res_over['edge']
+                    best_pick = "OVER"
+                    res = res_over
+                else:
+                    best_edge = res_under['edge']
+                    best_pick = "UNDER"
+                    res = res_under
+                if best_edge > 0.04:
+                    approved_bets.append({
+                        "description": f"{prop.player_name} {prop.stat_type} {best_pick} {prop.line_score}",
+                        "edge": best_edge,
+                        "prob": res['prob'],
+                        "odds": -110,
+                        "unique_key": prop.player_name + prop.stat_type + best_pick
+                    })
+                elif best_edge > 0:
+                    plus_ev_bets.append({
+                        "description": f"{prop.player_name} {prop.stat_type} {best_pick} {prop.line_score}",
+                        "edge": best_edge,
+                        "prob": res['prob'],
+                        "odds": -110,
+                        "unique_key": prop.player_name + prop.stat_type + best_pick
+                    })
+        # Game lines
+        if 'auto_games' in st.session_state and st.session_state['auto_games']:
+            for game in st.session_state['auto_games']:
+                sport_g = game.get('sport', 'NBA')
+                home = game.get('home', '')
+                away = game.get('away', '')
+                # ML
+                if game.get('home_ml') and game.get('away_ml'):
+                    ml_res = analyze_moneyline(home, away, sport_g, game['home_ml'], game['away_ml'])
+                    if ml_res['home_edge'] > 0.02:
+                        approved_bets.append({
+                            "description": f"{home} ML ({game['home_ml']})",
+                            "edge": ml_res['home_edge'],
+                            "prob": ml_res['home_prob'],
+                            "odds": game['home_ml'],
+                            "unique_key": f"{home}_ML"
+                        })
+                    elif ml_res['home_edge'] > 0:
+                        plus_ev_bets.append({
+                            "description": f"{home} ML ({game['home_ml']})",
+                            "edge": ml_res['home_edge'],
+                            "prob": ml_res['home_prob'],
+                            "odds": game['home_ml'],
+                            "unique_key": f"{home}_ML"
+                        })
+                    if ml_res['away_edge'] > 0.02:
+                        approved_bets.append({
+                            "description": f"{away} ML ({game['away_ml']})",
+                            "edge": ml_res['away_edge'],
+                            "prob": ml_res['away_prob'],
+                            "odds": game['away_ml'],
+                            "unique_key": f"{away}_ML"
+                        })
+                    elif ml_res['away_edge'] > 0:
+                        plus_ev_bets.append({
+                            "description": f"{away} ML ({game['away_ml']})",
+                            "edge": ml_res['away_edge'],
+                            "prob": ml_res['away_prob'],
+                            "odds": game['away_ml'],
+                            "unique_key": f"{away}_ML"
+                        })
+                # Spread
+                if game.get('spread') is not None and game.get('spread_odds'):
+                    spread_res = analyze_spread(home, away, game['spread'], game['spread_odds'], sport_g)
+                    if spread_res['home_edge'] > 0.02:
+                        approved_bets.append({
+                            "description": f"{home} {game['spread']:+.1f} ({game['spread_odds']})",
+                            "edge": spread_res['home_edge'],
+                            "prob": spread_res['home_prob'],
+                            "odds": game['spread_odds'],
+                            "unique_key": f"{home}_spread"
+                        })
+                    elif spread_res['home_edge'] > 0:
+                        plus_ev_bets.append({
+                            "description": f"{home} {game['spread']:+.1f} ({game['spread_odds']})",
+                            "edge": spread_res['home_edge'],
+                            "prob": spread_res['home_prob'],
+                            "odds": game['spread_odds'],
+                            "unique_key": f"{home}_spread"
+                        })
+                    if spread_res['away_edge'] > 0.02:
+                        approved_bets.append({
+                            "description": f"{away} {game['spread']:+.1f} ({game['spread_odds']})",
+                            "edge": spread_res['away_edge'],
+                            "prob": spread_res['away_prob'],
+                            "odds": game['spread_odds'],
+                            "unique_key": f"{away}_spread"
+                        })
+                    elif spread_res['away_edge'] > 0:
+                        plus_ev_bets.append({
+                            "description": f"{away} {game['spread']:+.1f} ({game['spread_odds']})",
+                            "edge": spread_res['away_edge'],
+                            "prob": spread_res['away_prob'],
+                            "odds": game['spread_odds'],
+                            "unique_key": f"{away}_spread"
+                        })
+                # Total
+                if game.get('total') is not None and game.get('over_odds') and game.get('under_odds'):
+                    total_res = analyze_total(game['total'], game['over_odds'], game['under_odds'], sport_g)
+                    if total_res['over_edge'] > 0.02:
+                        approved_bets.append({
+                            "description": f"OVER {game['total']} ({game['over_odds']})",
+                            "edge": total_res['over_edge'],
+                            "prob": total_res['over_prob'],
+                            "odds": game['over_odds'],
+                            "unique_key": f"OVER_{game['total']}"
+                        })
+                    elif total_res['over_edge'] > 0:
+                        plus_ev_bets.append({
+                            "description": f"OVER {game['total']} ({game['over_odds']})",
+                            "edge": total_res['over_edge'],
+                            "prob": total_res['over_prob'],
+                            "odds": game['over_odds'],
+                            "unique_key": f"OVER_{game['total']}"
+                        })
+                    if total_res['under_edge'] > 0.02:
+                        approved_bets.append({
+                            "description": f"UNDER {game['total']} ({game['under_odds']})",
+                            "edge": total_res['under_edge'],
+                            "prob": total_res['under_prob'],
+                            "odds": game['under_odds'],
+                            "unique_key": f"UNDER_{game['total']}"
+                        })
+                    elif total_res['under_edge'] > 0:
+                        plus_ev_bets.append({
+                            "description": f"UNDER {game['total']} ({game['under_odds']})",
+                            "edge": total_res['under_edge'],
+                            "prob": total_res['under_prob'],
+                            "odds": game['under_odds'],
+                            "unique_key": f"UNDER_{game['total']}"
+                        })
+        if not approved_bets:
+            st.warning("No approved bets (edge > 4% for props, >2% for games). Load games or fetch props first.")
+        else:
+            st.subheader(f"📈 Approved Bets ({len(approved_bets)} legs available)")
+            # Show approved bets table
+            approved_df = pd.DataFrame([{
+                "Bet": b['description'],
+                "Edge": f"{b['edge']:.1%}",
+                "Win Prob": f"{b['prob']:.1%}",
+                "Odds": b['odds']
+            } for b in approved_bets])
+            st.dataframe(approved_df, use_container_width=True)
+            # Generate parlays
+            parlays = generate_parlays(approved_bets, max_legs=4, top_n=20)
+            if parlays:
+                st.subheader(f"🎲 Top Parlays ({len(parlays)} combinations, 2-4 legs)")
+                for i, p in enumerate(parlays):
+                    with st.expander(f"#{i+1}: {p['num_legs']}-Leg Parlay – Total Edge: {p['total_edge']:.1%} – Est. Odds: {p['estimated_odds']:+d}"):
+                        st.markdown("**Legs:**")
+                        for leg in p['legs']:
+                            st.markdown(f"- {leg}")
+                        st.metric("Confidence (product of win probs)", f"{p['confidence']:.1%}")
+                        st.metric("Total Edge", f"{p['total_edge']:.1%}")
+                        st.caption(f"Estimated parlay odds: {p['estimated_odds']:+d}")
+            else:
+                st.info("Not enough approved bets to form a 2‑leg parlay (need at least 2 unique legs).")
+        # +EV suggestions (positive edge but below approval threshold)
+        if plus_ev_bets:
+            st.subheader("💰 +EV Suggestions (edge > 0% but below approval threshold)")
+            ev_df = pd.DataFrame([{
+                "Bet": b['description'],
+                "Edge": f"{b['edge']:.1%}",
+                "Win Prob": f"{b['prob']:.1%}",
+                "Odds": b['odds']
+            } for b in plus_ev_bets])
+            st.dataframe(ev_df, use_container_width=True)
+            st.caption("These bets have positive edge but did not meet the strict approval threshold. You may manually include them in parlays if desired.")
+
+    # ---------- Tab 3: Paste & Scan (unchanged) ----------
+    with tabs[3]:
         st.header("Paste & Scan Slips")
         st.markdown("Paste any slip (single game, parlay, multiple sports) – Clarity will extract individual bets and explain why you won or lost.")
         text = st.text_area("Paste slip text", height=300)
@@ -1212,115 +1356,7 @@ def main():
                                 })
                                 st.success("Bet added to history (self‑evaluation updated).")
 
-    # ---------- Tab 3: Clarity Suggestions (parlays from approved bets) ----------
-    with tabs[3]:
-        st.header("💡 Clarity Suggestions – Parlays (2-5 legs)")
-        st.markdown("Based on current live props and game lines with positive edge, Clarity generates the best parlay combinations.")
-        if st.button("🔄 Generate Parlays Now"):
-            # Collect approved props (edge > 4%)
-            approved_bets = []
-            # First, try to get live props from last fetch (if any)
-            if 'live_props' in st.session_state and st.session_state['live_props']:
-                for prop in st.session_state['live_props']:
-                    res_over = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "OVER", "NBA", -110, bankroll)
-                    res_under = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "UNDER", "NBA", -110, bankroll)
-                    if res_over['edge'] > res_under['edge']:
-                        best_edge = res_over['edge']
-                        best_pick = "OVER"
-                        res = res_over
-                    else:
-                        best_edge = res_under['edge']
-                        best_pick = "UNDER"
-                        res = res_under
-                    if best_edge > 0.04:
-                        approved_bets.append({
-                            "description": f"{prop.player_name} {prop.stat_type} {best_pick} {prop.line_score}",
-                            "edge": best_edge,
-                            "prob": res['prob'],
-                            "odds": -110,  # default
-                            "unique_key": prop.player_name + prop.stat_type
-                        })
-            # Also include approved game lines from loaded games
-            if 'auto_games' in st.session_state and st.session_state['auto_games']:
-                for game in st.session_state['auto_games']:
-                    sport_g = game.get('sport', 'NBA')
-                    home = game.get('home', '')
-                    away = game.get('away', '')
-                    # ML
-                    if game.get('home_ml') and game.get('away_ml'):
-                        ml_res = analyze_moneyline(home, away, sport_g, game['home_ml'], game['away_ml'])
-                        if ml_res['home_edge'] > 0.02:
-                            approved_bets.append({
-                                "description": f"{home} ML ({game['home_ml']})",
-                                "edge": ml_res['home_edge'],
-                                "prob": 0.5 + ml_res['home_edge']/2,
-                                "odds": game['home_ml'],
-                                "unique_key": f"{home}_ML"
-                            })
-                        if ml_res['away_edge'] > 0.02:
-                            approved_bets.append({
-                                "description": f"{away} ML ({game['away_ml']})",
-                                "edge": ml_res['away_edge'],
-                                "prob": 0.5 + ml_res['away_edge']/2,
-                                "odds": game['away_ml'],
-                                "unique_key": f"{away}_ML"
-                            })
-                    # Spread
-                    if game.get('spread') is not None and game.get('spread_odds'):
-                        spread_res = analyze_spread(home, away, game['spread'], game['spread_odds'], sport_g)
-                        if spread_res['home_edge'] > 0.02:
-                            approved_bets.append({
-                                "description": f"{home} {game['spread']:+.1f} ({game['spread_odds']})",
-                                "edge": spread_res['home_edge'],
-                                "prob": 0.5 + spread_res['home_edge']/2,
-                                "odds": game['spread_odds'],
-                                "unique_key": f"{home}_spread"
-                            })
-                        if spread_res['away_edge'] > 0.02:
-                            approved_bets.append({
-                                "description": f"{away} {game['spread']:+.1f} ({game['spread_odds']})",
-                                "edge": spread_res['away_edge'],
-                                "prob": 0.5 + spread_res['away_edge']/2,
-                                "odds": game['spread_odds'],
-                                "unique_key": f"{away}_spread"
-                            })
-                    # Total
-                    if game.get('total') is not None and game.get('over_odds') and game.get('under_odds'):
-                        total_res = analyze_total(game['total'], game['over_odds'], game['under_odds'], sport_g)
-                        if total_res['over_edge'] > 0.02:
-                            approved_bets.append({
-                                "description": f"OVER {game['total']} ({game['over_odds']})",
-                                "edge": total_res['over_edge'],
-                                "prob": 0.5 + total_res['over_edge']/2,
-                                "odds": game['over_odds'],
-                                "unique_key": f"OVER_{game['total']}"
-                            })
-                        if total_res['under_edge'] > 0.02:
-                            approved_bets.append({
-                                "description": f"UNDER {game['total']} ({game['under_odds']})",
-                                "edge": total_res['under_edge'],
-                                "prob": 0.5 + total_res['under_edge']/2,
-                                "odds": game['under_odds'],
-                                "unique_key": f"UNDER_{game['total']}"
-                            })
-            if len(approved_bets) < 2:
-                st.warning("Not enough approved bets (edge > 4% for props, >2% for games). Load games or fetch props first.")
-            else:
-                parlays = generate_parlays(approved_bets, max_legs=5, top_n=30)
-                if not parlays:
-                    st.info("No parlays generated (need at least 2 approved bets).")
-                else:
-                    st.success(f"Generated {len(parlays)} parlays (top 30 shown)")
-                    for i, p in enumerate(parlays):
-                        with st.expander(f"#{i+1}: {p['num_legs']}-Leg Parlay – Total Edge: {p['total_edge']:.1%} – Est. Odds: {p['estimated_odds']:+d}"):
-                            st.markdown("**Legs:**")
-                            for leg in p['legs']:
-                                st.markdown(f"- {leg}")
-                            st.metric("Confidence (product of win probs)", f"{p['confidence']:.1%}")
-                            st.metric("Total Edge", f"{p['total_edge']:.1%}")
-                            st.caption(f"Estimated parlay odds: {p['estimated_odds']:+d}")
-
-    # ---------- Tab 4: History & Metrics ----------
+    # ---------- Tab 4: History & Metrics (unchanged) ----------
     with tabs[4]:
         st.header("📊 History & Metrics (Self‑Evaluation)")
         st.markdown("Clarity automatically evaluates its own performance and tunes thresholds.")
@@ -1357,7 +1393,7 @@ def main():
         else:
             st.dataframe(df_recent[["date", "type", "player", "team", "market", "pick", "result", "profit"]])
 
-    # ---------- Tab 5: Tools ----------
+    # ---------- Tab 5: Tools (unchanged) ----------
     with tabs[5]:
         st.header("Tools")
         st.info(f"curl_cffi available: {CURL_AVAILABLE}")
