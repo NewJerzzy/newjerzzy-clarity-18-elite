@@ -2,7 +2,7 @@
 # CLARITY 23.0 – ELITE MULTI‑SPORT ENGINE (FULLY UPGRADED)
 #   - All prior features (sniffer, caching, bankroll, auto‑tune, SEM, etc.)
 #   - Fixed: Clear buttons in Paste & Scan (text and images)
-#   - Fixed: GameScanner now uses correct Odds-API.io v1 endpoints
+#   - Fixed: GameScanner now uses correct Odds-API.io v4 endpoints
 #   - Added: API key warnings in sidebar and Tools tab
 #   - Added: OCR support for WEBP images
 #   - Enhanced slip parser: PrizePicks Goblin, Bovada parlays, MyBookie slips
@@ -856,17 +856,16 @@ def analyze_total(total_line: float, over_odds: float, under_odds: float, sport:
     return {"total": total_line, "over_edge": over_edge, "under_edge": under_edge, "over_prob": over_prob, "under_prob": 1-over_prob}
 
 # =============================================================================
-# CORRECTED GAME SCANNER – uses Odds-API.io v1 endpoints
+# CORRECTED GAME SCANNER – uses Odds-API.io v4 endpoints
 # =============================================================================
 class GameScanner:
     def __init__(self):
         self.api_key = st.secrets.get("ODDS_API_IO_KEY", "")
-        self.base_url = "https://api.odds-api.io/v1"  # v1 is correct for /leagues and /events
+        self.base_url = "https://api.odds-api.io/v4"
 
     def fetch_games_by_date(self, sports: List[str], days_offset: int = 0) -> List[Dict]:
-        """Fetch games for the given sports and date offset."""
-        if not self.api_key:
-            st.error("Odds-API.io API key missing. Please add ODDS_API_IO_KEY to your secrets.")
+        if not self.api_key or self.api_key == "your_key_here":
+            st.error("Odds-API.io API key is missing or invalid. Please set ODDS_API_IO_KEY in your Streamlit secrets.")
             return []
 
         all_games = []
@@ -879,13 +878,11 @@ class GameScanner:
 
         for sport in sports:
             api_sport = sport_name_map.get(sport, sport.lower())
-            # Step 1: Fetch all leagues for this sport
             leagues = self._fetch_leagues(api_sport)
             if not leagues:
                 st.warning(f"No leagues found for {sport}. Skipping.")
                 continue
 
-            # Step 2: For each league, fetch its events
             for league in leagues:
                 league_slug = league.get("slug")
                 if not league_slug:
@@ -904,14 +901,13 @@ class GameScanner:
         return all_games
 
     def _fetch_leagues(self, sport: str) -> List[Dict]:
-        """Fetch all leagues for a given sport from the /leagues endpoint."""
         url = f"{self.base_url}/leagues"
         params = {"apiKey": self.api_key, "sport": sport}
         try:
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             leagues = response.json()
-            # Filter out leagues with no upcoming events
+            # Filter leagues that have upcoming events
             leagues = [l for l in leagues if l.get("eventsCount", 0) > 0]
             return leagues
         except requests.exceptions.RequestException as e:
@@ -920,7 +916,6 @@ class GameScanner:
             return []
 
     def _fetch_events(self, league_slug: str, days_offset: int) -> List[Dict]:
-        """Fetch events for a specific league slug."""
         url = f"{self.base_url}/events"
         params = {
             "apiKey": self.api_key,
@@ -1484,8 +1479,8 @@ def main():
     # API key warnings
     if not st.secrets.get("BALLSDONTLIE_API_KEY"):
         st.sidebar.warning("⚠️ BallsDontLie API key missing. NBA stats will use fallback averages.")
-    if not st.secrets.get("ODDS_API_IO_KEY"):
-        st.sidebar.warning("⚠️ Odds-API.io key missing. Game Analyzer will not load games.")
+    if not st.secrets.get("ODDS_API_IO_KEY") or st.secrets.get("ODDS_API_IO_KEY") == "your_key_here":
+        st.sidebar.warning("⚠️ Odds-API.io key missing or invalid. Game Analyzer will not load games.")
     if not st.secrets.get("OCR_SPACE_API_KEY"):
         st.sidebar.warning("⚠️ OCR.space API key missing. Screenshot OCR will not work.")
 
@@ -2041,7 +2036,7 @@ def main():
         st.subheader("⚙️ System Information")
         st.info(f"curl_cffi (TLS impersonation): {'✅ Available' if CURL_AVAILABLE else '❌ Not installed'}")
         st.info(f"BallsDontLie (NBA): {'✅ Set' if st.secrets.get('BALLSDONTLIE_API_KEY') else '❌ Missing'}")
-        st.info(f"Odds‑API.io (game lines): {'✅ Set' if st.secrets.get('ODDS_API_IO_KEY') else '❌ Missing'}")
+        st.info(f"Odds‑API.io (game lines): {'✅ Set' if st.secrets.get('ODDS_API_IO_KEY') and st.secrets.get('ODDS_API_IO_KEY') != 'your_key_here' else '❌ Missing'}")
         st.info(f"RapidAPI (Tennis): {'✅ Set' if st.secrets.get('RAPIDAPI_KEY') and st.secrets.get('RAPIDAPI_KEY') != 'YOUR_RAPIDAPI_KEY_HERE' else '❌ Missing'}")
         st.info(f"nhl-api-py: {'✅ Available' if NHL_AVAILABLE else '❌ Not installed'}")
         st.info(f"pgatourPY: {'✅ Available' if PGA_AVAILABLE else '❌ Not installed'}")
