@@ -15,7 +15,7 @@
 #   - **NEW:** FlashLive Sports API as primary multi‑sport source (30+ sports)
 #   - **NEW:** ESPN API as universal fallback for all sports
 #   - **UPDATED:** Health Dashboard tracks all integrated APIs
-#   - **ENHANCED:** Prop Scanner extracts ALL props from PrizePicks board with dropdown selection
+#   - **FIXED:** PrizePicks board parser now correctly extracts ALL props
 # =============================================================================
 
 import os
@@ -1462,62 +1462,74 @@ def parse_prizepicks_blocks(text: str) -> List[Dict]:
         return []
     
     props = []
-    i = 0
-    while i < len(lines) - 2:
+    # First, find all lines that are likely prop numbers
+    number_indices = []
+    for i, line in enumerate(lines):
         try:
-            line_val = float(lines[i])
-            market = lines[i+1]
-            if not re.search(r'[A-Za-z]', market):
-                i += 1
-                continue
-            
-            pick = None
-            for j in range(i+2, min(i+5, len(lines))):
-                if lines[j].lower() in ["more", "less"]:
-                    pick = "OVER" if lines[j].lower() == "more" else "UNDER"
-                    break
-            
-            if not pick:
-                i += 1
-                continue
-            
-            player = ""
-            # Look for player name 2-5 lines above the number
-            for k in range(max(0, i-5), i):
-                candidate = lines[k]
-                # Skip lines that are clearly not player names
-                if re.search(r'[A-Z]{3}\s*-\s*[A-Z]', candidate):  # Team abbrev like "ATL - G"
-                    continue
-                if re.search(r'@\s+[A-Z]{3}', candidate):  # "@ NYK"
-                    continue
-                if re.search(r'^\d+\.?\d*[KMB]?$', candidate):  # Trending numbers
-                    continue
-                if candidate.lower() in ["goblin", "demon", "trending", "more", "less"]:
-                    continue
-                if len(candidate) > 2 and not candidate.isdigit():
-                    player = candidate
-                    break
-            
-            if not player:
-                i += 1
-                continue
-            
-            # Normalize market
-            market_clean = market.upper().replace(" ", "")
-            market_clean = re.sub(r'[^A-Z+]', '', market_clean)
-            
-            props.append({
-                "player": player.strip(),
-                "market": market_clean,
-                "line": line_val,
-                "pick": pick,
-                "odds": -110
-            })
-            i += 1
+            val = float(line)
+            if 0 < val < 1000:  # reasonable prop value
+                number_indices.append(i)
         except ValueError:
-            i += 1
             continue
     
+    used_numbers = set()
+    for idx in number_indices:
+        if idx in used_numbers:
+            continue
+        
+        line_val = float(lines[idx])
+        if idx + 1 >= len(lines):
+            continue
+        market = lines[idx + 1]
+        if not re.search(r'[A-Za-z]', market):
+            continue
+        
+        # Look for More/Less
+        pick = None
+        for j in range(idx + 2, min(idx + 6, len(lines))):
+            if lines[j].lower() in ["more", "less"]:
+                pick = "OVER" if lines[j].lower() == "more" else "UNDER"
+                break
+        if not pick:
+            continue
+        
+        # Look for player name: search upward up to 8 lines
+        player = ""
+        for k in range(max(0, idx - 8), idx):
+            candidate = lines[k]
+            # Exclude obvious non-player lines
+            if re.search(r'[A-Z]{3}\s*-\s*[A-Z]', candidate):   # team/position like "ATL - G"
+                continue
+            if re.search(r'@\s+[A-Z]{3}', candidate):           # matchup info "@ NYK"
+                continue
+            if re.search(r'^\d+\.?\d*[KMB]?$', candidate):      # trending numbers "55.8K"
+                continue
+            if candidate.lower() in ["goblin", "demon", "trending", "more", "less", "final"]:
+                continue
+            if len(candidate) > 2 and not candidate.isdigit():
+                # Further validate: player name should contain letters, may have spaces, dots, hyphens
+                if re.match(r'^[A-Za-z\s\.\-\']+$', candidate):
+                    player = candidate
+                    break
+        
+        if not player:
+            continue
+        
+        # Clean market name
+        market_clean = market.upper().replace(" ", "")
+        market_clean = re.sub(r'[^A-Z+]', '', market_clean)  # keep letters and plus signs
+        
+        props.append({
+            "player": player.strip(),
+            "market": market_clean,
+            "line": line_val,
+            "pick": pick,
+            "odds": -110
+        })
+        used_numbers.add(idx)
+    
+    # Sort by player name for consistent display
+    props.sort(key=lambda x: x["player"])
     return props
 
 def parse_prop_text(text: str) -> Optional[Dict]:
@@ -2193,10 +2205,8 @@ def main():
                     
                     if extracted_props:
                         if len(extracted_props) == 1:
-                            # Only one prop found, auto‑select it
                             selected = extracted_props[0]
                         else:
-                            # Multiple props found, let user choose
                             options = [f"{p['player']} {p['pick']} {p['line']} {p['market']}" for p in extracted_props]
                             selected_idx = st.selectbox("Select a prop to analyze", range(len(options)), format_func=lambda x: options[x])
                             selected = extracted_props[selected_idx]
