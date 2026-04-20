@@ -2,9 +2,11 @@
 # CLARITY 23.0 – ELITE MULTI‑SPORT ENGINE (FULLY UPGRADED)
 #   - All prior features (sniffer, caching, bankroll, auto‑tune, SEM, etc.)
 #   - Fixed: Clear button now erases the text area and analysis results
-#   - NEW: Health Dashboard in Tools tab – real‑time status of every API
-#   - NEW: Multi‑image upload + OCR (Paste & Scan tab) for batch processing of screenshots
-#   - NEW: External slips can be used for SEM calibration without affecting personal bankroll
+#   - Health Dashboard in Tools tab – real‑time status of every API
+#   - Multi‑image upload + OCR (Paste & Scan tab) – supports WEBP files
+#   - External slips can be used for SEM calibration without affecting personal bankroll
+#   - Enhanced slip parser: now recognizes PrizePicks Goblin format, Bovada parlays,
+#     MyBookie slips, and original block format.
 # =============================================================================
 
 import os
@@ -368,16 +370,257 @@ def make_session(headers: dict = None, impersonate: bool = True):
     return s
 
 # =============================================================================
-# SNIFFER CONFIG (same as before, omitted for brevity but must be included)
+# SNIFFER CONFIG (unchanged, kept for completeness)
 # =============================================================================
-# ... (all the sniffer functions: BASE_HEADERS, UNDERDOG_HEADERS, PRIZEPICKS_BASE_URLS,
-#      PRIZEPICKS_ENDPOINTS, UNDERDOG_BASE, UNDERDOG_ENDPOINTS, PlayerProp, _fetch_pages,
-#      _build_included_map, _safe, _extract_props, fetch_prizepicks_props, fetch_underdog_props)
-# 
-# NOTE: To keep the final code length manageable, I'm including the sniffer functions
-# as they were in the previous working version. You already have them; I will ensure they
-# are present in the final file. For this response, I will show the new additions and
-# reference that the existing sniffer remains unchanged.
+BASE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Sec-Fetch-Site": "same-origin",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Dest": "empty",
+    "Origin": "https://app.prizepicks.com",
+    "Referer": "https://app.prizepicks.com/",
+}
+
+UNDERDOG_HEADERS = {
+    **BASE_HEADERS,
+    "x-app-version": "2.0.0",
+    "x-device-id": "web",
+    "Origin": "https://underdogfantasy.com",
+    "Referer": "https://underdogfantasy.com/",
+}
+
+PRIZEPICKS_BASE_URLS = [
+    "https://api.prizepicks.com",
+    "https://app.prizepicks.com/api",
+    "https://www.prizepicks.com/api",
+]
+
+PRIZEPICKS_ENDPOINTS = [
+    "/projections",
+    "/bff/v3/projections",
+    "/bff/v2/projections",
+    "/bff/v1/projections",
+    "/v1/projections",
+    "/v2/projections",
+    "/v3/projections",
+    "/v4/projections",
+]
+
+UNDERDOG_BASE = "https://api.underdogfantasy.com"
+UNDERDOG_ENDPOINTS = [
+    "/bff/v3/projections",
+    "/bff/v2/projections",
+    "/v3/projections",
+    "/projections",
+]
+
+@dataclass
+class PlayerProp:
+    projection_id: str
+    player_name: str
+    team: str
+    league: str
+    stat_type: str
+    line_score: float
+    is_promoted: bool
+    source: str = "PrizePicks"
+    raw: dict = field(default_factory=dict, repr=False)
+
+# =============================================================================
+# SNIFFER HELPERS (pagination, extraction) – kept as before
+# =============================================================================
+def _fetch_pages(session, url: str, params: dict = None, max_pages: int = 30, delay: float = 0.25):
+    all_data, all_included = [], []
+    next_url = url
+    page = 1
+    while next_url and page <= max_pages:
+        try:
+            resp = session.get(next_url, params=params if page == 1 else None, timeout=15)
+            if resp.status_code != 200:
+                logging.warning(f"Fetch page {page} status {resp.status_code}: {url}")
+                break
+            body = resp.json()
+            data = body.get("data", [])
+            if isinstance(data, list):
+                all_data.extend(data)
+            elif isinstance(data, dict):
+                all_data.append(data)
+            all_included.extend(body.get("included", []))
+            next_url = (body.get("links") or {}).get("next") or None
+        except Exception as e:
+            logging.error(f"Fetch page error: {e}")
+            break
+        page += 1
+        time.sleep(delay + random.uniform(0, 0.1))
+    return all_data, all_included
+
+def _build_included_map(included: list) -> dict:
+    m = {}
+    for inc in included:
+        t = inc.get("type", "")
+        i = str(inc.get("id", ""))
+        attrs = {**inc.get("attributes", {}), "_id": i}
+        m.setdefault(t, {})[i] = attrs
+    return m
+
+def _safe(d: dict, *keys, default=""):
+    for k in keys:
+        v = d.get(k)
+        if v is not None and v != "":
+            return v
+    return default
+
+def _extract_props(records: list, inc_map: dict, source: str = "PrizePicks") -> List[PlayerProp]:
+    players1 = inc_map.get("new_player", {})
+    players2 = inc_map.get("player", {})
+    leagues = inc_map.get("league", {})
+    stats_map = inc_map.get("stat_type", {})
+    props = []
+
+    for rec in records:
+        attrs = rec.get("attributes", {})
+        rels = rec.get("relationships", {})
+
+        line = float(_safe(attrs, "line_score", "line", "value") or 0)
+        stat_type = _safe(attrs, "stat_type", "stat_display_name", "stat", "description")
+        if not stat_type:
+            st_rel = ((rels.get("stat_type") or {}).get("data")) or {}
+            stat_type = (stats_map.get(str(st_rel.get("id", ""))) or {}).get("name", "")
+
+        player_name = _safe(attrs, "player_name", "name")
+        team = _safe(attrs, "team", "team_name", "team_abbreviation")
+        if not player_name:
+            p_rel = ((rels.get("new_player") or rels.get("player") or {}).get("data")) or {}
+            p_id = str(p_rel.get("id", ""))
+            p_attrs = players1.get(p_id) or players2.get(p_id) or {}
+            player_name = _safe(p_attrs, "name", "display_name", "full_name") or p_id
+            team = team or _safe(p_attrs, "team", "team_name")
+
+        league = _safe(attrs, "league", "league_name", "league_display_name")
+        if not league:
+            l_rel = ((rels.get("league") or {}).get("data")) or {}
+            l_id = str(l_rel.get("id", ""))
+            league = _safe(leagues.get(l_id) or {}, "name", "display_name", "abbreviation") or l_id
+
+        is_promo = bool(attrs.get("is_promo") or attrs.get("is_promoted") or attrs.get("flash_sale_line_score"))
+
+        if not player_name or not stat_type:
+            continue
+
+        props.append(PlayerProp(
+            projection_id=str(rec.get("id", "")),
+            player_name=str(player_name),
+            team=str(team),
+            league=str(league),
+            stat_type=str(stat_type),
+            line_score=line,
+            is_promoted=is_promo,
+            source=source,
+            raw=rec,
+        ))
+    return props
+
+def fetch_prizepicks_props(league_filter: str = None) -> List[PlayerProp]:
+    session = make_session(BASE_HEADERS, impersonate=True)
+    params = {"page[size]": 250, "single_stat": True}
+    any_success = False
+    for base in PRIZEPICKS_BASE_URLS:
+        for ep in PRIZEPICKS_ENDPOINTS:
+            url = base.rstrip("/") + ep
+            try:
+                logging.info(f"Trying PrizePicks: {url}")
+                records, included = _fetch_pages(session, url, params=params)
+                if not records:
+                    continue
+                inc_map = _build_included_map(included)
+                props = _extract_props(records, inc_map, source="PrizePicks")
+                if not props:
+                    continue
+                if league_filter:
+                    lu = league_filter.upper()
+                    props = [p for p in props if lu in p.league.upper()]
+                if props:
+                    any_success = True
+                    update_health("PrizePicks Sniffer", success=True)
+                    logging.info(f"PrizePicks OK: {len(props)} props from {url}")
+                    return props
+            except Exception as e:
+                logging.warning(f"PrizePicks endpoint failed {url}: {e}")
+                update_health("PrizePicks Sniffer", success=False, error_msg=str(e), fallback=True)
+                continue
+    if not any_success:
+        update_health("PrizePicks Sniffer", success=False, error_msg="All endpoints exhausted", fallback=True)
+    st.warning("PrizePicks fetch failed. Falling back to Underdog…")
+    return fetch_underdog_props(league_filter)
+
+def fetch_underdog_props(league_filter: str = None) -> List[PlayerProp]:
+    session = make_session(UNDERDOG_HEADERS, impersonate=True)
+    params = {"page[size]": 250, "single_stat": True}
+    any_success = False
+    for ep in UNDERDOG_ENDPOINTS:
+        url = UNDERDOG_BASE.rstrip("/") + ep
+        try:
+            logging.info(f"Trying Underdog: {url}")
+            records, included = _fetch_pages(session, url, params=params)
+            if not records:
+                try:
+                    r = session.get(url, params=params, timeout=15)
+                    body = r.json()
+                    records = body.get("data", body.get("results", []))
+                    included = []
+                except Exception:
+                    pass
+            if not records:
+                continue
+            inc_map = _build_included_map(included)
+            props = _extract_props(records, inc_map, source="Underdog")
+            if not props:
+                props = []
+                for rec in records:
+                    a = rec.get("attributes", rec)
+                    line = float(a.get("line_score", a.get("line", 0)) or 0)
+                    stat = a.get("stat_type", "") or a.get("stat_display_name", "")
+                    name = a.get("player_name", "") or a.get("name", "")
+                    lg = a.get("league", "") or a.get("sport", "")
+                    team = a.get("team", "") or a.get("team_name", "")
+                    if not name or not stat:
+                        continue
+                    props.append(PlayerProp(
+                        projection_id=str(rec.get("id", "")),
+                        player_name=str(name),
+                        team=str(team),
+                        league=str(lg),
+                        stat_type=str(stat),
+                        line_score=line,
+                        is_promoted=bool(a.get("is_promo", False)),
+                        source="Underdog",
+                        raw=rec,
+                    ))
+            if not props:
+                continue
+            if league_filter:
+                lu = league_filter.upper()
+                props = [p for p in props if lu in p.league.upper()]
+            if props:
+                any_success = True
+                update_health("Underdog Sniffer", success=True)
+                logging.info(f"Underdog OK: {len(props)} props from {url}")
+                return props
+        except Exception as e:
+            logging.warning(f"Underdog endpoint failed {url}: {e}")
+            update_health("Underdog Sniffer", success=False, error_msg=str(e), fallback=True)
+            continue
+    if not any_success:
+        update_health("Underdog Sniffer", success=False, error_msg="All endpoints exhausted", fallback=True)
+    return []
 
 # =============================================================================
 # REAL STATS FETCHING (NBA, NHL, PGA, Tennis) – with caching and health
@@ -728,21 +971,50 @@ class GameScanner:
 game_scanner = GameScanner()
 
 # =============================================================================
-# SLIP PARSER – handles multi‑line sportsbook slips
+# OCR FUNCTION – extract text from uploaded image (supports WEBP)
+# =============================================================================
+def ocr_image(image_bytes, api_key):
+    """Send image to OCR.space and return extracted text."""
+    try:
+        encoded = base64.b64encode(image_bytes).decode('utf-8')
+        payload = {
+            'base64Image': f"data:image/png;base64,{encoded}",
+            'apikey': api_key,
+            'language': 'eng',
+            'OCREngine': 2,
+        }
+        response = requests.post('https://api.ocr.space/parse/image', data=payload, timeout=30)
+        result = response.json()
+        if result.get('IsErroredOnProcessing'):
+            error_msg = result.get('ErrorMessage', ['Unknown error'])[0]
+            return None, f"OCR error: {error_msg}"
+        parsed_text = result['ParsedResults'][0]['ParsedText']
+        return parsed_text, None
+    except Exception as e:
+        return None, str(e)
+
+# =============================================================================
+# ENHANCED SLIP PARSER – handles PrizePicks Goblin, Bovada, MyBookie, and original block format
 # =============================================================================
 def parse_complex_slip(text: str) -> List[Dict]:
     """
     Parse pasted slip text into a list of individual bet dicts.
-    Handles block format, standard prop lines, moneylines, spreads, totals.
+    Handles:
+      - PrizePicks block format (with "Final" or "Goblin")
+      - PrizePicks "Goblin" lines: "Goblin 0.5 Assists 2"
+      - Bovada parlay format: "2 Team Parlay", "Win", "Risk $1.00", "Odds +118"
+      - MyBookie format: "Orlando Magic +290" then "Winner (incl. overtime)" etc.
     """
     bets = []
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return bets
 
+    # First, try to detect PrizePicks block format (repeated player name)
     i = 0
     while i < len(lines):
         if i + 1 < len(lines) and lines[i] == lines[i+1]:
+            # Player block: name, name, position, league, team, score, opponent, score, "Final" or "Goblin", line, market, actual
             player_name = lines[i]
             block_lines = []
             j = i
@@ -763,7 +1035,11 @@ def parse_complex_slip(text: str) -> List[Dict]:
                     market = "PTS"
                     if "Pitches" in market_raw:
                         market = "PITCHES"
-                    elif "Pts" in market_raw or "Rebs" in market_raw or "Ast" in market_raw:
+                    elif "Assists" in market_raw:
+                        market = "AST"
+                    elif "Steals" in market_raw:
+                        market = "STL"
+                    elif "Pts" in market_raw or "Rebs" in market_raw:
                         market = market_raw.replace("+", "").replace(" ", "")
                     else:
                         market = market_raw.upper()
@@ -793,7 +1069,153 @@ def parse_complex_slip(text: str) -> List[Dict]:
                     continue
         else:
             line = lines[i]
-            # Prop format: Player OVER 25.5 PTS
+            # --- PrizePicks "Goblin" single line format: "Goblin 0.5 Assists 2" ---
+            goblin_match = re.search(r'^Goblin\s+([\d\.]+)\s+(\w+)\s+([\d\.]+)$', line, re.IGNORECASE)
+            if goblin_match:
+                # This line alone is a bet – but we need context (player name, sport, etc.)
+                # In many PrizePicks slips, the player name appears on previous lines.
+                # We'll try to look back for a player name (non-empty, not "Goblin")
+                player_name = "Unknown"
+                # Search backwards up to 10 lines for a likely player name
+                for k in range(max(0, i-10), i):
+                    candidate = lines[k]
+                    if candidate and not re.match(r'^(Goblin|Final|WIN|LOSS|Risk|Win|Odds|Ref\.|Leaderboard|Show details)', candidate, re.IGNORECASE):
+                        if len(candidate) > 2 and not candidate.isdigit():
+                            player_name = candidate
+                            break
+                line_val = float(goblin_match.group(1))
+                market_raw = goblin_match.group(2)
+                actual_val = float(goblin_match.group(3))
+                market = market_raw.upper()
+                if market == "ASSISTS":
+                    market = "AST"
+                elif market == "STEALS":
+                    market = "STL"
+                result = "WIN" if actual_val > line_val else "LOSS"
+                bet = {
+                    "type": "PROP",
+                    "player": player_name,
+                    "sport": "NBA",  # default
+                    "team": "",
+                    "opponent": "",
+                    "market": market,
+                    "line": line_val,
+                    "pick": "OVER",
+                    "result": result,
+                    "actual": actual_val,
+                    "odds": -110,
+                }
+                bets.append(bet)
+                i += 1
+                continue
+
+            # --- Bovada Parlay detection ---
+            if re.search(r'\d+ Team Parlay', line, re.IGNORECASE):
+                # This is a parlay header. We'll create a single PARLAY bet for the whole block.
+                parlay_result = None
+                parlay_risk = None
+                parlay_odds = None
+                parlay_winnings = None
+                # Look ahead for "Win" or "Loss", "Risk $", "Odds +", "Winnings"
+                j = i
+                while j < len(lines) and j < i + 20:
+                    l = lines[j]
+                    if re.search(r'^(Win|Loss)$', l, re.IGNORECASE):
+                        parlay_result = l.upper()
+                    elif re.search(r'Risk\s*[\$\d\.]+', l, re.IGNORECASE):
+                        risk_match = re.search(r'Risk\s*\$?([\d\.]+)', l, re.IGNORECASE)
+                        if risk_match:
+                            parlay_risk = float(risk_match.group(1))
+                    elif re.search(r'Odds\s*[+-]\d+', l, re.IGNORECASE):
+                        odds_match = re.search(r'Odds\s*([+-]\d+)', l, re.IGNORECASE)
+                        if odds_match:
+                            parlay_odds = int(odds_match.group(1))
+                    elif re.search(r'Winnings\s*[+\$]?[\d\.]+', l, re.IGNORECASE):
+                        win_match = re.search(r'Winnings\s*[+\$]?([\d\.]+)', l, re.IGNORECASE)
+                        if win_match:
+                            parlay_winnings = float(win_match.group(1))
+                    j += 1
+                if parlay_result:
+                    bet = {
+                        "type": "PARLAY",
+                        "result": parlay_result,
+                        "raw": "\n".join(lines[i:j]),
+                        "odds": parlay_odds if parlay_odds else 0,
+                        "risk": parlay_risk if parlay_risk else 0,
+                        "winnings": parlay_winnings if parlay_winnings else 0,
+                    }
+                    bets.append(bet)
+                i = j
+                continue
+
+            # --- MyBookie style: "Orlando Magic +290" then next line "Winner (incl. overtime)" ---
+            # Pattern: team name followed by odds (e.g., "Orlando Magic +290")
+            mb_team_match = re.search(r'^([A-Za-z\s\.\-]+?)\s+([+-]\d+)$', line)
+            if mb_team_match and i+1 < len(lines):
+                team = mb_team_match.group(1).strip()
+                odds = int(mb_team_match.group(2))
+                next_line = lines[i+1]
+                if "Winner" in next_line or "LOSS" in next_line.upper():
+                    # Determine result from next line (could be "Winner" or "LOSS")
+                    result = "WIN" if "Winner" in next_line else "LOSS" if "LOSS" in next_line.upper() else "PENDING"
+                    # Look for sport and opponent in subsequent lines
+                    sport = "NBA"
+                    opponent = ""
+                    game_date = ""
+                    for k in range(i+2, min(i+10, len(lines))):
+                        l = lines[k]
+                        if "NBA" in l or "MLB" in l or "NHL" in l or "NFL" in l:
+                            # Extract opponent: e.g., "NBA | Basketball Orlando Magic vs. Detroit Pistons"
+                            vs_match = re.search(r'vs\.\s+([A-Za-z\s\.\-]+)', l)
+                            if vs_match:
+                                opponent = vs_match.group(1).strip()
+                            if "NBA" in l:
+                                sport = "NBA"
+                            elif "MLB" in l:
+                                sport = "MLB"
+                            elif "NHL" in l:
+                                sport = "NHL"
+                            elif "NFL" in l:
+                                sport = "NFL"
+                        date_match = re.search(r'Game Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', l)
+                        if date_match:
+                            try:
+                                dt = datetime.strptime(date_match.group(1), "%b %d, %Y")
+                                game_date = dt.strftime("%Y-%m-%d")
+                            except:
+                                game_date = date_match.group(1)
+                    # Look for Risk and Win amounts
+                    risk = None
+                    win_amt = None
+                    for k in range(i+2, min(i+15, len(lines))):
+                        l = lines[k]
+                        risk_match = re.search(r'Risk:\s*([\d\.]+)', l, re.IGNORECASE)
+                        if risk_match:
+                            risk = float(risk_match.group(1))
+                        win_match = re.search(r'Win:\s*([\d\.]+)', l, re.IGNORECASE)
+                        if win_match:
+                            win_amt = float(win_match.group(1))
+                        if "LOSS" in l.upper():
+                            result = "LOSS"
+                    bet = {
+                        "type": "GAME",
+                        "team": team,
+                        "opponent": opponent,
+                        "odds": odds,
+                        "market_type": "ML",
+                        "line": 0.0,
+                        "pick": team,
+                        "sport": sport,
+                        "result": result,
+                        "game_date": game_date,
+                        "risk": risk,
+                        "win_amount": win_amt,
+                    }
+                    bets.append(bet)
+                    i += 2  # skip the odds line and the Winner line
+                    continue
+
+            # --- Standard prop format: "Player OVER 25.5 PTS" ---
             m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)$', line, re.IGNORECASE)
             if m:
                 bet = {
@@ -809,6 +1231,7 @@ def parse_complex_slip(text: str) -> List[Dict]:
                 i += 1
                 continue
             
+            # --- Alternate prop: "Player PTS OVER 25.5" ---
             m = re.search(r'^(.+?)\s+(\w+)\s+(OVER|UNDER)\s+([\d\.]+)$', line, re.IGNORECASE)
             if m:
                 bet = {
@@ -824,7 +1247,7 @@ def parse_complex_slip(text: str) -> List[Dict]:
                 i += 1
                 continue
             
-            # Moneyline: Team A vs Team B ML -110
+            # --- Moneyline: "Team A vs Team B ML -110" ---
             m = re.search(r'^([A-Za-z\s\.\-]+?)\s+(?:vs\.?\s+([A-Za-z\s\.\-]+?))?\s+ML\s+([+-]\d+)$', line, re.IGNORECASE)
             if m:
                 bet = {
@@ -841,7 +1264,7 @@ def parse_complex_slip(text: str) -> List[Dict]:
                 i += 1
                 continue
             
-            # Spread: Team A -5.5 (-110)
+            # --- Spread: "Team A -5.5 (-110)" ---
             m = re.search(r'^([A-Za-z\s\.\-]+?)\s+([+-][\d\.]+)\s*\(([+-]\d+)\)$', line, re.IGNORECASE)
             if m:
                 bet = {
@@ -858,7 +1281,7 @@ def parse_complex_slip(text: str) -> List[Dict]:
                 i += 1
                 continue
             
-            # Total: OVER 220.5 (-110)
+            # --- Total: "OVER 220.5 (-110)" ---
             m = re.search(r'^(OVER|UNDER)\s+([\d\.]+)\s*\(([+-]\d+)\)$', line, re.IGNORECASE)
             if m:
                 bet = {
@@ -873,34 +1296,11 @@ def parse_complex_slip(text: str) -> List[Dict]:
                 i += 1
                 continue
             
+            # If nothing matched, log and move on
             logging.warning(f"Unrecognized line: {line}")
             i += 1
     
     return bets
-
-# =============================================================================
-# OCR FUNCTION – extract text from uploaded image
-# =============================================================================
-def ocr_image(image_bytes, api_key):
-    """Send image to OCR.space and return extracted text."""
-    try:
-        # OCR.space expects base64 or URL. We'll use base64.
-        encoded = base64.b64encode(image_bytes).decode('utf-8')
-        payload = {
-            'base64Image': f"data:image/png;base64,{encoded}",
-            'apikey': api_key,
-            'language': 'eng',
-            'OCREngine': 2,  # 2 = ready-to-use engine
-        }
-        response = requests.post('https://api.ocr.space/parse/image', data=payload, timeout=30)
-        result = response.json()
-        if result.get('IsErroredOnProcessing'):
-            error_msg = result.get('ErrorMessage', ['Unknown error'])[0]
-            return None, f"OCR error: {error_msg}"
-        parsed_text = result['ParsedResults'][0]['ParsedText']
-        return parsed_text, None
-    except Exception as e:
-        return None, str(e)
 
 # =============================================================================
 # WHY ANALYSIS – generates explanation for a settled bet
@@ -976,7 +1376,6 @@ def _get_sem_score() -> int:
 
 def _calibrate_sem():
     conn = sqlite3.connect(DB_PATH)
-    # Combine internal slips and external sem_external data
     df_internal = pd.read_sql_query("SELECT prob, result FROM slips WHERE result IN ('WIN','LOSS') AND prob IS NOT NULL", conn)
     df_external = pd.read_sql_query("SELECT prob, result FROM sem_external", conn)
     df = pd.concat([df_internal, df_external], ignore_index=True) if not df_external.empty else df_internal
@@ -1467,12 +1866,12 @@ def main():
             st.dataframe(ev_df, use_container_width=True)
             st.caption("These bets have positive edge but did not meet the strict approval threshold. You may manually include them in parlays if desired.")
 
-    # ---------- Tab 3: Paste & Scan (with OCR and SEM toggle) ----------
+    # ---------- Tab 3: Paste & Scan (with OCR and enhanced parser) ----------
     with tabs[3]:
         st.header("Paste & Scan Slips")
         st.markdown("Paste any slip (single game, parlay, multiple sports) – Clarity will extract individual bets and explain why you won or lost.")
         
-        # --- Text input section ---
+        # Text input section
         text = st.text_area("Paste slip text", height=200, key="slip_text_input")
         col_clear, col_scan = st.columns([1, 4])
         with col_clear:
@@ -1483,14 +1882,14 @@ def main():
         with col_scan:
             scan_clicked = st.button("🔍 Scan & Analyze (Text)", type="primary", use_container_width=True)
         
-        # --- Image upload section (new) ---
+        # Image upload section (supports WEBP)
         st.markdown("---")
         st.subheader("📸 Or upload screenshots (multiple)")
-        uploaded_images = st.file_uploader("Choose images (JPG, PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+        uploaded_images = st.file_uploader("Choose images (JPG, PNG, WEBP)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True)
         use_for_sem = st.checkbox("Use these external slips for SEM calibration (improves model, does NOT affect your bankroll)", value=True)
         
         if uploaded_images and st.button("📷 Extract & Analyze Images", use_container_width=True):
-            ocr_api_key = st.secrets.get("OCR_SPACE_API_KEY", "K89641020988957")  # fallback to your hardcoded key if not in secrets
+            ocr_api_key = st.secrets.get("OCR_SPACE_API_KEY", "K89641020988957")
             all_text = ""
             progress_bar = st.progress(0)
             status_text = st.empty()
@@ -1512,12 +1911,10 @@ def main():
                 else:
                     st.success(f"Detected {len(parsed_bets)} bets from images.")
                     for bet in parsed_bets:
-                        # For external slips, we don't insert into `slips`; only optionally store for SEM.
                         explanation = generate_why_analysis(bet)
                         with st.expander(f"{bet.get('sport', 'UNK')} – {bet.get('team', '')} {bet.get('market_type', 'ML')} at {bet.get('odds', '?')}"):
                             st.markdown(explanation)
                             if use_for_sem and bet.get('result') in ['WIN', 'LOSS'] and bet.get('prob') is not None:
-                                # Store in external SEM table
                                 insert_external_slip(bet.get('prob', 0.5), bet.get('result'), source="OCR")
                                 st.caption("✅ This slip was used for SEM calibration (model improvement). Your bankroll and personal history unchanged.")
                             elif bet.get('result') in ['WIN', 'LOSS']:
@@ -1527,7 +1924,7 @@ def main():
             else:
                 st.warning("No text extracted from the uploaded images.")
         
-        # --- Handle text-based scan (unchanged) ---
+        # Handle text-based scan
         if scan_clicked:
             if not text.strip():
                 st.warning("Please paste some slip text.")
@@ -1556,7 +1953,7 @@ def main():
                                     "market": "PARLAY",
                                     "line": 0,
                                     "pick": "",
-                                    "odds": 0,
+                                    "odds": bet.get('odds', 0),
                                     "edge": 0,
                                     "prob": 0.5,
                                     "kelly": 0,
@@ -1590,12 +1987,12 @@ def main():
                                     "pick": bet.get('pick', bet.get('team', '')),
                                     "odds": bet.get('odds', -110),
                                     "edge": 0,
-                                    "prob": 0.5,
+                                    "prob": bet.get('prob', 0.5),
                                     "kelly": 0,
                                     "tier": "",
                                     "bolt_signal": "",
                                     "result": bet.get('result'),
-                                    "actual": 0,
+                                    "actual": bet.get('actual', 0),
                                     "settled_date": datetime.now().strftime("%Y-%m-%d"),
                                     "profit": profit,
                                     "bankroll": new_bankroll
