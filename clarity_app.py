@@ -2,7 +2,7 @@
 # CLARITY 23.0 – ELITE MULTI‑SPORT ENGINE (FULLY UPGRADED)
 #   - All prior features (sniffer, caching, bankroll, auto‑tune, SEM, etc.)
 #   - Fixed: Clear buttons in Paste & Scan (text and images)
-#   - Fixed: GameScanner now uses correct Odds-API.io v4 endpoints
+#   - Fixed: GameScanner now uses correct Odds-API.io endpoints (api.the-odds-api.com/v4)
 #   - Added: API key warnings in sidebar and Tools tab
 #   - Added: OCR support for WEBP images
 #   - Enhanced slip parser: PrizePicks Goblin, Bovada parlays, MyBookie slips
@@ -856,12 +856,12 @@ def analyze_total(total_line: float, over_odds: float, under_odds: float, sport:
     return {"total": total_line, "over_edge": over_edge, "under_edge": under_edge, "over_prob": over_prob, "under_prob": 1-over_prob}
 
 # =============================================================================
-# CORRECTED GAME SCANNER – uses Odds-API.io v4 endpoints
+# FIXED GAME SCANNER – uses correct Odds-API.io endpoints
 # =============================================================================
 class GameScanner:
     def __init__(self):
         self.api_key = st.secrets.get("ODDS_API_IO_KEY", "")
-        self.base_url = "https://api.odds-api.io/v4"
+        self.base_url = "https://api.the-odds-api.com/v4"
 
     def fetch_games_by_date(self, sports: List[str], days_offset: int = 0) -> List[Dict]:
         if not self.api_key or self.api_key == "your_key_here":
@@ -869,29 +869,19 @@ class GameScanner:
             return []
 
         all_games = []
-        sport_name_map = {
-            "NBA": "basketball",
-            "NFL": "americanfootball",
-            "MLB": "baseball",
-            "NHL": "icehockey",
+        sport_key_map = {
+            "NBA": "basketball_nba",
+            "NFL": "americanfootball_nfl",
+            "MLB": "baseball_mlb",
+            "NHL": "icehockey_nhl",
         }
 
         for sport in sports:
-            api_sport = sport_name_map.get(sport, sport.lower())
-            leagues = self._fetch_leagues(api_sport)
-            if not leagues:
-                st.warning(f"No leagues found for {sport}. Skipping.")
-                continue
-
-            for league in leagues:
-                league_slug = league.get("slug")
-                if not league_slug:
-                    continue
-                events = self._fetch_events(league_slug, days_offset)
-                for event in events:
-                    event["sport"] = sport
-                    event["league_name"] = league.get("name", "")
-                all_games.extend(events)
+            sport_key = sport_key_map.get(sport, sport.lower().replace(" ", "_"))
+            events = self._fetch_events(sport_key, days_offset)
+            for event in events:
+                event["sport"] = sport
+            all_games.extend(events)
 
         if not all_games:
             st.info(f"No games found for {', '.join(sports)}. Try a different date or check your API key.")
@@ -900,26 +890,10 @@ class GameScanner:
 
         return all_games
 
-    def _fetch_leagues(self, sport: str) -> List[Dict]:
-        url = f"{self.base_url}/leagues"
-        params = {"apiKey": self.api_key, "sport": sport}
-        try:
-            response = requests.get(url, params=params, timeout=10)
-            response.raise_for_status()
-            leagues = response.json()
-            # Filter leagues that have upcoming events
-            leagues = [l for l in leagues if l.get("eventsCount", 0) > 0]
-            return leagues
-        except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching leagues for {sport}: {e}")
-            update_health("Odds-API.io (game scores)", success=False, error_msg=str(e), fallback=True)
-            return []
-
-    def _fetch_events(self, league_slug: str, days_offset: int) -> List[Dict]:
-        url = f"{self.base_url}/events"
+    def _fetch_events(self, sport_key: str, days_offset: int) -> List[Dict]:
+        url = f"{self.base_url}/sports/{sport_key}/events"
         params = {
             "apiKey": self.api_key,
-            "league": league_slug,
             "days": days_offset + 1,
         }
         try:
@@ -928,7 +902,7 @@ class GameScanner:
             events = response.json()
             return events
         except requests.exceptions.RequestException as e:
-            st.warning(f"Error fetching events for {league_slug}: {e}")
+            st.warning(f"Error fetching events for {sport_key}: {e}")
             update_health("Odds-API.io (game scores)", success=False, error_msg=str(e), fallback=True)
             return []
 
