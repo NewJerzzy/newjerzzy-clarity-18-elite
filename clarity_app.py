@@ -15,7 +15,7 @@
 #   - **NEW:** FlashLive Sports API as primary multi‑sport source (30+ sports)
 #   - **NEW:** ESPN API as universal fallback for all sports
 #   - **UPDATED:** Health Dashboard tracks all integrated APIs
-#   - **FIXED:** PrizePicks board parser now correctly extracts ALL props
+#   - **FIXED:** PrizePicks board parser now extracts ALL props correctly
 # =============================================================================
 
 import os
@@ -1532,10 +1532,10 @@ def parse_prizepicks_blocks(text: str) -> List[Dict]:
     props.sort(key=lambda x: x["player"])
     return props
 
-def parse_prop_text(text: str) -> Optional[Dict]:
+def parse_prop_text(text: str):
     """
-    Try simple regex first; if that fails, parse PrizePicks block and return the FIRST prop.
-    (Used by older single‑prop expectations.)
+    Try simple regex first; if that fails, parse PrizePicks block and return ALL props.
+    (Return type can be Dict or List[Dict] depending on context.)
     """
     m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)\s*([+-]\d+)?$', text, re.IGNORECASE)
     if m:
@@ -1558,8 +1558,7 @@ def parse_prop_text(text: str) -> Optional[Dict]:
     
     blocks = parse_prizepicks_blocks(text)
     if blocks:
-        return blocks[0]
-    
+        return blocks
     return None
 
 # =============================================================================
@@ -2195,13 +2194,17 @@ def main():
                 
                 text_to_parse = scan_text if scan_text else ocr_text
                 if text_to_parse:
-                    # Try simple regex first
-                    simple = parse_prop_text(text_to_parse.strip())
-                    if simple:
-                        extracted_props = [simple]
+                    # If text contains multiple numbers (indicating a full board), skip simple regex mode
+                    if len(re.findall(r'\n\d+(\.\d+)?\n', '\n' + text_to_parse + '\n')) > 1:
+                        extracted_props = parse_prizepicks_blocks(text_to_parse)
                     else:
-                        # Parse full PrizePicks board
-                        extracted_props = parse_prizepicks_blocks(text_to_parse.strip())
+                        simple = parse_prop_text(text_to_parse.strip())
+                        if isinstance(simple, list):
+                            extracted_props = simple
+                        elif isinstance(simple, dict):
+                            extracted_props = [simple]
+                        else:
+                            extracted_props = parse_prizepicks_blocks(text_to_parse)
                     
                     if extracted_props:
                         if len(extracted_props) == 1:
