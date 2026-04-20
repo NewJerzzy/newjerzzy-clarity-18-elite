@@ -15,6 +15,7 @@
 #   - **NEW:** FlashLive Sports API as primary multi‑sport source (30+ sports)
 #   - **NEW:** ESPN API as universal fallback for all sports
 #   - **UPDATED:** Health Dashboard tracks all integrated APIs
+#   - **ENHANCED:** Prop Scanner parses PrizePicks block format (More/Less → OVER/UNDER)
 # =============================================================================
 
 import os
@@ -656,7 +657,6 @@ def _get_flashlive_headers():
         "X-RapidAPI-Host": FLASHLIVE_API_HOST
     }
 
-# Map CLARITY sport names to FlashLive sport IDs
 FLASHLIVE_SPORT_MAP = {
     "NBA": 1,       # Basketball
     "NFL": 2,       # American Football
@@ -677,10 +677,6 @@ FLASHLIVE_SPORT_MAP = {
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_flashlive_player_stats(player_name: str, sport: str, market: str) -> List[float]:
-    """
-    Fetch player statistics from FlashLive Sports API.
-    Returns a list of recent stat values for the given player and market.
-    """
     if not st.secrets.get("RAPIDAPI_KEY"):
         update_health("FlashLive Sports (Multi‑Sport)", success=False, error_msg="No RapidAPI key", fallback=True)
         return []
@@ -690,7 +686,6 @@ def fetch_flashlive_player_stats(player_name: str, sport: str, market: str) -> L
         update_health("FlashLive Sports (Multi‑Sport)", success=False, error_msg=f"Sport {sport} not mapped", fallback=True)
         return []
     
-    # Step 1: Search for player
     search_url = f"{FLASHLIVE_API_BASE_URL}/players/search"
     params = {"sport_id": sport_id, "query": player_name, "limit": 1}
     
@@ -710,7 +705,6 @@ def fetch_flashlive_player_stats(player_name: str, sport: str, market: str) -> L
         if not player_id:
             return []
         
-        # Step 2: Fetch player statistics
         stats_url = f"{FLASHLIVE_API_BASE_URL}/players/statistics"
         stats_params = {"player_id": player_id, "sport_id": sport_id}
         stats_resp = requests.get(stats_url, headers=_get_flashlive_headers(), params=stats_params, timeout=10)
@@ -722,7 +716,6 @@ def fetch_flashlive_player_stats(player_name: str, sport: str, market: str) -> L
         stats_data = stats_resp.json()
         game_logs = stats_data.get("DATA", {}).get("game_log", [])
         
-        # Map market to stat key (simplified – real implementation would be more sophisticated)
         stat_key = market.lower()
         values = []
         for game in game_logs[:8]:
@@ -757,7 +750,6 @@ def _get_espn_headers():
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_espn_player_stats(player_name: str, sport: str, market: str) -> List[float]:
-    """Fetch player stats from ESPN API as fallback."""
     if not st.secrets.get("RAPIDAPI_KEY"):
         update_health("ESPN API (Fallback)", success=False, error_msg="No RapidAPI key", fallback=True)
         return []
@@ -973,7 +965,6 @@ def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA", g
     stats = []
     primary_success = False
 
-    # Priority 1: Sport‑specific primary APIs
     if sport.upper() == "NBA":
         stats = _fetch_nba_stats_cached(player_name, market, game_date)
         if stats:
@@ -983,13 +974,11 @@ def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA", g
         if stats:
             primary_success = True
     elif sport.upper() in ["NHL", "NFL", "MLB", "SOCCER", "MMA", "F1", "CRICKET", "BOXING", "TENNIS"]:
-        # Try FlashLive Sports first for these sports
         stats = fetch_flashlive_player_stats(player_name, sport, market)
         if stats and len(stats) >= 3:
             primary_success = True
             update_health("FlashLive Sports (Multi‑Sport)", success=True, fallback=False)
 
-    # Priority 2: ESPN API fallback (for all sports)
     if not primary_success or len(stats) < 3:
         logging.info(f"Primary API failed for {player_name} ({sport}), trying ESPN fallback...")
         espn_stats = fetch_espn_player_stats(player_name, sport, market)
@@ -999,7 +988,6 @@ def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA", g
         else:
             update_health("ESPN API (Fallback)", success=False, error_msg="No data", fallback=True)
 
-    # Priority 3: Historical fallback (league averages)
     if not stats or len(stats) < 3:
         logging.warning(f"Using historical fallback stats for {player_name} {market} {sport}")
         stats = _get_historical_fallback(market, sport)
@@ -1462,9 +1450,90 @@ def ocr_image(image_bytes, api_key):
         return None, str(e)
 
 # =============================================================================
-# SIMPLE PROP PARSER
+# ENHANCED PROP PARSER – Handles PrizePicks block format
 # =============================================================================
+def parse_prizepicks_block(text: str) -> Optional[Dict]:
+    """
+    Extracts the first player prop from a PrizePicks block like:
+    Dyson Daniels
+    ATL - G
+    ...
+    13
+    Rebs+Asts
+    Less
+    More
+    """
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None
+    
+    # We'll look for patterns: a number line followed by a market line, then More/Less
+    for i in range(len(lines) - 2):
+        try:
+            # Check if current line is a number (the line)
+            line_val = float(lines[i])
+            market = lines[i+1]
+            # Market should contain letters and possibly + or -
+            if not re.search(r'[A-Za-z]', market):
+                continue
+            
+            # Determine pick from More/Less (usually on line i+2 or i+3)
+            pick = None
+            for j in range(i+2, min(i+5, len(lines))):
+                if lines[j].lower() in ["more", "less"]:
+                    pick = "OVER" if lines[j].lower() == "more" else "UNDER"
+                    break
+            
+            if not pick:
+                # If not found, default to OVER
+                pick = "OVER"
+            
+            # Find player name (usually 2-4 lines above the number)
+            player = ""
+            for k in range(max(0, i-4), i):
+                candidate = lines[k]
+                # Exclude lines that look like team abbreviations or positions
+                if re.search(r'[A-Z]{3}\s*-\s*[A-Z]', candidate):
+                    continue
+                if re.search(r'@\s+[A-Z]{3}', candidate):
+                    continue
+                if re.search(r'^\d+\.?\d*[KMB]?$', candidate):  # trending numbers
+                    continue
+                if candidate.lower() in ["goblin", "demon", "trending", "more", "less"]:
+                    continue
+                if len(candidate) > 2 and not candidate.isdigit():
+                    player = candidate
+                    break
+            
+            # If we still don't have a player, take the first non-empty line that looks like a name
+            if not player:
+                for line in lines[:i]:
+                    if len(line) > 2 and not re.search(r'^\d+\.?\d*[KMB]?$', line) and line.lower() not in ["goblin", "demon", "trending", "more", "less"]:
+                        if not re.search(r'[A-Z]{3}\s*-\s*[A-Z]', line):
+                            player = line
+                            break
+            
+            if player and market and line_val > 0:
+                # Normalize market name
+                market = market.upper().replace(" ", "")
+                # Remove any trailing numbers or special characters
+                market = re.sub(r'[^A-Z+]', '', market)
+                
+                return {
+                    "player": player.strip(),
+                    "market": market,
+                    "line": line_val,
+                    "pick": pick,
+                    "odds": -110
+                }
+        except ValueError:
+            continue
+    
+    return None
+
 def parse_prop_text(text: str) -> Optional[Dict]:
+    """Try multiple parsers: simple regex, then PrizePicks block."""
+    # Simple regex patterns
     m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)\s*([+-]\d+)?$', text, re.IGNORECASE)
     if m:
         return {
@@ -1483,10 +1552,16 @@ def parse_prop_text(text: str) -> Optional[Dict]:
             "line": float(m.group(4)),
             "odds": int(m.group(5)) if m.group(5) else -110
         }
+    
+    # Fallback to PrizePicks block parser
+    block_result = parse_prizepicks_block(text)
+    if block_result:
+        return block_result
+    
     return None
 
 # =============================================================================
-# ENHANCED SLIP PARSER
+# ENHANCED SLIP PARSER (for settled slips)
 # =============================================================================
 def parse_complex_slip(text: str) -> List[Dict]:
     bets = []
@@ -2073,7 +2148,7 @@ def main():
         st.markdown("---")
         with st.expander("📋 Scan a Prop Slip (Text or Screenshot)", expanded=False):
             st.markdown("Paste a prop line or upload a screenshot – CLARITY will extract and analyze it instantly.")
-            scan_text = st.text_area("Paste prop text (e.g., 'LeBron James OVER 28.5 PTS -110')", key="prop_scan_text")
+            scan_text = st.text_area("Paste prop text (e.g., PrizePicks block or 'LeBron James OVER 28.5 PTS')", key="prop_scan_text")
             scan_image = st.file_uploader("Or upload a screenshot", type=["jpg", "jpeg", "png", "webp"], key="prop_scan_image")
             
             if st.button("🔍 Extract & Analyze Prop", key="prop_scan_button"):
@@ -2122,7 +2197,7 @@ def main():
                         else:
                             st.error("PASS — No edge")
                     else:
-                        st.error("Could not parse a valid prop. Try a format like: 'LeBron James OVER 28.5 PTS'")
+                        st.error("Could not parse a valid prop. Try a format like: 'LeBron James OVER 28.5 PTS' or paste a PrizePicks block.")
                 else:
                     st.warning("Please provide text or upload an image.")
 
