@@ -9,6 +9,8 @@
 #   - Enhanced slip parser: PrizePicks Goblin, Bovada parlays, MyBookie slips
 #   - **NEW:** Game Analyzer now uses full CLARITY model (WMA, sigma, edge, tiers)
 #   - **FIXED:** implied_prob type error; fallback for all sports
+#   - **ADDED:** Prop Scanner inside Player Props (text/screenshot → auto‑analyze)
+#   - **UPDATED:** Best Bets generates 2‑6 leg parlays
 # =============================================================================
 
 import os
@@ -1185,6 +1187,33 @@ def ocr_image(image_bytes, api_key):
         return None, str(e)
 
 # =============================================================================
+# SIMPLE PROP PARSER – for the Prop Scanner (prospective bets)
+# =============================================================================
+def parse_prop_text(text: str) -> Optional[Dict]:
+    """Extract player, pick, line, market, odds from a single prop line."""
+    # Pattern 1: "LeBron James OVER 28.5 PTS -110"
+    m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)\s*([+-]\d+)?$', text, re.IGNORECASE)
+    if m:
+        return {
+            "player": m.group(1).strip(),
+            "pick": m.group(2).upper(),
+            "line": float(m.group(3)),
+            "market": m.group(4).upper(),
+            "odds": int(m.group(5)) if m.group(5) else -110
+        }
+    # Pattern 2: "LeBron James PTS OVER 28.5"
+    m = re.search(r'^(.+?)\s+(\w+)\s+(OVER|UNDER)\s+([\d\.]+)\s*([+-]\d+)?$', text, re.IGNORECASE)
+    if m:
+        return {
+            "player": m.group(1).strip(),
+            "market": m.group(2).upper(),
+            "pick": m.group(3).upper(),
+            "line": float(m.group(4)),
+            "odds": int(m.group(5)) if m.group(5) else -110
+        }
+    return None
+
+# =============================================================================
 # ENHANCED SLIP PARSER – handles PrizePicks Goblin, Bovada, MyBookie, and original block format
 # =============================================================================
 def parse_complex_slip(text: str) -> List[Dict]:
@@ -1632,9 +1661,9 @@ def get_accuracy_dashboard():
     return {'total_bets':total,'wins':wins,'losses':total-wins,'win_rate':round(win_rate,1),'roi':round(roi,1),'units_profit':round(units_profit,1),'by_sport':by_sport,'by_tier':by_tier,'sem_score':sem_score}
 
 # =============================================================================
-# PARLAY GENERATION (with correlation checks)
+# PARLAY GENERATION (with correlation checks) – now 2‑6 legs
 # =============================================================================
-def generate_parlays(approved_bets: List[Dict], max_legs: int = 4, top_n: int = 20) -> List[Dict]:
+def generate_parlays(approved_bets: List[Dict], max_legs: int = 6, top_n: int = 20) -> List[Dict]:
     if len(approved_bets) < 2:
         return []
     unique = {}
@@ -1767,6 +1796,67 @@ def main():
                 st.success("Added to slip!")
                 st.toast("Slip added", icon="➕")
 
+        # ---------- NEW: Prop Scanner (Text / Screenshot) inside Player Props ----------
+        st.markdown("---")
+        with st.expander("📋 Scan a Prop Slip (Text or Screenshot)", expanded=False):
+            st.markdown("Paste a prop line or upload a screenshot – CLARITY will extract and analyze it instantly.")
+            scan_text = st.text_area("Paste prop text (e.g., 'LeBron James OVER 28.5 PTS -110')", key="prop_scan_text")
+            scan_image = st.file_uploader("Or upload a screenshot", type=["jpg", "jpeg", "png", "webp"], key="prop_scan_image")
+            
+            if st.button("🔍 Extract & Analyze Prop", key="prop_scan_button"):
+                extracted = None
+                ocr_text = ""
+                
+                # Handle image upload first
+                if scan_image is not None:
+                    ocr_api_key = st.secrets.get("OCR_SPACE_API_KEY", "")
+                    if not ocr_api_key:
+                        st.error("OCR API key missing. Please add OCR_SPACE_API_KEY to your secrets.")
+                    else:
+                        img_bytes = scan_image.read()
+                        ocr_text, error = ocr_image(img_bytes, ocr_api_key)
+                        if error:
+                            st.error(f"OCR failed: {error}")
+                        elif ocr_text:
+                            st.success("OCR succeeded. Extracted text:")
+                            st.code(ocr_text)
+                
+                # Determine text source
+                text_to_parse = scan_text if scan_text else ocr_text
+                if text_to_parse:
+                    extracted = parse_prop_text(text_to_parse.strip())
+                    if extracted:
+                        # Auto‑fill the manual fields
+                        st.session_state.pp_player = extracted["player"]
+                        st.session_state.pp_market = extracted["market"]
+                        st.session_state.pp_line = extracted["line"]
+                        st.session_state.pp_pick = extracted["pick"]
+                        st.session_state.pp_odds = extracted["odds"]
+                        
+                        st.success(f"Extracted: {extracted['player']} {extracted['pick']} {extracted['line']} {extracted['market']} ({extracted['odds']})")
+                        
+                        # Immediately run analysis
+                        res = analyze_prop(
+                            extracted["player"], extracted["market"], extracted["line"],
+                            extracted["pick"], sport, extracted["odds"], new_bankroll
+                        )
+                        st.markdown("### Analysis Result")
+                        col1, col2, col3, col4 = st.columns(4)
+                        col1.metric("Win Prob", f"{res['prob']:.1%}")
+                        col2.metric("Edge", f"{res['edge']:+.1%}")
+                        col3.metric("Kelly Stake", f"${res['stake']:.2f}")
+                        col4.metric("Tier", res["tier"])
+                        if res["bolt_signal"] == "SOVEREIGN BOLT":
+                            st.success(f"⚡ SOVEREIGN BOLT — {extracted['pick']} {extracted['line']} {extracted['market']}")
+                        elif res["edge"] > 0.04:
+                            st.success(f"{res['bolt_signal']} — Recommended")
+                        else:
+                            st.error("PASS — No edge")
+                    else:
+                        st.error("Could not parse a valid prop. Try a format like: 'LeBron James OVER 28.5 PTS'")
+                else:
+                    st.warning("Please provide text or upload an image.")
+
     # ---------- Tab 1: Game Analyzer (FULL CLARITY MODEL) ----------
     with tabs[1]:
         st.header("Game Analyzer – ML, Spreads, Totals with CLARITY Approval")
@@ -1888,16 +1978,24 @@ def main():
 
     # ---------- Tab 2: BEST BETS (parlays from approved bets) ----------
     with tabs[2]:
-        st.header("🏆 Best Bets – Parlays (2-4 legs) from Clarity Approved")
+        st.header("🏆 Best Bets – Parlays (2-6 legs) from Clarity Approved")
         st.markdown("Automatically generated from fetched props (edge > 4%) and loaded game lines (edge > 2%). Minimum 2 legs required. Same‑game parlays are automatically filtered to avoid conflicts.")
+        
+        # Use sport2 from Game Analyzer tab, fallback to NBA
+        default_sport = st.session_state.get("game_sport", "NBA")
+        if 'game_sport' not in st.session_state:
+            st.session_state.game_sport = default_sport
+        
         if st.button("🔄 Refresh Best Bets"):
             st.session_state['generate_best_bets'] = True
         approved_bets = []
         plus_ev_bets = []
+        sport_for_bets = st.session_state.get("game_sport", "NBA")
+        
         if 'live_props' in st.session_state and st.session_state['live_props']:
             for prop in st.session_state['live_props']:
-                res_over = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "OVER", sport2, -110, new_bankroll)
-                res_under = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "UNDER", sport2, -110, new_bankroll)
+                res_over = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "OVER", sport_for_bets, -110, new_bankroll)
+                res_under = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "UNDER", sport_for_bets, -110, new_bankroll)
                 if res_over['edge'] > res_under['edge']:
                     best_edge = res_over['edge']
                     best_pick = "OVER"
@@ -1913,7 +2011,7 @@ def main():
                         "prob": res['prob'],
                         "odds": -110,
                         "unique_key": prop.player_name + prop.stat_type + best_pick,
-                        "sport": sport2,
+                        "sport": sport_for_bets,
                         "team": prop.team,
                         "opponent": ""
                     })
@@ -1927,7 +2025,7 @@ def main():
                     })
         if 'auto_games' in st.session_state and st.session_state['auto_games']:
             for game in st.session_state['auto_games']:
-                sport_g = game.get('sport', 'NBA')
+                sport_g = game.get('sport', sport_for_bets)
                 home = game.get('home_team', '')
                 away = game.get('away_team', '')
                 if game.get('home_ml') and game.get('away_ml'):
@@ -2067,9 +2165,9 @@ def main():
                 "Odds": b['odds']
             } for b in approved_bets])
             st.dataframe(approved_df, use_container_width=True)
-            parlays = generate_parlays(approved_bets, max_legs=4, top_n=20)
+            parlays = generate_parlays(approved_bets, max_legs=6, top_n=20)
             if parlays:
-                st.subheader(f"🎲 Top Parlays ({len(parlays)} combinations, 2-4 legs)")
+                st.subheader(f"🎲 Top Parlays ({len(parlays)} combinations, 2-6 legs)")
                 for i, p in enumerate(parlays):
                     with st.expander(f"#{i+1}: {p['num_legs']}-Leg Parlay – Total Edge: {p['total_edge']:.1%} – Est. Odds: {p['estimated_odds']:+d}"):
                         st.markdown("**Legs:**")
