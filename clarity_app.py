@@ -2,7 +2,7 @@
 # CLARITY 23.0 – ELITE MULTI‑SPORT ENGINE (FULLY UPGRADED)
 #   - All prior features (sniffer, caching, bankroll, auto‑tune, SEM, etc.)
 #   - Fixed: Clear buttons in Paste & Scan (text and images)
-#   - Fixed: GameScanner now uses correct Odds-API.io endpoints (api.the-odds-api.com/v4)
+#   - Fixed: GameScanner now uses The Odds API (the-odds-api.com) with correct endpoints
 #   - Added: API key warnings in sidebar and Tools tab
 #   - Added: OCR support for WEBP images
 #   - Enhanced slip parser: PrizePicks Goblin, Bovada parlays, MyBookie slips
@@ -856,7 +856,7 @@ def analyze_total(total_line: float, over_odds: float, under_odds: float, sport:
     return {"total": total_line, "over_edge": over_edge, "under_edge": under_edge, "over_prob": over_prob, "under_prob": 1-over_prob}
 
 # =============================================================================
-# FIXED GAME SCANNER – uses correct Odds-API.io endpoints
+# FIXED GAME SCANNER – uses The Odds API (the-odds-api.com) with correct endpoints
 # =============================================================================
 class GameScanner:
     def __init__(self):
