@@ -16,7 +16,7 @@
 #   - **NEW:** ESPN API as universal fallback for all sports
 #   - **UPDATED:** Health Dashboard tracks all integrated APIs
 #   - **ENHANCED:** Prop Scanner parses PrizePicks block format (More/Less → OVER/UNDER)
-#   - **FIXED:** Session state assignment safety checks
+#   - **FIXED:** Session state initialization and assignment safety
 # =============================================================================
 
 import os
@@ -2040,6 +2040,18 @@ def main():
     st.title(f"CLARITY {VERSION}")
     st.caption(f"Sniffer (PrizePicks/Underdog) + Prop Model + Game Analyzer + Best Bets (Parlays) • {BUILD_DATE}")
 
+    # Initialize session state keys for player props
+    if "pp_player" not in st.session_state:
+        st.session_state.pp_player = "LeBron James"
+    if "pp_market" not in st.session_state:
+        st.session_state.pp_market = "PTS"
+    if "pp_line" not in st.session_state:
+        st.session_state.pp_line = 25.5
+    if "pp_pick" not in st.session_state:
+        st.session_state.pp_pick = "OVER"
+    if "pp_odds" not in st.session_state:
+        st.session_state.pp_odds = -110
+
     if not st.secrets.get("BALLSDONTLIE_API_KEY"):
         st.sidebar.warning("⚠️ BallsDontLie API key missing. NBA stats will use fallback averages.")
     if not st.secrets.get("ODDS_API_IO_KEY") or st.secrets.get("ODDS_API_IO_KEY") == "your_key_here":
@@ -2090,23 +2102,34 @@ def main():
             st.session_state.pp_line = float(prop.line_score)
             st.info(f"Loaded: {prop.player_name} | {prop.stat_type} o/u {prop.line_score}")
 
-        player = st.text_input("Player Name", value=st.session_state.get('pp_player', "LeBron James"), key="pp_player")
+        player = st.text_input("Player Name", value=st.session_state.pp_player, key="pp_player_input")
+        if player != st.session_state.pp_player:
+            st.session_state.pp_player = player
         market = st.selectbox("Market", SPORT_CATEGORIES.get(sport, ["PTS"]),
-                              index=SPORT_CATEGORIES.get(sport, ["PTS"]).index(st.session_state.get('pp_market', "PTS")) if st.session_state.get('pp_market') in SPORT_CATEGORIES.get(sport, ["PTS"]) else 0,
-                              key="pp_market")
-        line = st.number_input("Line", value=float(st.session_state.get('pp_line', 25.5)), step=0.5, key="pp_line")
-        pick = st.radio("Pick", ["OVER", "UNDER"], horizontal=True, key="pp_pick")
-        odds = st.number_input("American Odds", value=-110, key="pp_odds")
+                              index=SPORT_CATEGORIES.get(sport, ["PTS"]).index(st.session_state.pp_market) if st.session_state.pp_market in SPORT_CATEGORIES.get(sport, ["PTS"]) else 0,
+                              key="pp_market_input")
+        if market != st.session_state.pp_market:
+            st.session_state.pp_market = market
+        line = st.number_input("Line", value=st.session_state.pp_line, step=0.5, key="pp_line_input")
+        if line != st.session_state.pp_line:
+            st.session_state.pp_line = line
+        pick = st.radio("Pick", ["OVER", "UNDER"], horizontal=True, key="pp_pick_input", index=0 if st.session_state.pp_pick == "OVER" else 1)
+        if pick != st.session_state.pp_pick:
+            st.session_state.pp_pick = pick
+        odds = st.number_input("American Odds", value=st.session_state.pp_odds, key="pp_odds_input")
+        if odds != st.session_state.pp_odds:
+            st.session_state.pp_odds = odds
 
         if st.button("🚀 Run Prop Analysis", type="primary"):
-            res = analyze_prop(player, market, line, pick, sport, odds, new_bankroll)
+            res = analyze_prop(st.session_state.pp_player, st.session_state.pp_market, st.session_state.pp_line,
+                               st.session_state.pp_pick, sport, st.session_state.pp_odds, new_bankroll)
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("Win Prob", f"{res['prob']:.1%}")
             col2.metric("Edge", f"{res['edge']:+.1%}")
             col3.metric("Kelly Stake", f"${res['stake']:.2f}")
             col4.metric("Tier", res["tier"])
             if res["bolt_signal"] == "SOVEREIGN BOLT":
-                st.success(f"### ⚡ SOVEREIGN BOLT — {pick} {line} {market}")
+                st.success(f"### ⚡ SOVEREIGN BOLT — {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market}")
             elif res["edge"] > 0.04:
                 st.success(f"### {res['bolt_signal']} — Recommended")
             else:
@@ -2114,8 +2137,8 @@ def main():
             st.line_chart(pd.DataFrame({"Game": range(1, len(res["stats"])+1), "Stat": res["stats"]}).set_index("Game"))
             if st.button("➕ Add to Slip"):
                 insert_slip({
-                    "type": "PROP", "sport": sport, "player": player, "team": "", "opponent": "",
-                    "market": market, "line": line, "pick": pick, "odds": odds,
+                    "type": "PROP", "sport": sport, "player": st.session_state.pp_player, "team": "", "opponent": "",
+                    "market": st.session_state.pp_market, "line": st.session_state.pp_line, "pick": st.session_state.pp_pick, "odds": st.session_state.pp_odds,
                     "edge": res["edge"], "prob": res["prob"], "kelly": res["kelly"],
                     "tier": res["tier"], "bolt_signal": res["bolt_signal"], "bankroll": new_bankroll
                 })
@@ -2150,24 +2173,22 @@ def main():
                 if text_to_parse:
                     extracted = parse_prop_text(text_to_parse.strip())
                     if extracted:
-                        # Safe assignment with type conversion
-                        player_name = str(extracted.get("player", "")).strip()
-                        market_name = str(extracted.get("market", "PTS")).strip().upper()
-                        line_val = float(extracted.get("line", 0))
-                        pick_val = str(extracted.get("pick", "OVER")).strip().upper()
-                        odds_val = int(extracted.get("odds", -110))
+                        # Safe assignment to session state
+                        try:
+                            st.session_state.pp_player = str(extracted.get("player", "")).strip()
+                            st.session_state.pp_market = str(extracted.get("market", "PTS")).strip().upper()
+                            st.session_state.pp_line = float(extracted.get("line", 0))
+                            st.session_state.pp_pick = str(extracted.get("pick", "OVER")).strip().upper()
+                            st.session_state.pp_odds = int(extracted.get("odds", -110))
+                        except Exception as e:
+                            st.error(f"Error setting session state: {e}")
+                            st.stop()
                         
-                        st.session_state.pp_player = player_name
-                        st.session_state.pp_market = market_name
-                        st.session_state.pp_line = line_val
-                        st.session_state.pp_pick = pick_val
-                        st.session_state.pp_odds = odds_val
-                        
-                        st.success(f"Extracted: {player_name} {pick_val} {line_val} {market_name} ({odds_val})")
+                        st.success(f"Extracted: {st.session_state.pp_player} {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market} ({st.session_state.pp_odds})")
                         
                         res = analyze_prop(
-                            player_name, market_name, line_val,
-                            pick_val, sport, odds_val, new_bankroll
+                            st.session_state.pp_player, st.session_state.pp_market, st.session_state.pp_line,
+                            st.session_state.pp_pick, sport, st.session_state.pp_odds, new_bankroll
                         )
                         st.markdown("### Analysis Result")
                         col1, col2, col3, col4 = st.columns(4)
@@ -2176,7 +2197,7 @@ def main():
                         col3.metric("Kelly Stake", f"${res['stake']:.2f}")
                         col4.metric("Tier", res["tier"])
                         if res["bolt_signal"] == "SOVEREIGN BOLT":
-                            st.success(f"⚡ SOVEREIGN BOLT — {pick_val} {line_val} {market_name}")
+                            st.success(f"⚡ SOVEREIGN BOLT — {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market}")
                         elif res["edge"] > 0.04:
                             st.success(f"{res['bolt_signal']} — Recommended")
                         else:
