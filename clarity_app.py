@@ -8,6 +8,7 @@
 #   - Added: OCR support for WEBP images
 #   - Enhanced slip parser: PrizePicks Goblin, Bovada parlays, MyBookie slips
 #   - **NEW:** Game Analyzer now uses full CLARITY model (WMA, sigma, edge, tiers)
+#   - **FIXED:** implied_prob type error; fallback for all sports
 # =============================================================================
 
 import os
@@ -835,11 +836,16 @@ def analyze_prop(player, market, line, pick, sport="NBA", odds=-110, bankroll=No
 # =============================================================================
 # GAME MODEL
 # =============================================================================
-def implied_prob(american_odds: float) -> float:
-    if american_odds > 0:
-        return 100 / (american_odds + 100)
+def implied_prob(american_odds) -> float:
+    """Safe implied probability conversion with fallback to -110."""
+    try:
+        odds = float(american_odds)
+    except (TypeError, ValueError):
+        odds = -110.0
+    if odds > 0:
+        return 100 / (odds + 100)
     else:
-        return -american_odds / (-american_odds + 100)
+        return -odds / (-odds + 100)
 
 # -----------------------------------------------------------------------------
 # NBA TEAM STATS FETCHING (Balldontlie)
@@ -932,14 +938,12 @@ def _fallback_team_stats(stat_type: str) -> List[float]:
         return [0.0] * 8
 
 # -----------------------------------------------------------------------------
-# ADVANCED GAME ANALYSIS (CLARITY FULL MODEL)
+# ADVANCED GAME ANALYSIS (CLARITY FULL MODEL) – works for all sports
 # -----------------------------------------------------------------------------
 def analyze_total_advanced(home_team: str, away_team: str, sport: str,
                            total_line: float, over_odds: int, under_odds: int) -> Dict:
-    if sport != "NBA":
-        proj = SPORT_MODELS.get(sport, {}).get("avg_total", 220.0)
-        sigma = 12.0
-    else:
+    # Use NBA real data if available; otherwise fall back to league average projection + reasonable sigma
+    if sport == "NBA":
         home_totals = fetch_team_recent_totals(home_team, 8)
         away_totals = fetch_team_recent_totals(away_team, 8)
         home_avg = weighted_moving_average(home_totals)
@@ -954,6 +958,11 @@ def analyze_total_advanced(home_team: str, away_team: str, sport: str,
         wse = weighted_standard_error(combined)
         vol_buf = l42_volatility_buffer(combined)
         sigma = max(wse * vol_buf, 0.75)
+    else:
+        # Fallback for non‑NBA: use league average total and a typical sigma
+        avg_total = SPORT_MODELS.get(sport, {}).get("avg_total", 220.0)
+        proj = avg_total
+        sigma = avg_total * 0.08  # ~8% of total as typical volatility
 
     over_prob = 1 - norm.cdf(total_line, loc=proj, scale=sigma)
     under_prob = norm.cdf(total_line, loc=proj, scale=sigma)
@@ -979,15 +988,12 @@ def analyze_total_advanced(home_team: str, away_team: str, sport: str,
 
 def analyze_spread_advanced(home_team: str, away_team: str, sport: str,
                             spread: float, spread_odds: int) -> Dict:
-    if sport != "NBA":
-        proj_margin = SPORT_MODELS.get(sport, {}).get("home_advantage", 3.0)
-        sigma = 10.0
-    else:
+    if sport == "NBA":
         home_margins = fetch_team_recent_margins(home_team, 8)
         away_margins = fetch_team_recent_margins(away_team, 8)
         home_avg = weighted_moving_average(home_margins)
         away_avg = weighted_moving_average(away_margins)
-        proj_margin = home_avg - away_avg + 3.0
+        proj_margin = home_avg - away_avg + 3.0  # home court advantage
 
         combined_margins = [h - a for h, a in zip(home_margins, away_margins)]
         if len(combined_margins) < 3:
@@ -995,6 +1001,10 @@ def analyze_spread_advanced(home_team: str, away_team: str, sport: str,
         wse = weighted_standard_error(combined_margins)
         vol_buf = l42_volatility_buffer(combined_margins)
         sigma = max(wse * vol_buf, 0.75)
+    else:
+        # Fallback: assume home advantage + typical spread volatility
+        proj_margin = SPORT_MODELS.get(sport, {}).get("home_advantage", 3.0)
+        sigma = 10.0
 
     home_cover_prob = 1 - norm.cdf(spread, loc=proj_margin, scale=sigma)
     away_cover_prob = norm.cdf(spread, loc=proj_margin, scale=sigma)
@@ -1760,7 +1770,7 @@ def main():
     # ---------- Tab 1: Game Analyzer (FULL CLARITY MODEL) ----------
     with tabs[1]:
         st.header("Game Analyzer – ML, Spreads, Totals with CLARITY Approval")
-        st.caption("Fetches real team stats (NBA) and applies the full weighted moving average, volatility, edge, and tier model.")
+        st.caption("Fetches real team stats (NBA) and applies the full weighted moving average, volatility, edge, and tier model. For other sports, league‑average projections are used.")
         sport2 = st.selectbox("Sport", ["NBA", "NFL", "MLB", "NHL"], index=0, key="game_sport")
         col1, col2 = st.columns([3, 1])
         with col1:
