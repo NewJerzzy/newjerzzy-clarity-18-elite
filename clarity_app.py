@@ -16,6 +16,8 @@
 #   - **NEW:** ESPN API as universal fallback for all sports
 #   - **UPDATED:** Health Dashboard tracks all integrated APIs
 #   - **FIXED:** PrizePicks board parser now extracts ALL props correctly
+#   - **ADDED:** parse_props_from_text() and parse_props_from_image() functions
+#   - **FIXED:** UI parsing logic correctly handles list/dict/None returns
 # =============================================================================
 
 import os
@@ -1428,7 +1430,7 @@ class GameScanner:
 game_scanner = GameScanner()
 
 # =============================================================================
-# OCR FUNCTION
+# OCR FUNCTION (Using OCR.space)
 # =============================================================================
 def ocr_image(image_bytes, api_key):
     try:
@@ -1450,94 +1452,111 @@ def ocr_image(image_bytes, api_key):
         return None, str(e)
 
 # =============================================================================
-# ENHANCED PROP PARSER – Extracts ALL props from PrizePicks board
+# PROP PARSERS – UPGRADED VERSIONS
 # =============================================================================
+
 def parse_prizepicks_blocks(text: str) -> List[Dict]:
     """
-    Extracts ALL player props from a PrizePicks board block.
-    Returns a list of dicts with keys: player, market, line, pick, odds.
+    Extract ALL player props from a PrizePicks board or OCR text.
+    Handles Goblin, multi-line names, trending numbers, and OCR noise.
     """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return []
-    
+
     props = []
-    # First, find all lines that are likely prop numbers
+    used = set()
+
+    # Identify all numeric lines that could be prop lines
     number_indices = []
     for i, line in enumerate(lines):
         try:
-            val = float(line)
-            if 0 < val < 1000:  # reasonable prop value
+            # Handle common OCR error: "O" instead of "0"
+            val = float(line.replace("O", "0").replace("o", "0"))
+            if 0 < val < 200:  # safe range for props
                 number_indices.append(i)
-        except ValueError:
+        except:
             continue
-    
-    used_numbers = set()
+
     for idx in number_indices:
-        if idx in used_numbers:
+        if idx in used:
             continue
-        
-        line_val = float(lines[idx])
+
+        # Extract line value
+        try:
+            line_val = float(lines[idx].replace("O", "0").replace("o", "0"))
+        except:
+            continue
+
+        # Market is usually the next line
         if idx + 1 >= len(lines):
             continue
-        market = lines[idx + 1]
-        if not re.search(r'[A-Za-z]', market):
+
+        raw_market = lines[idx + 1].upper().replace(" ", "")
+        raw_market = re.sub(r'[^A-Z+]', '', raw_market)
+
+        # Validate market
+        if len(raw_market) < 2:
             continue
-        
-        # Look for More/Less
+
+        # Find pick (More/Less)
         pick = None
-        for j in range(idx + 2, min(idx + 6, len(lines))):
-            if lines[j].lower() in ["more", "less"]:
-                pick = "OVER" if lines[j].lower() == "more" else "UNDER"
+        for j in range(idx + 2, min(idx + 8, len(lines))):
+            if lines[j].lower() == "more":
+                pick = "OVER"
+                break
+            if lines[j].lower() == "less":
+                pick = "UNDER"
                 break
         if not pick:
             continue
-        
-        # Look for player name: search upward up to 8 lines
-        player = ""
-        for k in range(max(0, idx - 8), idx):
-            candidate = lines[k]
-            # Exclude obvious non-player lines
-            if re.search(r'[A-Z]{3}\s*-\s*[A-Z]', candidate):   # team/position like "ATL - G"
+
+        # Find player name (search upward)
+        player = None
+        for k in range(idx - 1, max(idx - 10, -1), -1):
+            cand = lines[k]
+
+            # Skip noise
+            if cand.lower() in ["more", "less", "goblin", "demon", "trending"]:
                 continue
-            if re.search(r'@\s+[A-Z]{3}', candidate):           # matchup info "@ NYK"
+            if re.match(r'^\d+(\.\d+)?[KMB]?$', cand, re.IGNORECASE):  # trending numbers
                 continue
-            if re.search(r'^\d+\.?\d*[KMB]?$', candidate):      # trending numbers "55.8K"
+            if re.match(r'^[A-Z]{2,4}$', cand):  # team code
                 continue
-            if candidate.lower() in ["goblin", "demon", "trending", "more", "less", "final"]:
+            if "@" in cand:  # matchup
                 continue
-            if len(candidate) > 2 and not candidate.isdigit():
-                # Further validate: player name should contain letters, may have spaces, dots, hyphens
-                if re.match(r'^[A-Za-z\s\.\-\']+$', candidate):
-                    player = candidate
-                    break
-        
+
+            # Player name validation
+            if re.match(r"^[A-Za-z\.\'\-\s]+$", cand):
+                player = cand.strip()
+                break
+
         if not player:
             continue
-        
-        # Clean market name
-        market_clean = market.upper().replace(" ", "")
-        market_clean = re.sub(r'[^A-Z+]', '', market_clean)  # keep letters and plus signs
-        
+
         props.append({
-            "player": player.strip(),
-            "market": market_clean,
+            "player": player,
+            "market": raw_market,
             "line": line_val,
             "pick": pick,
             "odds": -110
         })
-        used_numbers.add(idx)
-    
-    # Sort by player name for consistent display
-    props.sort(key=lambda x: x["player"])
+
+        used.add(idx)
+
     return props
+
 
 def parse_prop_text(text: str):
     """
-    Try simple regex first; if that fails, parse PrizePicks block and return ALL props.
-    (Return type can be Dict or List[Dict] depending on context.)
+    Handles:
+    - Simple single-line props
+    - Multi-line PrizePicks blocks
+    - Returns dict OR list of dicts
     """
-    m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)\s*([+-]\d+)?$', text, re.IGNORECASE)
+
+    # Simple format: "LeBron James OVER 28.5 PTS -110"
+    m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+([A-Za-z+]+)\s*([+-]\d+)?$', text, re.IGNORECASE)
     if m:
         return {
             "player": m.group(1).strip(),
@@ -1546,7 +1565,9 @@ def parse_prop_text(text: str):
             "market": m.group(4).upper(),
             "odds": int(m.group(5)) if m.group(5) else -110
         }
-    m = re.search(r'^(.+?)\s+(\w+)\s+(OVER|UNDER)\s+([\d\.]+)\s*([+-]\d+)?$', text, re.IGNORECASE)
+
+    # Alternate format: "LeBron James PTS OVER 28.5"
+    m = re.search(r'^(.+?)\s+([A-Za-z+]+)\s+(OVER|UNDER)\s+([\d\.]+)\s*([+-]\d+)?$', text, re.IGNORECASE)
     if m:
         return {
             "player": m.group(1).strip(),
@@ -1555,11 +1576,40 @@ def parse_prop_text(text: str):
             "line": float(m.group(4)),
             "odds": int(m.group(5)) if m.group(5) else -110
         }
-    
+
+    # Multi-prop block
     blocks = parse_prizepicks_blocks(text)
     if blocks:
         return blocks
+
     return None
+
+
+def parse_props_from_text(text: str) -> List[Dict]:
+    """Always return a flat list of props, regardless of input format."""
+    result = parse_prop_text(text)
+    if result is None:
+        return []
+    if isinstance(result, list):
+        return result
+    return [result]
+
+
+def parse_props_from_image(image_bytes: bytes) -> List[Dict]:
+    """
+    Extract props from an image using OCR.space API.
+    Returns a flat list of prop dictionaries.
+    """
+    ocr_api_key = st.secrets.get("OCR_SPACE_API_KEY", "")
+    if not ocr_api_key:
+        return []
+    
+    ocr_text, error = ocr_image(image_bytes, ocr_api_key)
+    if error or not ocr_text:
+        return []
+    
+    return parse_props_from_text(ocr_text)
+
 
 # =============================================================================
 # ENHANCED SLIP PARSER (for settled slips)
@@ -2180,69 +2230,60 @@ def main():
                 ocr_text = ""
                 
                 if scan_image is not None:
-                    ocr_api_key = st.secrets.get("OCR_SPACE_API_KEY", "")
-                    if not ocr_api_key:
-                        st.error("OCR API key missing. Please add OCR_SPACE_API_KEY to your secrets.")
-                    else:
-                        img_bytes = scan_image.read()
-                        ocr_text, error = ocr_image(img_bytes, ocr_api_key)
-                        if error:
-                            st.error(f"OCR failed: {error}")
-                        elif ocr_text:
-                            st.success("OCR succeeded. Extracted text:")
-                            st.code(ocr_text)
-                
-                text_to_parse = scan_text if scan_text else ocr_text
-                if text_to_parse:
-                    # If text contains multiple numbers (indicating a full board), skip simple regex mode
-                    if len(re.findall(r'\n\d+(\.\d+)?\n', '\n' + text_to_parse + '\n')) > 1:
-                        extracted_props = parse_prizepicks_blocks(text_to_parse)
-                    else:
-                        simple = parse_prop_text(text_to_parse.strip())
-                        if isinstance(simple, list):
-                            extracted_props = simple
-                        elif isinstance(simple, dict):
-                            extracted_props = [simple]
-                        else:
-                            extracted_props = parse_prizepicks_blocks(text_to_parse)
-                    
-                    if extracted_props:
-                        if len(extracted_props) == 1:
-                            selected = extracted_props[0]
-                        else:
-                            options = [f"{p['player']} {p['pick']} {p['line']} {p['market']}" for p in extracted_props]
-                            selected_idx = st.selectbox("Select a prop to analyze", range(len(options)), format_func=lambda x: options[x])
-                            selected = extracted_props[selected_idx]
-                        
-                        # Update session state
-                        st.session_state.pp_player = str(selected.get("player", "")).strip()
-                        st.session_state.pp_market = str(selected.get("market", "PTS")).strip().upper()
-                        st.session_state.pp_line = float(selected.get("line", 0))
-                        st.session_state.pp_pick = str(selected.get("pick", "OVER")).strip().upper()
-                        st.session_state.pp_odds = int(selected.get("odds", -110))
-                        
-                        st.success(f"Extracted: {st.session_state.pp_player} {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market} ({st.session_state.pp_odds})")
-                        
-                        res = analyze_prop(
-                            st.session_state.pp_player, st.session_state.pp_market, st.session_state.pp_line,
-                            st.session_state.pp_pick, sport, st.session_state.pp_odds, new_bankroll
-                        )
-                        st.markdown("### Analysis Result")
-                        col1, col2, col3, col4 = st.columns(4)
-                        col1.metric("Win Prob", f"{res['prob']:.1%}")
-                        col2.metric("Edge", f"{res['edge']:+.1%}")
-                        col3.metric("Kelly Stake", f"${res['stake']:.2f}")
-                        col4.metric("Tier", res["tier"])
-                        if res["bolt_signal"] == "SOVEREIGN BOLT":
-                            st.success(f"⚡ SOVEREIGN BOLT — {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market}")
-                        elif res["edge"] > 0.04:
-                            st.success(f"{res['bolt_signal']} — Recommended")
-                        else:
-                            st.error("PASS — No edge")
-                    else:
-                        st.error("Could not parse any valid props. Try a format like: 'LeBron James OVER 28.5 PTS' or paste a PrizePicks board.")
+                    # Use the new parse_props_from_image function
+                    img_bytes = scan_image.read()
+                    extracted_props = parse_props_from_image(img_bytes)
+                    if not extracted_props:
+                        st.error("Could not extract any props from the image.")
                 else:
-                    st.warning("Please provide text or upload an image.")
+                    # Text input
+                    text_to_parse = scan_text.strip()
+                    if text_to_parse:
+                        simple = parse_prop_text(text_to_parse)
+                        if simple is None:
+                            extracted_props = []
+                        elif isinstance(simple, list):
+                            extracted_props = simple
+                        else:
+                            extracted_props = [simple]
+                    else:
+                        st.warning("Please provide text or upload an image.")
+                
+                if extracted_props:
+                    if len(extracted_props) == 1:
+                        selected = extracted_props[0]
+                    else:
+                        options = [f"{p['player']} {p['pick']} {p['line']} {p['market']}" for p in extracted_props]
+                        selected_idx = st.selectbox("Select a prop to analyze", range(len(options)), format_func=lambda x: options[x])
+                        selected = extracted_props[selected_idx]
+                    
+                    # Update session state
+                    st.session_state.pp_player = str(selected.get("player", "")).strip()
+                    st.session_state.pp_market = str(selected.get("market", "PTS")).strip().upper()
+                    st.session_state.pp_line = float(selected.get("line", 0))
+                    st.session_state.pp_pick = str(selected.get("pick", "OVER")).strip().upper()
+                    st.session_state.pp_odds = int(selected.get("odds", -110))
+                    
+                    st.success(f"Extracted: {st.session_state.pp_player} {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market} ({st.session_state.pp_odds})")
+                    
+                    res = analyze_prop(
+                        st.session_state.pp_player, st.session_state.pp_market, st.session_state.pp_line,
+                        st.session_state.pp_pick, sport, st.session_state.pp_odds, new_bankroll
+                    )
+                    st.markdown("### Analysis Result")
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.metric("Win Prob", f"{res['prob']:.1%}")
+                    col2.metric("Edge", f"{res['edge']:+.1%}")
+                    col3.metric("Kelly Stake", f"${res['stake']:.2f}")
+                    col4.metric("Tier", res["tier"])
+                    if res["bolt_signal"] == "SOVEREIGN BOLT":
+                        st.success(f"⚡ SOVEREIGN BOLT — {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market}")
+                    elif res["edge"] > 0.04:
+                        st.success(f"{res['bolt_signal']} — Recommended")
+                    else:
+                        st.error("PASS — No edge")
+                elif scan_image is None and scan_text:
+                    st.error("Could not parse any valid props. Try a format like: 'LeBron James OVER 28.5 PTS' or paste a PrizePicks board.")
 
     # ---------- Tab 1: Game Analyzer ----------
     with tabs[1]:
