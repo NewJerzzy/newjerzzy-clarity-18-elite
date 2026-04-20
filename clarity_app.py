@@ -2,11 +2,12 @@
 # CLARITY 23.0 – ELITE MULTI‑SPORT ENGINE (FULLY UPGRADED)
 #   - All prior features (sniffer, caching, bankroll, auto‑tune, SEM, etc.)
 #   - Fixed: Clear button now erases the text area and analysis results
+#   - Fixed: Clear button for screenshots section
+#   - Added: Visible API key warnings in Tools tab and Game Analyzer
+#   - Fixed: GameScanner now uses correct Odds-API.io v4 endpoints
 #   - Health Dashboard in Tools tab – real‑time status of every API
 #   - Multi‑image upload + OCR (Paste & Scan tab) – supports WEBP files
-#   - External slips can be used for SEM calibration without affecting personal bankroll
-#   - Enhanced slip parser: now recognizes PrizePicks Goblin format, Bovada parlays,
-#     MyBookie slips, and original block format.
+#   - Enhanced slip parser: PrizePicks Goblin, Bovada parlays, MyBookie slips
 # =============================================================================
 
 import os
@@ -857,116 +858,85 @@ def analyze_total(total_line: float, over_odds: float, under_odds: float, sport:
     return {"total": total_line, "over_edge": over_edge, "under_edge": under_edge, "over_prob": over_prob, "under_prob": 1-over_prob}
 
 # =============================================================================
-# GAME SCANNER (Odds-API.io)
+# FIXED GAME SCANNER – uses correct Odds-API.io v4 endpoints
 # =============================================================================
 class GameScanner:
     def __init__(self):
-        self.io_key = st.secrets.get("ODDS_API_IO_KEY", "")
-        self.api_key = st.secrets.get("ODDS_API_KEY", "")
+        self.api_key = st.secrets.get("ODDS_API_IO_KEY", "")
+        self.base_url = "https://api.odds-api.io/v4"
+        # Check if API key is missing and show warning
+        if not self.api_key:
+            st.warning("⚠️ Odds-API.io API key is missing. Game Analyzer will not work. Please add ODDS_API_IO_KEY to your secrets.")
+            update_health("Odds-API.io (game scores)", success=False, error_msg="API key missing", fallback=True)
 
     def fetch_games_by_date(self, sports: List[str], days_offset: int = 0) -> List[Dict]:
-        target_date = (datetime.now() + timedelta(days=days_offset)).strftime("%Y-%m-%d")
-        games = self._fetch_from_odds_api_io(sports, target_date)
-        if games:
-            return games
-        return self._fetch_from_odds_api(sports)
-
-    def _fetch_from_odds_api_io(self, sports: List[str], date_str: str) -> List[Dict]:
-        if not self.io_key:
-            update_health("Odds-API.io (game scores)", success=False, error_msg="API key missing", fallback=True)
-            return []
-        all_games = []
-        sport_map = {"NBA": "basketball", "MLB": "baseball", "NHL": "icehockey", "NFL": "americanfootball"}
-        for sport in sports:
-            sport_key = sport_map.get(sport)
-            if not sport_key:
-                continue
-            url = f"https://api.odds-api.io/v4/sports/{sport_key}/events"
-            params = {"apiKey": self.io_key}
-            if date_str:
-                params["date"] = date_str
-            try:
-                r = requests.get(url, params=params, timeout=10)
-                if r.status_code == 200:
-                    data = r.json()
-                    events = data.get("data", []) if isinstance(data, dict) else data
-                    for event in events[:20]:
-                        game = {"sport": sport, "home": event.get("home_team", ""), "away": event.get("away_team", ""), "date": event.get("commence_time", ""), "event_id": event.get("id")}
-                        odds_url = f"https://api.odds-api.io/v4/sports/{sport_key}/events/{event['id']}/odds"
-                        odds_params = {"apiKey": self.io_key, "regions": "us", "markets": "h2h,spreads,totals"}
-                        try:
-                            r2 = requests.get(odds_url, params=odds_params, timeout=10)
-                            if r2.status_code == 200:
-                                odds_data = r2.json()
-                                bookmakers = odds_data.get("data", {}).get("bookmakers", []) if isinstance(odds_data, dict) else []
-                                if bookmakers:
-                                    bm = bookmakers[0]
-                                    markets = bm.get("markets", [])
-                                    for m in markets:
-                                        if m["key"] == "h2h":
-                                            for o in m["outcomes"]:
-                                                if o["name"] == game["home"]:
-                                                    game["home_ml"] = o["price"]
-                                                elif o["name"] == game["away"]:
-                                                    game["away_ml"] = o["price"]
-                                        elif m["key"] == "spreads":
-                                            for o in m["outcomes"]:
-                                                if o["name"] == game["home"]:
-                                                    game["spread"] = o["point"]
-                                                    game["spread_odds"] = o["price"]
-                                        elif m["key"] == "totals":
-                                            game["total"] = m["outcomes"][0]["point"]
-                                            for o in m["outcomes"]:
-                                                if o["name"] == "Over":
-                                                    game["over_odds"] = o["price"]
-                                                elif o["name"] == "Under":
-                                                    game["under_odds"] = o["price"]
-                        except:
-                            pass
-                        all_games.append(game)
-            except Exception as e:
-                logging.error(f"Odds-API.io fetch error: {e}")
-                update_health("Odds-API.io (game scores)", success=False, error_msg=str(e), fallback=True)
-        if all_games:
-            update_health("Odds-API.io (game scores)", success=True)
-        return all_games
-
-    def _fetch_from_odds_api(self, sports: List[str]) -> List[Dict]:
+        """Fetch games for the given sports and date offset."""
         if not self.api_key:
             return []
         all_games = []
-        sport_keys = {"NBA": "basketball_nba", "MLB": "baseball_mlb", "NHL": "icehockey_nhl", "NFL": "americanfootball_nfl"}
+        # Map your UI sport names to the slugs used by the /leagues endpoint
+        sport_slug_map = {
+            "NBA": "basketball",
+            "NFL": "americanfootball",
+            "MLB": "baseball",
+            "NHL": "icehockey",
+        }
+        
         for sport in sports:
-            key = sport_keys.get(sport)
-            if not key:
+            # Step 1: Get the correct league slug for this sport
+            league_slug = self._get_league_slug(sport_slug_map.get(sport, sport.lower()))
+            if not league_slug:
+                st.warning(f"Could not find league for {sport}. Skipping.")
                 continue
-            url = f"https://api.the-odds-api.com/v4/sports/{key}/odds"
-            params = {"apiKey": self.api_key, "regions": "us", "markets": "h2h,spreads,totals", "oddsFormat": "american"}
-            try:
-                r = requests.get(url, params=params, timeout=10)
-                if r.status_code == 200:
-                    for game in r.json():
-                        game_data = {"sport": sport, "home": game["home_team"], "away": game["away_team"], "bookmakers": game.get("bookmakers", [])}
-                        if game_data["bookmakers"]:
-                            bm = game_data["bookmakers"][0]
-                            markets = {m["key"]: m for m in bm.get("markets", [])}
-                            if "h2h" in markets:
-                                outcomes = markets["h2h"]["outcomes"]
-                                game_data["home_ml"] = next((o["price"] for o in outcomes if o["name"] == game["home_team"]), None)
-                                game_data["away_ml"] = next((o["price"] for o in outcomes if o["name"] == game["away_team"]), None)
-                            if "spreads" in markets:
-                                outcomes = markets["spreads"]["outcomes"]
-                                game_data["spread"] = next((o["point"] for o in outcomes if o["name"] == game["home_team"]), None)
-                                game_data["spread_odds"] = next((o["price"] for o in outcomes if o["name"] == game["home_team"]), None)
-                            if "totals" in markets:
-                                outcomes = markets["totals"]["outcomes"]
-                                game_data["total"] = next((o["point"] for o in outcomes), None)
-                                game_data["over_odds"] = next((o["price"] for o in outcomes if o["name"] == "Over"), None)
-                                game_data["under_odds"] = next((o["price"] for o in outcomes if o["name"] == "Under"), None)
-                            all_games.append(game_data)
-            except Exception as e:
-                logging.error(f"Odds-API fetch error: {e}")
+            
+            # Step 2: Use the league slug to fetch events
+            games = self._fetch_events(league_slug, days_offset)
+            for game in games:
+                game['sport'] = sport
+            all_games.extend(games)
+        
+        if not all_games:
+            st.info(f"No games found for {', '.join(sports)}. Check API key or try a different date.")
+        else:
+            update_health("Odds-API.io (game scores)", success=True)
+        
         return all_games
+
+    def _get_league_slug(self, sport_slug: str) -> Optional[str]:
+        """Fetch the list of leagues and return the first slug for a given sport."""
+        url = f"{self.base_url}/leagues"
+        params = {"apiKey": self.api_key, "sport": sport_slug}
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            leagues = response.json()
+            if leagues and len(leagues) > 0:
+                # Return the first league slug for the sport (e.g., "usa-nba")
+                return leagues[0].get("slug")
+            else:
+                st.warning(f"No leagues found for sport {sport_slug}")
+        except requests.exceptions.RequestException as e:
+            st.error(f"Error fetching leagues for {sport_slug}: {e}")
+            update_health("Odds-API.io (game scores)", success=False, error_msg=str(e), fallback=True)
+        return None
+
+    def _fetch_events(self, league_slug: str, days_offset: int) -> List[Dict]:
+        """Fetch events for a specific league slug and date offset."""
+        url = f"{self.base_url}/events"
+        params = {
+            "apiKey": self.api_key,
+            "league": league_slug,
+            "days": days_offset + 1  # API's 'days' parameter is the number of days to look ahead
+        }
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            events = response.json()
+            return events
+        except requests.exceptions.RequestException as e:
+            st.warning(f"Error fetching events for {league_slug}: {e}")
+            update_health("Odds-API.io (game scores)", success=False, error_msg=str(e), fallback=True)
+            return []
 
 game_scanner = GameScanner()
 
@@ -1525,6 +1495,14 @@ def main():
     st.title(f"CLARITY {VERSION}")
     st.caption(f"Sniffer (PrizePicks/Underdog) + Prop Model + Game Analyzer + Best Bets (Parlays) • {BUILD_DATE}")
 
+    # API key warnings
+    if not st.secrets.get("BALLSDONTLIE_API_KEY"):
+        st.sidebar.warning("⚠️ BallsDontLie API key missing. NBA stats will use fallback averages.")
+    if not st.secrets.get("ODDS_API_IO_KEY"):
+        st.sidebar.warning("⚠️ Odds-API.io key missing. Game Analyzer will not load games.")
+    if not st.secrets.get("OCR_SPACE_API_KEY"):
+        st.sidebar.warning("⚠️ OCR.space API key missing. Screenshot OCR will not work.")
+
     current_bankroll = get_bankroll()
     new_bankroll = st.sidebar.number_input("Your Bankroll ($)", value=current_bankroll, min_value=100.0, step=50.0)
     if new_bankroll != current_bankroll:
@@ -1872,12 +1850,14 @@ def main():
         st.markdown("Paste any slip (single game, parlay, multiple sports) – Clarity will extract individual bets and explain why you won or lost.")
         
         # Text input section
-        text = st.text_area("Paste slip text", height=200, key="slip_text_input")
+        text_key = "slip_text_input"
+        text = st.text_area("Paste slip text", height=200, key=text_key)
         col_clear, col_scan = st.columns([1, 4])
         with col_clear:
-            if st.button("🗑️ Clear", use_container_width=True):
-                if "slip_text_input" in st.session_state:
-                    del st.session_state["slip_text_input"]
+            if st.button("🗑️ Clear Text", use_container_width=True):
+                # Clear the text area by removing the session state key
+                if text_key in st.session_state:
+                    del st.session_state[text_key]
                 st.rerun()
         with col_scan:
             scan_clicked = st.button("🔍 Scan & Analyze (Text)", type="primary", use_container_width=True)
@@ -1885,44 +1865,66 @@ def main():
         # Image upload section (supports WEBP)
         st.markdown("---")
         st.subheader("📸 Or upload screenshots (multiple)")
-        uploaded_images = st.file_uploader("Choose images (JPG, PNG, WEBP)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True)
+        
+        # Use a unique key for the file uploader to allow clearing
+        uploader_key = "screenshot_uploader"
+        uploaded_images = st.file_uploader("Choose images (JPG, PNG, WEBP)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, key=uploader_key)
         use_for_sem = st.checkbox("Use these external slips for SEM calibration (improves model, does NOT affect your bankroll)", value=True)
         
-        if uploaded_images and st.button("📷 Extract & Analyze Images", use_container_width=True):
+        col_img_clear, col_img_scan = st.columns([1, 4])
+        with col_img_clear:
+            if st.button("🗑️ Clear Images", use_container_width=True):
+                # Clear the file uploader by removing its session state key
+                if uploader_key in st.session_state:
+                    del st.session_state[uploader_key]
+                # Also clear any stored OCR results
+                if "ocr_results" in st.session_state:
+                    del st.session_state["ocr_results"]
+                st.rerun()
+        with col_img_scan:
+            ocr_clicked = st.button("📷 Extract & Analyze Images", use_container_width=True)
+        
+        if ocr_clicked and uploaded_images:
             ocr_api_key = st.secrets.get("OCR_SPACE_API_KEY", "K89641020988957")
-            all_text = ""
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            for i, img_file in enumerate(uploaded_images):
-                status_text.text(f"Processing image {i+1} of {len(uploaded_images)}...")
-                img_bytes = img_file.read()
-                extracted_text, error = ocr_image(img_bytes, ocr_api_key)
-                if error:
-                    st.error(f"OCR failed for {img_file.name}: {error}")
-                else:
-                    all_text += extracted_text + "\n\n"
-                progress_bar.progress((i+1)/len(uploaded_images))
-            status_text.empty()
-            if all_text.strip():
-                st.success("OCR complete. Parsing bets...")
-                parsed_bets = parse_complex_slip(all_text)
-                if not parsed_bets:
-                    st.error("No bets recognized in the extracted text. Check image quality or try pasting manually.")
-                else:
-                    st.success(f"Detected {len(parsed_bets)} bets from images.")
-                    for bet in parsed_bets:
-                        explanation = generate_why_analysis(bet)
-                        with st.expander(f"{bet.get('sport', 'UNK')} – {bet.get('team', '')} {bet.get('market_type', 'ML')} at {bet.get('odds', '?')}"):
-                            st.markdown(explanation)
-                            if use_for_sem and bet.get('result') in ['WIN', 'LOSS'] and bet.get('prob') is not None:
-                                insert_external_slip(bet.get('prob', 0.5), bet.get('result'), source="OCR")
-                                st.caption("✅ This slip was used for SEM calibration (model improvement). Your bankroll and personal history unchanged.")
-                            elif bet.get('result') in ['WIN', 'LOSS']:
-                                st.caption("ℹ️ Slip result recorded but not used for SEM calibration (toggle off).")
-                            else:
-                                st.caption("⚠️ Could not determine result or probability – not used for SEM.")
+            if not ocr_api_key:
+                st.error("OCR API key missing. Please add OCR_SPACE_API_KEY to your secrets.")
             else:
-                st.warning("No text extracted from the uploaded images.")
+                all_text = ""
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                for i, img_file in enumerate(uploaded_images):
+                    status_text.text(f"Processing image {i+1} of {len(uploaded_images)}...")
+                    img_bytes = img_file.read()
+                    extracted_text, error = ocr_image(img_bytes, ocr_api_key)
+                    if error:
+                        st.error(f"OCR failed for {img_file.name}: {error}")
+                    else:
+                        all_text += extracted_text + "\n\n"
+                    progress_bar.progress((i+1)/len(uploaded_images))
+                status_text.empty()
+                if all_text.strip():
+                    st.success("OCR complete. Parsing bets...")
+                    parsed_bets = parse_complex_slip(all_text)
+                    if not parsed_bets:
+                        st.error("No bets recognized in the extracted text. Check image quality or try pasting manually.")
+                    else:
+                        st.success(f"Detected {len(parsed_bets)} bets from images.")
+                        st.session_state["ocr_results"] = parsed_bets
+                        for bet in parsed_bets:
+                            explanation = generate_why_analysis(bet)
+                            with st.expander(f"{bet.get('sport', 'UNK')} – {bet.get('team', '')} {bet.get('market_type', 'ML')} at {bet.get('odds', '?')}"):
+                                st.markdown(explanation)
+                                if use_for_sem and bet.get('result') in ['WIN', 'LOSS'] and bet.get('prob') is not None:
+                                    insert_external_slip(bet.get('prob', 0.5), bet.get('result'), source="OCR")
+                                    st.caption("✅ This slip was used for SEM calibration (model improvement). Your bankroll and personal history unchanged.")
+                                elif bet.get('result') in ['WIN', 'LOSS']:
+                                    st.caption("ℹ️ Slip result recorded but not used for SEM calibration (toggle off).")
+                                else:
+                                    st.caption("⚠️ Could not determine result or probability – not used for SEM.")
+                else:
+                    st.warning("No text extracted from the uploaded images.")
+        elif ocr_clicked and not uploaded_images:
+            st.warning("Please upload at least one image.")
         
         # Handle text-based scan
         if scan_clicked:
