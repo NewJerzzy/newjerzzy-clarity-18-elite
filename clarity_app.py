@@ -2,6 +2,8 @@
 # CLARITY 23.0 – ELITE MULTI‑SPORT ENGINE (FULLY UPGRADED)
 #   - All prior features (sniffer, caching, bankroll, auto‑tune, SEM, etc.)
 #   - Fixed: Clear button now erases the text area and analysis results
+#   - NEW: Health Dashboard in Tools tab – shows real‑time status of every API,
+#     module, and fallback. Displays errors and allows manual retesting.
 # =============================================================================
 
 import os
@@ -75,41 +77,30 @@ _stats_cache = {}
 _game_score_cache = {}
 
 # =============================================================================
-# SPORT DATA & STAT CONFIG
+# HEALTH STATUS TRACKING (stored in session state)
 # =============================================================================
-SPORT_MODELS = {
-    "NBA": {"variance_factor": 1.18, "avg_total": 228.5, "home_advantage": 3.0},
-    "MLB": {"variance_factor": 1.10, "avg_total": 8.5, "home_advantage": 0.12},
-    "NHL": {"variance_factor": 1.15, "avg_total": 6.0, "home_advantage": 0.15},
-    "NFL": {"variance_factor": 1.22, "avg_total": 44.5, "home_advantage": 2.8},
-    "PGA": {"variance_factor": 1.10, "avg_total": 70.5, "home_advantage": 0.0},
-    "TENNIS": {"variance_factor": 1.05, "avg_total": 22.0, "home_advantage": 0.0},
-}
+def init_health_status():
+    if "health_status" not in st.session_state:
+        st.session_state.health_status = {
+            "BallsDontLie (NBA)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "Odds-API.io (game scores)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "PrizePicks Sniffer": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "Underdog Sniffer": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "pgatourpy (PGA)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "nhl-api-py (NHL)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "curl_cffi (TLS)": {"status": "unknown", "last_error": "", "fallback_active": False},
+        }
 
-SPORT_CATEGORIES = {
-    "NBA": ["PTS", "REB", "AST", "STL", "BLK", "THREES", "PRA", "PR", "PA"],
-    "MLB": ["OUTS", "KS", "HITS", "TB", "HR"],
-    "NHL": ["SOG", "SAVES", "GOALS", "ASSISTS", "HITS", "BLK_SHOTS"],
-    "NFL": ["PASS_YDS", "RUSH_YDS", "REC_YDS", "TD"],
-    "PGA": ["STROKES", "BIRDIES", "BOGEYS", "EAGLES", "DRIVING_DISTANCE", "GIR"],
-    "TENNIS": ["ACES", "DOUBLE_FAULTS", "GAMES_WON", "TOTAL_GAMES", "BREAK_PTS"],
-}
+def update_health(component: str, success: bool, error_msg: str = "", fallback: bool = False):
+    """Update health status of a component."""
+    init_health_status()
+    st.session_state.health_status[component]["status"] = "ok" if success else "fail"
+    if error_msg:
+        st.session_state.health_status[component]["last_error"] = error_msg[:200]  # truncate
+    st.session_state.health_status[component]["fallback_active"] = fallback
 
-STAT_CONFIG = {
-    "PTS": {"tier": "MED", "buffer": 1.5},
-    "REB": {"tier": "LOW", "buffer": 1.0},
-    "AST": {"tier": "LOW", "buffer": 1.5},
-    "PRA": {"tier": "HIGH", "buffer": 3.0},
-    "PR":  {"tier": "HIGH", "buffer": 2.0},
-    "PA":  {"tier": "HIGH", "buffer": 2.0},
-    "SOG": {"tier": "LOW", "buffer": 0.5},
-    "SAVES": {"tier": "LOW", "buffer": 2.0},
-    "STROKES": {"tier": "LOW", "buffer": 2.0},
-    "BIRDIES": {"tier": "MED", "buffer": 1.0},
-    "ACES": {"tier": "HIGH", "buffer": 1.0},
-    "DOUBLE_FAULTS": {"tier": "HIGH", "buffer": 1.0},
-    "GAMES_WON": {"tier": "LOW", "buffer": 1.5},
-}
+# Call this once at startup
+init_health_status()
 
 # =============================================================================
 # DATABASE – WITH INDEXES AND BANKROLL PERSISTENCE
@@ -312,9 +303,15 @@ def make_session(headers: dict = None, impersonate: bool = True):
     """Create an HTTP session with TLS impersonation (curl_cffi) or fallback to requests."""
     h = headers or {}
     if CURL_AVAILABLE and impersonate:
-        s = curl_requests.Session(impersonate="chrome124")
-        s.headers.update(h)
-        return s
+        try:
+            s = curl_requests.Session(impersonate="chrome124")
+            s.headers.update(h)
+            update_health("curl_cffi (TLS)", success=True)
+            return s
+        except Exception as e:
+            update_health("curl_cffi (TLS)", success=False, error_msg=str(e))
+    else:
+        update_health("curl_cffi (TLS)", success=False, error_msg="curl_cffi not available", fallback=True)
     s = requests.Session()
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
@@ -487,7 +484,7 @@ def _extract_props(records: list, inc_map: dict, source: str = "PrizePicks") -> 
     return props
 
 # =============================================================================
-# PRIZEPICKS SNIFFER
+# PRIZEPICKS SNIFFER (with health tracking)
 # =============================================================================
 def fetch_prizepicks_props(league_filter: str = None) -> List[PlayerProp]:
     """
@@ -497,6 +494,7 @@ def fetch_prizepicks_props(league_filter: str = None) -> List[PlayerProp]:
     """
     session = make_session(BASE_HEADERS, impersonate=True)
     params = {"page[size]": 250, "single_stat": True}
+    any_success = False
 
     for base in PRIZEPICKS_BASE_URLS:
         for ep in PRIZEPICKS_ENDPOINTS:
@@ -513,22 +511,30 @@ def fetch_prizepicks_props(league_filter: str = None) -> List[PlayerProp]:
                 if league_filter:
                     lu = league_filter.upper()
                     props = [p for p in props if lu in p.league.upper()]
-                logging.info(f"PrizePicks OK: {len(props)} props from {url}")
-                return props
+                if props:
+                    any_success = True
+                    update_health("PrizePicks Sniffer", success=True)
+                    logging.info(f"PrizePicks OK: {len(props)} props from {url}")
+                    return props
             except Exception as e:
                 logging.warning(f"PrizePicks endpoint failed {url}: {e}")
+                update_health("PrizePicks Sniffer", success=False, error_msg=str(e), fallback=True)
                 continue
 
-    logging.error("All PrizePicks endpoints exhausted")
-    return []
+    if not any_success:
+        update_health("PrizePicks Sniffer", success=False, error_msg="All endpoints exhausted", fallback=True)
+    # Fallback to Underdog
+    st.warning("PrizePicks fetch failed. Falling back to Underdog…")
+    return fetch_underdog_props(league_filter)
 
 # =============================================================================
-# UNDERDOG FALLBACK SNIFFER
+# UNDERDOG FALLBACK SNIFFER (with health tracking)
 # =============================================================================
 def fetch_underdog_props(league_filter: str = None) -> List[PlayerProp]:
     """Fetch live Underdog Fantasy props as a fallback."""
     session = make_session(UNDERDOG_HEADERS, impersonate=True)
     params = {"page[size]": 250, "single_stat": True}
+    any_success = False
 
     for ep in UNDERDOG_ENDPOINTS:
         url = UNDERDOG_BASE.rstrip("/") + ep
@@ -576,17 +582,22 @@ def fetch_underdog_props(league_filter: str = None) -> List[PlayerProp]:
             if league_filter:
                 lu = league_filter.upper()
                 props = [p for p in props if lu in p.league.upper()]
-            logging.info(f"Underdog OK: {len(props)} props from {url}")
-            return props
+            if props:
+                any_success = True
+                update_health("Underdog Sniffer", success=True)
+                logging.info(f"Underdog OK: {len(props)} props from {url}")
+                return props
         except Exception as e:
             logging.warning(f"Underdog endpoint failed {url}: {e}")
+            update_health("Underdog Sniffer", success=False, error_msg=str(e), fallback=True)
             continue
 
-    logging.error("All Underdog endpoints exhausted")
+    if not any_success:
+        update_health("Underdog Sniffer", success=False, error_msg="All endpoints exhausted", fallback=True)
     return []
 
 # =============================================================================
-# REAL STATS FETCHING (NBA, NHL, PGA, Tennis) – with caching and retries
+# REAL STATS FETCHING (NBA, NHL, PGA, Tennis) – with caching, retries, and health
 # =============================================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_nba_stats_cached(player_name: str, market: str, game_date: str = None) -> List[float]:
@@ -599,15 +610,17 @@ def _fetch_nba_stats_cached(player_name: str, market: str, game_date: str = None
     stat_abbr = stat_map.get(market.upper(), "pts")
     headers = {"Authorization": st.secrets.get("BALLSDONTLIE_API_KEY", "")}
     if not headers["Authorization"]:
-        logging.warning("BALLSDONTLIE_API_KEY missing in secrets")
+        update_health("BallsDontLie (NBA)", success=False, error_msg="API key missing", fallback=True)
         return []
     search_url = f"https://api.balldontlie.io/v1/players?search={player_name.replace(' ', '%20')}"
     try:
         resp = requests.get(search_url, headers=headers, timeout=10)
         if resp.status_code != 200:
+            update_health("BallsDontLie (NBA)", success=False, error_msg=f"HTTP {resp.status_code}", fallback=True)
             return []
         players = resp.json().get("data", [])
         if not players:
+            update_health("BallsDontLie (NBA)", success=False, error_msg="Player not found", fallback=True)
             return []
         player_id = players[0].get("id")
         if game_date:
@@ -616,6 +629,7 @@ def _fetch_nba_stats_cached(player_name: str, market: str, game_date: str = None
             stats_url = f"https://api.balldontlie.io/v1/stats?player_ids[]={player_id}&per_page=12"
         stats_resp = requests.get(stats_url, headers=headers, timeout=10)
         if stats_resp.status_code != 200:
+            update_health("BallsDontLie (NBA)", success=False, error_msg=f"Stats HTTP {stats_resp.status_code}", fallback=True)
             return []
         games = stats_resp.json().get("data", [])
         values = []
@@ -623,8 +637,13 @@ def _fetch_nba_stats_cached(player_name: str, market: str, game_date: str = None
             val = game.get(stat_abbr, 0)
             if isinstance(val, (int, float)):
                 values.append(float(val))
+        if values:
+            update_health("BallsDontLie (NBA)", success=True, fallback=False)
+        else:
+            update_health("BallsDontLie (NBA)", success=False, error_msg="No stats returned", fallback=True)
         return values
     except Exception as e:
+        update_health("BallsDontLie (NBA)", success=False, error_msg=str(e), fallback=True)
         logging.error(f"NBA stats fetch error: {e}")
         return []
 
@@ -658,8 +677,10 @@ def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA", g
     elif sport == "NHL" and NHL_AVAILABLE:
         # Placeholder – actual NHL integration would go here
         stats = []
+        update_health("nhl-api-py (NHL)", success=False, error_msg="Not fully integrated", fallback=True)
     elif sport == "PGA" and PGA_AVAILABLE:
         stats = []
+        update_health("pgatourpy (PGA)", success=False, error_msg="Import ok but no data fetch", fallback=True)
     elif sport == "TENNIS":
         stats = []
     else:
@@ -668,6 +689,15 @@ def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA", g
     if not stats or len(stats) < 3:
         logging.warning(f"Using fallback stats for {player_name} {market} {sport}")
         stats = _get_historical_fallback(market, sport)
+        # Update health for the respective sport component
+        if sport == "NBA":
+            update_health("BallsDontLie (NBA)", success=False, error_msg="Using fallback stats", fallback=True)
+        elif sport == "NHL":
+            update_health("nhl-api-py (NHL)", success=False, error_msg="Using fallback stats", fallback=True)
+        elif sport == "PGA":
+            update_health("pgatourpy (PGA)", success=False, error_msg="Using fallback stats", fallback=True)
+        elif sport == "TENNIS":
+            pass  # No dedicated health entry yet
 
     _stats_cache[cache_key] = stats
     return stats
@@ -678,7 +708,7 @@ def fetch_single_game_stat(player_name: str, market: str, game_date: str) -> Opt
     return stats[0] if stats else None
 
 # =============================================================================
-# GAME SCORES FETCHING (Odds-API.io)
+# GAME SCORES FETCHING (Odds-API.io) with health tracking
 # =============================================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_score(team: str, opponent: str, sport: str, game_date: str) -> Tuple[Optional[float], Optional[float]]:
@@ -691,6 +721,7 @@ def fetch_game_score(team: str, opponent: str, sport: str, game_date: str) -> Tu
     sport_map = {"NBA": "basketball", "MLB": "baseball", "NHL": "icehockey", "NFL": "americanfootball"}
     sport_key = sport_map.get(sport)
     if not sport_key:
+        update_health("Odds-API.io (game scores)", success=False, error_msg=f"Unsupported sport {sport}", fallback=True)
         return None, None
     url = f"https://api.odds-api.io/v4/sports/{sport_key}/events"
     params = {"apiKey": st.secrets.get("ODDS_API_IO_KEY", ""), "date": game_date}
@@ -706,9 +737,14 @@ def fetch_game_score(team: str, opponent: str, sport: str, game_date: str) -> Tu
                     home_score = event.get("home_score")
                     away_score = event.get("away_score")
                     if home_score is not None and away_score is not None:
+                        update_health("Odds-API.io (game scores)", success=True)
                         _game_score_cache[cache_key] = (float(home_score), float(away_score))
                         return float(home_score), float(away_score)
+            update_health("Odds-API.io (game scores)", success=False, error_msg="Event not found or no scores", fallback=True)
+        else:
+            update_health("Odds-API.io (game scores)", success=False, error_msg=f"HTTP {r.status_code}", fallback=True)
     except Exception as e:
+        update_health("Odds-API.io (game scores)", success=False, error_msg=str(e), fallback=True)
         logging.error(f"Game score fetch error: {e}")
     _game_score_cache[cache_key] = (None, None)
     return None, None
@@ -828,6 +864,7 @@ class GameScanner:
 
     def _fetch_from_odds_api_io(self, sports: List[str], date_str: str) -> List[Dict]:
         if not self.io_key:
+            update_health("Odds-API.io (game scores)", success=False, error_msg="API key missing", fallback=True)
             return []
         all_games = []
         sport_map = {"NBA": "basketball", "MLB": "baseball", "NHL": "icehockey", "NFL": "americanfootball"}
@@ -880,6 +917,9 @@ class GameScanner:
                         all_games.append(game)
             except Exception as e:
                 logging.error(f"Odds-API.io fetch error: {e}")
+                update_health("Odds-API.io (game scores)", success=False, error_msg=str(e), fallback=True)
+        if all_games:
+            update_health("Odds-API.io (game scores)", success=True)
         return all_games
 
     def _fetch_from_odds_api(self, sports: List[str]) -> List[Dict]:
@@ -1798,9 +1838,34 @@ def main():
         else:
             st.dataframe(df_recent[["date", "type", "player", "team", "market", "pick", "result", "profit"]])
 
-    # ---------- Tab 5: Tools ----------
+    # ---------- Tab 5: Tools (with Health Dashboard) ----------
     with tabs[5]:
         st.header("Tools")
+        
+        # --- Health Dashboard ---
+        st.subheader("📡 System Health Dashboard")
+        st.markdown("This dashboard shows the real‑time status of all data sources and modules. Red ❌ means the component failed and a fallback was used. Yellow ⚠️ means a fallback is active. Green ✅ means the component is working normally.")
+        
+        # Force refresh health button
+        if st.button("🔄 Refresh Health Status"):
+            # Force re-check some components by clearing cache or re-importing? Not needed, just rerun.
+            st.rerun()
+        
+        # Display health table
+        health_data = []
+        for component, info in st.session_state.health_status.items():
+            status_icon = "✅" if info["status"] == "ok" else ("⚠️" if info["fallback_active"] else "❌")
+            health_data.append({
+                "Component": component,
+                "Status": status_icon,
+                "Fallback Active": "Yes" if info["fallback_active"] else "No",
+                "Last Error": info["last_error"][:80] + "..." if len(info["last_error"]) > 80 else info["last_error"]
+            })
+        health_df = pd.DataFrame(health_data)
+        st.dataframe(health_df, use_container_width=True)
+        
+        # Detailed system info
+        st.subheader("⚙️ System Information")
         st.info(f"curl_cffi (TLS impersonation): {'✅ Available' if CURL_AVAILABLE else '❌ Not installed'}")
         st.info(f"BallsDontLie (NBA): {'✅ Set' if st.secrets.get('BALLSDONTLIE_API_KEY') else '❌ Missing'}")
         st.info(f"Odds‑API.io (game lines): {'✅ Set' if st.secrets.get('ODDS_API_IO_KEY') else '❌ Missing'}")
