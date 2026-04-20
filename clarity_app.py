@@ -3,6 +3,7 @@
 #   - All prior features (sniffer, caching, bankroll, auto‑tune, SEM, etc.)
 #   - Fixed: Clear buttons in Paste & Scan (text and images)
 #   - Fixed: GameScanner now uses The Odds API (the-odds-api.com) with correct endpoints
+#   - Fixed: Game Analyzer displays team names (home_team, away_team) and fetches odds
 #   - Added: API key warnings in sidebar and Tools tab
 #   - Added: OCR support for WEBP images
 #   - Enhanced slip parser: PrizePicks Goblin, Bovada parlays, MyBookie slips
@@ -856,7 +857,7 @@ def analyze_total(total_line: float, over_odds: float, under_odds: float, sport:
     return {"total": total_line, "over_edge": over_edge, "under_edge": under_edge, "over_prob": over_prob, "under_prob": 1-over_prob}
 
 # =============================================================================
-# FIXED GAME SCANNER – uses The Odds API (the-odds-api.com) with correct endpoints
+# GAME SCANNER – uses The Odds API and fetches both events and odds
 # =============================================================================
 class GameScanner:
     def __init__(self):
@@ -878,7 +879,7 @@ class GameScanner:
 
         for sport in sports:
             sport_key = sport_key_map.get(sport, sport.lower().replace(" ", "_"))
-            events = self._fetch_events(sport_key, days_offset)
+            events = self._fetch_events_with_odds(sport_key, days_offset)
             for event in events:
                 event["sport"] = sport
             all_games.extend(events)
@@ -890,21 +891,81 @@ class GameScanner:
 
         return all_games
 
-    def _fetch_events(self, sport_key: str, days_offset: int) -> List[Dict]:
-        url = f"{self.base_url}/sports/{sport_key}/events"
-        params = {
+    def _fetch_events_with_odds(self, sport_key: str, days_offset: int) -> List[Dict]:
+        """Fetch events for a sport and then get odds for each event."""
+        # First, get the list of events (scores and basic info)
+        events_url = f"{self.base_url}/sports/{sport_key}/events"
+        events_params = {
             "apiKey": self.api_key,
             "days": days_offset + 1,
         }
         try:
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(events_url, params=events_params, timeout=10)
             response.raise_for_status()
             events = response.json()
-            return events
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             st.warning(f"Error fetching events for {sport_key}: {e}")
             update_health("Odds-API.io (game scores)", success=False, error_msg=str(e), fallback=True)
             return []
+
+        # Now fetch odds for each event
+        odds_url = f"{self.base_url}/sports/{sport_key}/odds"
+        odds_params = {
+            "apiKey": self.api_key,
+            "regions": "us",
+            "markets": "h2h,spreads,totals",
+            "oddsFormat": "american",
+            "days": days_offset + 1,
+        }
+        try:
+            odds_response = requests.get(odds_url, params=odds_params, timeout=10)
+            odds_response.raise_for_status()
+            odds_data = odds_response.json()
+        except Exception as e:
+            st.warning(f"Error fetching odds for {sport_key}: {e}")
+            update_health("Odds-API.io (game scores)", success=False, error_msg=str(e), fallback=True)
+            odds_data = []
+
+        # Merge odds into events based on event id
+        odds_by_event = {}
+        for odd in odds_data:
+            event_id = odd.get("id")
+            if event_id:
+                odds_by_event[event_id] = odd
+
+        for event in events:
+            event_id = event.get("id")
+            if event_id in odds_by_event:
+                odds_info = odds_by_event[event_id]
+                # Extract moneyline, spread, total from the first bookmaker (or combine)
+                bookmakers = odds_info.get("bookmakers", [])
+                if bookmakers:
+                    bm = bookmakers[0]
+                    markets = bm.get("markets", [])
+                    for m in markets:
+                        if m["key"] == "h2h":
+                            outcomes = m["outcomes"]
+                            event["home_ml"] = next((o["price"] for o in outcomes if o["name"] == event.get("home_team")), None)
+                            event["away_ml"] = next((o["price"] for o in outcomes if o["name"] == event.get("away_team")), None)
+                        elif m["key"] == "spreads":
+                            outcomes = m["outcomes"]
+                            event["spread"] = next((o["point"] for o in outcomes if o["name"] == event.get("home_team")), None)
+                            event["spread_odds"] = next((o["price"] for o in outcomes if o["name"] == event.get("home_team")), None)
+                        elif m["key"] == "totals":
+                            outcomes = m["outcomes"]
+                            event["total"] = outcomes[0].get("point")
+                            event["over_odds"] = next((o["price"] for o in outcomes if o["name"] == "Over"), None)
+                            event["under_odds"] = next((o["price"] for o in outcomes if o["name"] == "Under"), None)
+            else:
+                event["home_ml"] = None
+                event["away_ml"] = None
+                event["spread"] = None
+                event["spread_odds"] = None
+                event["total"] = None
+                event["over_odds"] = None
+                event["under_odds"] = None
+
+        return events
 
 game_scanner = GameScanner()
 
@@ -1550,8 +1611,8 @@ def main():
                         st.warning("No games found.")
         if "auto_games" in st.session_state and st.session_state["auto_games"]:
             for idx, game in enumerate(st.session_state["auto_games"]):
-                home = game.get('home', '')
-                away = game.get('away', '')
+                home = game.get('home_team', '')   # changed from 'home' to 'home_team'
+                away = game.get('away_team', '')   # changed from 'away' to 'away_team'
                 st.subheader(f"{home} vs {away}")
                 if game.get('home_ml') and game.get('away_ml'):
                     ml_res = analyze_moneyline(home, away, sport2, game['home_ml'], game['away_ml'])
@@ -1636,8 +1697,8 @@ def main():
         if 'auto_games' in st.session_state and st.session_state['auto_games']:
             for game in st.session_state['auto_games']:
                 sport_g = game.get('sport', 'NBA')
-                home = game.get('home', '')
-                away = game.get('away', '')
+                home = game.get('home_team', '')
+                away = game.get('away_team', '')
                 if game.get('home_ml') and game.get('away_ml'):
                     ml_res = analyze_moneyline(home, away, sport_g, game['home_ml'], game['away_ml'])
                     if ml_res['home_edge'] > 0.02:
