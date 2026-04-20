@@ -15,8 +15,7 @@
 #   - **NEW:** FlashLive Sports API as primary multi‑sport source (30+ sports)
 #   - **NEW:** ESPN API as universal fallback for all sports
 #   - **UPDATED:** Health Dashboard tracks all integrated APIs
-#   - **ENHANCED:** Prop Scanner parses PrizePicks block format (More/Less → OVER/UNDER)
-#   - **FIXED:** Session state initialization and assignment safety
+#   - **ENHANCED:** Prop Scanner extracts ALL props from PrizePicks board with dropdown selection
 # =============================================================================
 
 import os
@@ -1451,18 +1450,25 @@ def ocr_image(image_bytes, api_key):
         return None, str(e)
 
 # =============================================================================
-# ENHANCED PROP PARSER – Handles PrizePicks block format
+# ENHANCED PROP PARSER – Extracts ALL props from PrizePicks board
 # =============================================================================
-def parse_prizepicks_block(text: str) -> Optional[Dict]:
+def parse_prizepicks_blocks(text: str) -> List[Dict]:
+    """
+    Extracts ALL player props from a PrizePicks board block.
+    Returns a list of dicts with keys: player, market, line, pick, odds.
+    """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
-        return None
+        return []
     
-    for i in range(len(lines) - 2):
+    props = []
+    i = 0
+    while i < len(lines) - 2:
         try:
             line_val = float(lines[i])
             market = lines[i+1]
             if not re.search(r'[A-Za-z]', market):
+                i += 1
                 continue
             
             pick = None
@@ -1472,16 +1478,19 @@ def parse_prizepicks_block(text: str) -> Optional[Dict]:
                     break
             
             if not pick:
-                pick = "OVER"
+                i += 1
+                continue
             
             player = ""
-            for k in range(max(0, i-4), i):
+            # Look for player name 2-5 lines above the number
+            for k in range(max(0, i-5), i):
                 candidate = lines[k]
-                if re.search(r'[A-Z]{3}\s*-\s*[A-Z]', candidate):
+                # Skip lines that are clearly not player names
+                if re.search(r'[A-Z]{3}\s*-\s*[A-Z]', candidate):  # Team abbrev like "ATL - G"
                     continue
-                if re.search(r'@\s+[A-Z]{3}', candidate):
+                if re.search(r'@\s+[A-Z]{3}', candidate):  # "@ NYK"
                     continue
-                if re.search(r'^\d+\.?\d*[KMB]?$', candidate):
+                if re.search(r'^\d+\.?\d*[KMB]?$', candidate):  # Trending numbers
                     continue
                 if candidate.lower() in ["goblin", "demon", "trending", "more", "less"]:
                     continue
@@ -1490,29 +1499,32 @@ def parse_prizepicks_block(text: str) -> Optional[Dict]:
                     break
             
             if not player:
-                for line in lines[:i]:
-                    if len(line) > 2 and not re.search(r'^\d+\.?\d*[KMB]?$', line) and line.lower() not in ["goblin", "demon", "trending", "more", "less"]:
-                        if not re.search(r'[A-Z]{3}\s*-\s*[A-Z]', line):
-                            player = line
-                            break
+                i += 1
+                continue
             
-            if player and market and line_val > 0:
-                market = market.upper().replace(" ", "")
-                market = re.sub(r'[^A-Z+]', '', market)
-                
-                return {
-                    "player": player.strip(),
-                    "market": market,
-                    "line": line_val,
-                    "pick": pick,
-                    "odds": -110
-                }
+            # Normalize market
+            market_clean = market.upper().replace(" ", "")
+            market_clean = re.sub(r'[^A-Z+]', '', market_clean)
+            
+            props.append({
+                "player": player.strip(),
+                "market": market_clean,
+                "line": line_val,
+                "pick": pick,
+                "odds": -110
+            })
+            i += 1
         except ValueError:
+            i += 1
             continue
     
-    return None
+    return props
 
 def parse_prop_text(text: str) -> Optional[Dict]:
+    """
+    Try simple regex first; if that fails, parse PrizePicks block and return the FIRST prop.
+    (Used by older single‑prop expectations.)
+    """
     m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)\s*([+-]\d+)?$', text, re.IGNORECASE)
     if m:
         return {
@@ -1532,9 +1544,9 @@ def parse_prop_text(text: str) -> Optional[Dict]:
             "odds": int(m.group(5)) if m.group(5) else -110
         }
     
-    block_result = parse_prizepicks_block(text)
-    if block_result:
-        return block_result
+    blocks = parse_prizepicks_blocks(text)
+    if blocks:
+        return blocks[0]
     
     return None
 
@@ -2149,11 +2161,11 @@ def main():
         st.markdown("---")
         with st.expander("📋 Scan a Prop Slip (Text or Screenshot)", expanded=False):
             st.markdown("Paste a prop line or upload a screenshot – CLARITY will extract and analyze it instantly.")
-            scan_text = st.text_area("Paste prop text (e.g., PrizePicks block or 'LeBron James OVER 28.5 PTS')", key="prop_scan_text")
+            scan_text = st.text_area("Paste prop text (e.g., PrizePicks board or 'LeBron James OVER 28.5 PTS')", key="prop_scan_text")
             scan_image = st.file_uploader("Or upload a screenshot", type=["jpg", "jpeg", "png", "webp"], key="prop_scan_image")
             
             if st.button("🔍 Extract & Analyze Prop", key="prop_scan_button"):
-                extracted = None
+                extracted_props = []
                 ocr_text = ""
                 
                 if scan_image is not None:
@@ -2171,18 +2183,30 @@ def main():
                 
                 text_to_parse = scan_text if scan_text else ocr_text
                 if text_to_parse:
-                    extracted = parse_prop_text(text_to_parse.strip())
-                    if extracted:
-                        # Safe assignment to session state
-                        try:
-                            st.session_state.pp_player = str(extracted.get("player", "")).strip()
-                            st.session_state.pp_market = str(extracted.get("market", "PTS")).strip().upper()
-                            st.session_state.pp_line = float(extracted.get("line", 0))
-                            st.session_state.pp_pick = str(extracted.get("pick", "OVER")).strip().upper()
-                            st.session_state.pp_odds = int(extracted.get("odds", -110))
-                        except Exception as e:
-                            st.error(f"Error setting session state: {e}")
-                            st.stop()
+                    # Try simple regex first
+                    simple = parse_prop_text(text_to_parse.strip())
+                    if simple:
+                        extracted_props = [simple]
+                    else:
+                        # Parse full PrizePicks board
+                        extracted_props = parse_prizepicks_blocks(text_to_parse.strip())
+                    
+                    if extracted_props:
+                        if len(extracted_props) == 1:
+                            # Only one prop found, auto‑select it
+                            selected = extracted_props[0]
+                        else:
+                            # Multiple props found, let user choose
+                            options = [f"{p['player']} {p['pick']} {p['line']} {p['market']}" for p in extracted_props]
+                            selected_idx = st.selectbox("Select a prop to analyze", range(len(options)), format_func=lambda x: options[x])
+                            selected = extracted_props[selected_idx]
+                        
+                        # Update session state
+                        st.session_state.pp_player = str(selected.get("player", "")).strip()
+                        st.session_state.pp_market = str(selected.get("market", "PTS")).strip().upper()
+                        st.session_state.pp_line = float(selected.get("line", 0))
+                        st.session_state.pp_pick = str(selected.get("pick", "OVER")).strip().upper()
+                        st.session_state.pp_odds = int(selected.get("odds", -110))
                         
                         st.success(f"Extracted: {st.session_state.pp_player} {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market} ({st.session_state.pp_odds})")
                         
@@ -2203,7 +2227,7 @@ def main():
                         else:
                             st.error("PASS — No edge")
                     else:
-                        st.error("Could not parse a valid prop. Try a format like: 'LeBron James OVER 28.5 PTS' or paste a PrizePicks block.")
+                        st.error("Could not parse any valid props. Try a format like: 'LeBron James OVER 28.5 PTS' or paste a PrizePicks board.")
                 else:
                     st.warning("Please provide text or upload an image.")
 
