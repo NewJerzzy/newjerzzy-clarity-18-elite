@@ -16,6 +16,7 @@
 #   - **NEW:** ESPN API as universal fallback for all sports
 #   - **UPDATED:** Health Dashboard tracks all integrated APIs
 #   - **ENHANCED:** Prop Scanner parses PrizePicks block format (More/Less → OVER/UNDER)
+#   - **FIXED:** Session state assignment safety checks
 # =============================================================================
 
 import os
@@ -1453,31 +1454,17 @@ def ocr_image(image_bytes, api_key):
 # ENHANCED PROP PARSER – Handles PrizePicks block format
 # =============================================================================
 def parse_prizepicks_block(text: str) -> Optional[Dict]:
-    """
-    Extracts the first player prop from a PrizePicks block like:
-    Dyson Daniels
-    ATL - G
-    ...
-    13
-    Rebs+Asts
-    Less
-    More
-    """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return None
     
-    # We'll look for patterns: a number line followed by a market line, then More/Less
     for i in range(len(lines) - 2):
         try:
-            # Check if current line is a number (the line)
             line_val = float(lines[i])
             market = lines[i+1]
-            # Market should contain letters and possibly + or -
             if not re.search(r'[A-Za-z]', market):
                 continue
             
-            # Determine pick from More/Less (usually on line i+2 or i+3)
             pick = None
             for j in range(i+2, min(i+5, len(lines))):
                 if lines[j].lower() in ["more", "less"]:
@@ -1485,19 +1472,16 @@ def parse_prizepicks_block(text: str) -> Optional[Dict]:
                     break
             
             if not pick:
-                # If not found, default to OVER
                 pick = "OVER"
             
-            # Find player name (usually 2-4 lines above the number)
             player = ""
             for k in range(max(0, i-4), i):
                 candidate = lines[k]
-                # Exclude lines that look like team abbreviations or positions
                 if re.search(r'[A-Z]{3}\s*-\s*[A-Z]', candidate):
                     continue
                 if re.search(r'@\s+[A-Z]{3}', candidate):
                     continue
-                if re.search(r'^\d+\.?\d*[KMB]?$', candidate):  # trending numbers
+                if re.search(r'^\d+\.?\d*[KMB]?$', candidate):
                     continue
                 if candidate.lower() in ["goblin", "demon", "trending", "more", "less"]:
                     continue
@@ -1505,7 +1489,6 @@ def parse_prizepicks_block(text: str) -> Optional[Dict]:
                     player = candidate
                     break
             
-            # If we still don't have a player, take the first non-empty line that looks like a name
             if not player:
                 for line in lines[:i]:
                     if len(line) > 2 and not re.search(r'^\d+\.?\d*[KMB]?$', line) and line.lower() not in ["goblin", "demon", "trending", "more", "less"]:
@@ -1514,9 +1497,7 @@ def parse_prizepicks_block(text: str) -> Optional[Dict]:
                             break
             
             if player and market and line_val > 0:
-                # Normalize market name
                 market = market.upper().replace(" ", "")
-                # Remove any trailing numbers or special characters
                 market = re.sub(r'[^A-Z+]', '', market)
                 
                 return {
@@ -1532,8 +1513,6 @@ def parse_prizepicks_block(text: str) -> Optional[Dict]:
     return None
 
 def parse_prop_text(text: str) -> Optional[Dict]:
-    """Try multiple parsers: simple regex, then PrizePicks block."""
-    # Simple regex patterns
     m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)\s*([+-]\d+)?$', text, re.IGNORECASE)
     if m:
         return {
@@ -1553,7 +1532,6 @@ def parse_prop_text(text: str) -> Optional[Dict]:
             "odds": int(m.group(5)) if m.group(5) else -110
         }
     
-    # Fallback to PrizePicks block parser
     block_result = parse_prizepicks_block(text)
     if block_result:
         return block_result
@@ -2172,17 +2150,24 @@ def main():
                 if text_to_parse:
                     extracted = parse_prop_text(text_to_parse.strip())
                     if extracted:
-                        st.session_state.pp_player = extracted["player"]
-                        st.session_state.pp_market = extracted["market"]
-                        st.session_state.pp_line = extracted["line"]
-                        st.session_state.pp_pick = extracted["pick"]
-                        st.session_state.pp_odds = extracted["odds"]
+                        # Safe assignment with type conversion
+                        player_name = str(extracted.get("player", "")).strip()
+                        market_name = str(extracted.get("market", "PTS")).strip().upper()
+                        line_val = float(extracted.get("line", 0))
+                        pick_val = str(extracted.get("pick", "OVER")).strip().upper()
+                        odds_val = int(extracted.get("odds", -110))
                         
-                        st.success(f"Extracted: {extracted['player']} {extracted['pick']} {extracted['line']} {extracted['market']} ({extracted['odds']})")
+                        st.session_state.pp_player = player_name
+                        st.session_state.pp_market = market_name
+                        st.session_state.pp_line = line_val
+                        st.session_state.pp_pick = pick_val
+                        st.session_state.pp_odds = odds_val
+                        
+                        st.success(f"Extracted: {player_name} {pick_val} {line_val} {market_name} ({odds_val})")
                         
                         res = analyze_prop(
-                            extracted["player"], extracted["market"], extracted["line"],
-                            extracted["pick"], sport, extracted["odds"], new_bankroll
+                            player_name, market_name, line_val,
+                            pick_val, sport, odds_val, new_bankroll
                         )
                         st.markdown("### Analysis Result")
                         col1, col2, col3, col4 = st.columns(4)
@@ -2191,7 +2176,7 @@ def main():
                         col3.metric("Kelly Stake", f"${res['stake']:.2f}")
                         col4.metric("Tier", res["tier"])
                         if res["bolt_signal"] == "SOVEREIGN BOLT":
-                            st.success(f"⚡ SOVEREIGN BOLT — {extracted['pick']} {extracted['line']} {extracted['market']}")
+                            st.success(f"⚡ SOVEREIGN BOLT — {pick_val} {line_val} {market_name}")
                         elif res["edge"] > 0.04:
                             st.success(f"{res['bolt_signal']} — Recommended")
                         else:
