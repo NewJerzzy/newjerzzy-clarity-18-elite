@@ -1,12 +1,10 @@
 # =============================================================================
 # CLARITY 23.0 – ELITE MULTI‑SPORT ENGINE (FULLY UPGRADED)
 #   - All prior features (sniffer, caching, bankroll, auto‑tune, SEM, etc.)
-#   - Fixed: Clear button now erases the text area and analysis results
-#   - Fixed: Clear button for screenshots section
-#   - Added: Visible API key warnings in Tools tab and Game Analyzer
-#   - Fixed: GameScanner now uses correct Odds-API.io v4 endpoints
-#   - Health Dashboard in Tools tab – real‑time status of every API
-#   - Multi‑image upload + OCR (Paste & Scan tab) – supports WEBP files
+#   - Fixed: Clear buttons in Paste & Scan (text and images)
+#   - Fixed: GameScanner now uses correct Odds-API.io v1 endpoints
+#   - Added: API key warnings in sidebar and Tools tab
+#   - Added: OCR support for WEBP images
 #   - Enhanced slip parser: PrizePicks Goblin, Bovada parlays, MyBookie slips
 # =============================================================================
 
@@ -307,7 +305,7 @@ def insert_external_slip(prob: float, result: str, source: str = "OCR"):
               (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), prob, result, source))
     conn.commit()
     conn.close()
-    _calibrate_sem()  # recalibrate after adding external data
+    _calibrate_sem()
 
 def update_slip_result(slip_id: str, result: str, actual: float, odds: int):
     conn = sqlite3.connect(DB_PATH)
@@ -858,75 +856,76 @@ def analyze_total(total_line: float, over_odds: float, under_odds: float, sport:
     return {"total": total_line, "over_edge": over_edge, "under_edge": under_edge, "over_prob": over_prob, "under_prob": 1-over_prob}
 
 # =============================================================================
-# FIXED GAME SCANNER – uses correct Odds-API.io v4 endpoints
+# CORRECTED GAME SCANNER – uses Odds-API.io v1 endpoints
 # =============================================================================
 class GameScanner:
     def __init__(self):
         self.api_key = st.secrets.get("ODDS_API_IO_KEY", "")
-        self.base_url = "https://api.odds-api.io/v4"
-        # Check if API key is missing and show warning
-        if not self.api_key:
-            st.warning("⚠️ Odds-API.io API key is missing. Game Analyzer will not work. Please add ODDS_API_IO_KEY to your secrets.")
-            update_health("Odds-API.io (game scores)", success=False, error_msg="API key missing", fallback=True)
+        self.base_url = "https://api.odds-api.io/v1"  # v1 is correct for /leagues and /events
 
     def fetch_games_by_date(self, sports: List[str], days_offset: int = 0) -> List[Dict]:
         """Fetch games for the given sports and date offset."""
         if not self.api_key:
+            st.error("Odds-API.io API key missing. Please add ODDS_API_IO_KEY to your secrets.")
             return []
+
         all_games = []
-        # Map your UI sport names to the slugs used by the /leagues endpoint
-        sport_slug_map = {
+        sport_name_map = {
             "NBA": "basketball",
             "NFL": "americanfootball",
             "MLB": "baseball",
             "NHL": "icehockey",
         }
-        
+
         for sport in sports:
-            # Step 1: Get the correct league slug for this sport
-            league_slug = self._get_league_slug(sport_slug_map.get(sport, sport.lower()))
-            if not league_slug:
-                st.warning(f"Could not find league for {sport}. Skipping.")
+            api_sport = sport_name_map.get(sport, sport.lower())
+            # Step 1: Fetch all leagues for this sport
+            leagues = self._fetch_leagues(api_sport)
+            if not leagues:
+                st.warning(f"No leagues found for {sport}. Skipping.")
                 continue
-            
-            # Step 2: Use the league slug to fetch events
-            games = self._fetch_events(league_slug, days_offset)
-            for game in games:
-                game['sport'] = sport
-            all_games.extend(games)
-        
+
+            # Step 2: For each league, fetch its events
+            for league in leagues:
+                league_slug = league.get("slug")
+                if not league_slug:
+                    continue
+                events = self._fetch_events(league_slug, days_offset)
+                for event in events:
+                    event["sport"] = sport
+                    event["league_name"] = league.get("name", "")
+                all_games.extend(events)
+
         if not all_games:
-            st.info(f"No games found for {', '.join(sports)}. Check API key or try a different date.")
+            st.info(f"No games found for {', '.join(sports)}. Try a different date or check your API key.")
         else:
             update_health("Odds-API.io (game scores)", success=True)
-        
+
         return all_games
 
-    def _get_league_slug(self, sport_slug: str) -> Optional[str]:
-        """Fetch the list of leagues and return the first slug for a given sport."""
+    def _fetch_leagues(self, sport: str) -> List[Dict]:
+        """Fetch all leagues for a given sport from the /leagues endpoint."""
         url = f"{self.base_url}/leagues"
-        params = {"apiKey": self.api_key, "sport": sport_slug}
+        params = {"apiKey": self.api_key, "sport": sport}
         try:
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             leagues = response.json()
-            if leagues and len(leagues) > 0:
-                # Return the first league slug for the sport (e.g., "usa-nba")
-                return leagues[0].get("slug")
-            else:
-                st.warning(f"No leagues found for sport {sport_slug}")
+            # Filter out leagues with no upcoming events
+            leagues = [l for l in leagues if l.get("eventsCount", 0) > 0]
+            return leagues
         except requests.exceptions.RequestException as e:
-            st.error(f"Error fetching leagues for {sport_slug}: {e}")
+            st.error(f"Error fetching leagues for {sport}: {e}")
             update_health("Odds-API.io (game scores)", success=False, error_msg=str(e), fallback=True)
-        return None
+            return []
 
     def _fetch_events(self, league_slug: str, days_offset: int) -> List[Dict]:
-        """Fetch events for a specific league slug and date offset."""
+        """Fetch events for a specific league slug."""
         url = f"{self.base_url}/events"
         params = {
             "apiKey": self.api_key,
             "league": league_slug,
-            "days": days_offset + 1  # API's 'days' parameter is the number of days to look ahead
+            "days": days_offset + 1,
         }
         try:
             response = requests.get(url, params=params, timeout=10)
@@ -980,7 +979,6 @@ def parse_complex_slip(text: str) -> List[Dict]:
     if not lines:
         return bets
 
-    # First, try to detect PrizePicks block format (repeated player name)
     i = 0
     while i < len(lines):
         if i + 1 < len(lines) and lines[i] == lines[i+1]:
@@ -1042,11 +1040,7 @@ def parse_complex_slip(text: str) -> List[Dict]:
             # --- PrizePicks "Goblin" single line format: "Goblin 0.5 Assists 2" ---
             goblin_match = re.search(r'^Goblin\s+([\d\.]+)\s+(\w+)\s+([\d\.]+)$', line, re.IGNORECASE)
             if goblin_match:
-                # This line alone is a bet – but we need context (player name, sport, etc.)
-                # In many PrizePicks slips, the player name appears on previous lines.
-                # We'll try to look back for a player name (non-empty, not "Goblin")
                 player_name = "Unknown"
-                # Search backwards up to 10 lines for a likely player name
                 for k in range(max(0, i-10), i):
                     candidate = lines[k]
                     if candidate and not re.match(r'^(Goblin|Final|WIN|LOSS|Risk|Win|Odds|Ref\.|Leaderboard|Show details)', candidate, re.IGNORECASE):
@@ -1065,7 +1059,7 @@ def parse_complex_slip(text: str) -> List[Dict]:
                 bet = {
                     "type": "PROP",
                     "player": player_name,
-                    "sport": "NBA",  # default
+                    "sport": "NBA",
                     "team": "",
                     "opponent": "",
                     "market": market,
@@ -1081,12 +1075,10 @@ def parse_complex_slip(text: str) -> List[Dict]:
 
             # --- Bovada Parlay detection ---
             if re.search(r'\d+ Team Parlay', line, re.IGNORECASE):
-                # This is a parlay header. We'll create a single PARLAY bet for the whole block.
                 parlay_result = None
                 parlay_risk = None
                 parlay_odds = None
                 parlay_winnings = None
-                # Look ahead for "Win" or "Loss", "Risk $", "Odds +", "Winnings"
                 j = i
                 while j < len(lines) and j < i + 20:
                     l = lines[j]
@@ -1119,23 +1111,19 @@ def parse_complex_slip(text: str) -> List[Dict]:
                 continue
 
             # --- MyBookie style: "Orlando Magic +290" then next line "Winner (incl. overtime)" ---
-            # Pattern: team name followed by odds (e.g., "Orlando Magic +290")
             mb_team_match = re.search(r'^([A-Za-z\s\.\-]+?)\s+([+-]\d+)$', line)
             if mb_team_match and i+1 < len(lines):
                 team = mb_team_match.group(1).strip()
                 odds = int(mb_team_match.group(2))
                 next_line = lines[i+1]
                 if "Winner" in next_line or "LOSS" in next_line.upper():
-                    # Determine result from next line (could be "Winner" or "LOSS")
                     result = "WIN" if "Winner" in next_line else "LOSS" if "LOSS" in next_line.upper() else "PENDING"
-                    # Look for sport and opponent in subsequent lines
                     sport = "NBA"
                     opponent = ""
                     game_date = ""
                     for k in range(i+2, min(i+10, len(lines))):
                         l = lines[k]
                         if "NBA" in l or "MLB" in l or "NHL" in l or "NFL" in l:
-                            # Extract opponent: e.g., "NBA | Basketball Orlando Magic vs. Detroit Pistons"
                             vs_match = re.search(r'vs\.\s+([A-Za-z\s\.\-]+)', l)
                             if vs_match:
                                 opponent = vs_match.group(1).strip()
@@ -1154,7 +1142,6 @@ def parse_complex_slip(text: str) -> List[Dict]:
                                 game_date = dt.strftime("%Y-%m-%d")
                             except:
                                 game_date = date_match.group(1)
-                    # Look for Risk and Win amounts
                     risk = None
                     win_amt = None
                     for k in range(i+2, min(i+15, len(lines))):
@@ -1182,7 +1169,7 @@ def parse_complex_slip(text: str) -> List[Dict]:
                         "win_amount": win_amt,
                     }
                     bets.append(bet)
-                    i += 2  # skip the odds line and the Winner line
+                    i += 2
                     continue
 
             # --- Standard prop format: "Player OVER 25.5 PTS" ---
@@ -1266,7 +1253,6 @@ def parse_complex_slip(text: str) -> List[Dict]:
                 i += 1
                 continue
             
-            # If nothing matched, log and move on
             logging.warning(f"Unrecognized line: {line}")
             i += 1
     
@@ -1855,7 +1841,6 @@ def main():
         col_clear, col_scan = st.columns([1, 4])
         with col_clear:
             if st.button("🗑️ Clear Text", use_container_width=True):
-                # Clear the text area by removing the session state key
                 if text_key in st.session_state:
                     del st.session_state[text_key]
                 st.rerun()
@@ -1866,7 +1851,6 @@ def main():
         st.markdown("---")
         st.subheader("📸 Or upload screenshots (multiple)")
         
-        # Use a unique key for the file uploader to allow clearing
         uploader_key = "screenshot_uploader"
         uploaded_images = st.file_uploader("Choose images (JPG, PNG, WEBP)", type=["jpg", "jpeg", "png", "webp"], accept_multiple_files=True, key=uploader_key)
         use_for_sem = st.checkbox("Use these external slips for SEM calibration (improves model, does NOT affect your bankroll)", value=True)
@@ -1874,10 +1858,8 @@ def main():
         col_img_clear, col_img_scan = st.columns([1, 4])
         with col_img_clear:
             if st.button("🗑️ Clear Images", use_container_width=True):
-                # Clear the file uploader by removing its session state key
                 if uploader_key in st.session_state:
                     del st.session_state[uploader_key]
-                # Also clear any stored OCR results
                 if "ocr_results" in st.session_state:
                     del st.session_state["ocr_results"]
                 st.rerun()
