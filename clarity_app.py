@@ -77,6 +77,43 @@ _stats_cache = {}
 _game_score_cache = {}
 
 # =============================================================================
+# SPORT DATA & STAT CONFIG
+# =============================================================================
+SPORT_MODELS = {
+    "NBA": {"variance_factor": 1.18, "avg_total": 228.5, "home_advantage": 3.0},
+    "MLB": {"variance_factor": 1.10, "avg_total": 8.5, "home_advantage": 0.12},
+    "NHL": {"variance_factor": 1.15, "avg_total": 6.0, "home_advantage": 0.15},
+    "NFL": {"variance_factor": 1.22, "avg_total": 44.5, "home_advantage": 2.8},
+    "PGA": {"variance_factor": 1.10, "avg_total": 70.5, "home_advantage": 0.0},
+    "TENNIS": {"variance_factor": 1.05, "avg_total": 22.0, "home_advantage": 0.0},
+}
+
+SPORT_CATEGORIES = {
+    "NBA": ["PTS", "REB", "AST", "STL", "BLK", "THREES", "PRA", "PR", "PA"],
+    "MLB": ["OUTS", "KS", "HITS", "TB", "HR"],
+    "NHL": ["SOG", "SAVES", "GOALS", "ASSISTS", "HITS", "BLK_SHOTS"],
+    "NFL": ["PASS_YDS", "RUSH_YDS", "REC_YDS", "TD"],
+    "PGA": ["STROKES", "BIRDIES", "BOGEYS", "EAGLES", "DRIVING_DISTANCE", "GIR"],
+    "TENNIS": ["ACES", "DOUBLE_FAULTS", "GAMES_WON", "TOTAL_GAMES", "BREAK_PTS"],
+}
+
+STAT_CONFIG = {
+    "PTS": {"tier": "MED", "buffer": 1.5},
+    "REB": {"tier": "LOW", "buffer": 1.0},
+    "AST": {"tier": "LOW", "buffer": 1.5},
+    "PRA": {"tier": "HIGH", "buffer": 3.0},
+    "PR":  {"tier": "HIGH", "buffer": 2.0},
+    "PA":  {"tier": "HIGH", "buffer": 2.0},
+    "SOG": {"tier": "LOW", "buffer": 0.5},
+    "SAVES": {"tier": "LOW", "buffer": 2.0},
+    "STROKES": {"tier": "LOW", "buffer": 2.0},
+    "BIRDIES": {"tier": "MED", "buffer": 1.0},
+    "ACES": {"tier": "HIGH", "buffer": 1.0},
+    "DOUBLE_FAULTS": {"tier": "HIGH", "buffer": 1.0},
+    "GAMES_WON": {"tier": "LOW", "buffer": 1.5},
+}
+
+# =============================================================================
 # HEALTH STATUS TRACKING (stored in session state)
 # =============================================================================
 def init_health_status():
