@@ -20,6 +20,7 @@
 #   - **FIXED:** UI parsing logic correctly handles list/dict/None returns
 #   - **NEW:** Parser upgrade pack: OCR cleaning, market normalization, 
 #            confidence scoring, deduplication, auto sport detection, unified entry point
+#   - **NEW:** Live Prop Engine – PropLine → FlashLive → Odds‑API.io (replaces sniffer)
 # =============================================================================
 
 import os
@@ -161,7 +162,7 @@ def init_health_status():
         st.session_state.health_status = {
             "BallsDontLie (NBA)": {"status": "unknown", "last_error": "", "fallback_active": False},
             "Odds-API.io (game scores)": {"status": "unknown", "last_error": "", "fallback_active": False},
-            "PrizePicks Sniffer": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "PropLine (Live Props)": {"status": "unknown", "last_error": "", "fallback_active": False},
             "Underdog Sniffer": {"status": "unknown", "last_error": "", "fallback_active": False},
             "Slash Golf API (PGA)": {"status": "unknown", "last_error": "", "fallback_active": False},
             "FlashLive Sports (Multi‑Sport)": {"status": "unknown", "last_error": "", "fallback_active": False},
@@ -563,98 +564,18 @@ def _extract_props(records: list, inc_map: dict, source: str = "PrizePicks") -> 
         ))
     return props
 
+# -----------------------------------------------------------------------------
+# OLD SNIFFER FUNCTIONS – KEPT FOR REFERENCE BUT NO LONGER USED
+# -----------------------------------------------------------------------------
+
 def fetch_prizepicks_props(league_filter: str = None) -> List[PlayerProp]:
-    session = make_session(BASE_HEADERS, impersonate=True)
-    params = {"page[size]": 250, "single_stat": True}
-    any_success = False
-    for base in PRIZEPICKS_BASE_URLS:
-        for ep in PRIZEPICKS_ENDPOINTS:
-            url = base.rstrip("/") + ep
-            try:
-                logging.info(f"Trying PrizePicks: {url}")
-                records, included = _fetch_pages(session, url, params=params)
-                if not records:
-                    continue
-                inc_map = _build_included_map(included)
-                props = _extract_props(records, inc_map, source="PrizePicks")
-                if not props:
-                    continue
-                if league_filter:
-                    lu = league_filter.upper()
-                    props = [p for p in props if lu in p.league.upper()]
-                if props:
-                    any_success = True
-                    update_health("PrizePicks Sniffer", success=True)
-                    logging.info(f"PrizePicks OK: {len(props)} props from {url}")
-                    return props
-            except Exception as e:
-                logging.warning(f"PrizePicks endpoint failed {url}: {e}")
-                update_health("PrizePicks Sniffer", success=False, error_msg=str(e), fallback=True)
-                continue
-    if not any_success:
-        update_health("PrizePicks Sniffer", success=False, error_msg="All endpoints exhausted", fallback=True)
-    st.warning("PrizePicks fetch failed. Falling back to Underdog…")
-    return fetch_underdog_props(league_filter)
+    """DEPRECATED: Use fetch_live_props_unified() instead."""
+    st.warning("PrizePicks sniffer is deprecated. Using live APIs instead.")
+    return []
 
 def fetch_underdog_props(league_filter: str = None) -> List[PlayerProp]:
-    session = make_session(UNDERDOG_HEADERS, impersonate=True)
-    params = {"page[size]": 250, "single_stat": True}
-    any_success = False
-    for ep in UNDERDOG_ENDPOINTS:
-        url = UNDERDOG_BASE.rstrip("/") + ep
-        try:
-            logging.info(f"Trying Underdog: {url}")
-            records, included = _fetch_pages(session, url, params=params)
-            if not records:
-                try:
-                    r = session.get(url, params=params, timeout=15)
-                    body = r.json()
-                    records = body.get("data", body.get("results", []))
-                    included = []
-                except Exception:
-                    pass
-            if not records:
-                continue
-            inc_map = _build_included_map(included)
-            props = _extract_props(records, inc_map, source="Underdog")
-            if not props:
-                props = []
-                for rec in records:
-                    a = rec.get("attributes", rec)
-                    line = float(a.get("line_score", a.get("line", 0)) or 0)
-                    stat = a.get("stat_type", "") or a.get("stat_display_name", "")
-                    name = a.get("player_name", "") or a.get("name", "")
-                    lg = a.get("league", "") or a.get("sport", "")
-                    team = a.get("team", "") or a.get("team_name", "")
-                    if not name or not stat:
-                        continue
-                    props.append(PlayerProp(
-                        projection_id=str(rec.get("id", "")),
-                        player_name=str(name),
-                        team=str(team),
-                        league=str(lg),
-                        stat_type=str(stat),
-                        line_score=line,
-                        is_promoted=bool(a.get("is_promo", False)),
-                        source="Underdog",
-                        raw=rec,
-                    ))
-            if not props:
-                continue
-            if league_filter:
-                lu = league_filter.upper()
-                props = [p for p in props if lu in p.league.upper()]
-            if props:
-                any_success = True
-                update_health("Underdog Sniffer", success=True)
-                logging.info(f"Underdog OK: {len(props)} props from {url}")
-                return props
-        except Exception as e:
-            logging.warning(f"Underdog endpoint failed {url}: {e}")
-            update_health("Underdog Sniffer", success=False, error_msg=str(e), fallback=True)
-            continue
-    if not any_success:
-        update_health("Underdog Sniffer", success=False, error_msg="All endpoints exhausted", fallback=True)
+    """DEPRECATED: Use fetch_live_props_unified() instead."""
+    st.warning("Underdog sniffer is deprecated. Using live APIs instead.")
     return []
 
 # =============================================================================
@@ -1467,7 +1388,6 @@ def ocr_image(image_bytes, api_key):
 # =============================================================================
 
 def clean_ocr_text(text: str) -> str:
-    """Clean OCR text to improve parsing accuracy."""
     if not text:
         return ""
     t = text.replace("—", "-").replace("–", "-")
@@ -1477,7 +1397,6 @@ def clean_ocr_text(text: str) -> str:
     return t.strip()
 
 def normalize_market(market: str) -> str:
-    """Normalize market strings to a consistent internal format."""
     if not market:
         return ""
     m = market.upper().replace(" ", "")
@@ -1492,14 +1411,12 @@ def normalize_market(market: str) -> str:
     return m
 
 def is_goblin_board(text: str) -> bool:
-    """Detect if a board is likely a Goblin/Demon style PrizePicks board."""
     if not text:
         return False
     t = text.lower()
     return ("goblin" in t) or ("demon" in t)
 
 def score_prop_confidence(prop: Dict[str, Any]) -> float:
-    """Assign a simple confidence score to a parsed prop."""
     score = 1.0
     for key in ["player", "market", "line", "pick"]:
         if not prop.get(key):
@@ -1514,7 +1431,6 @@ def score_prop_confidence(prop: Dict[str, Any]) -> float:
     return max(0.0, min(1.0, score))
 
 def dedupe_props(props: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Remove duplicate props based on (player, market, line, pick)."""
     seen = {}
     for p in props:
         key = (
@@ -1528,7 +1444,6 @@ def dedupe_props(props: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return list(seen.values())
 
 def auto_detect_sport_from_market(market: str) -> Optional[str]:
-    """Best-effort sport detection based on market."""
     m = market.upper()
     nba_markets = {"PTS", "REB", "AST", "PRA", "PR", "PA", "THREES", "3PTM", "3PTA"}
     nhl_markets = {"SOG", "SAVES", "GOALS", "ASSISTS", "HITS", "BLK_SHOTS"}
@@ -1545,7 +1460,6 @@ def auto_detect_sport_from_market(market: str) -> Optional[str]:
     return None
 
 def parse_prizepicks_blocks(text: str) -> List[Dict]:
-    """Extract ALL player props from a PrizePicks board or OCR text."""
     if not text:
         return []
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -1618,7 +1532,6 @@ def parse_prizepicks_blocks(text: str) -> List[Dict]:
     return props
 
 def parse_prop_text(text: str):
-    """Handles simple single-line props and multi-line PrizePicks blocks. Returns dict OR list of dicts."""
     if not text:
         return None
     raw_text = text.strip()
@@ -1659,7 +1572,6 @@ def parse_prop_text(text: str):
     return None
 
 def parse_props_from_text(text: str) -> List[Dict]:
-    """Always return a flat list of props, regardless of input format."""
     result = parse_prop_text(text)
     if result is None:
         return []
@@ -1668,7 +1580,6 @@ def parse_props_from_text(text: str) -> List[Dict]:
     return [result]
 
 def parse_props_from_image(image_bytes: bytes) -> List[Dict]:
-    """Extract props from an image using OCR.space API."""
     ocr_api_key = st.secrets.get("OCR_SPACE_API_KEY", "")
     if not ocr_api_key:
         return []
@@ -1678,7 +1589,6 @@ def parse_props_from_image(image_bytes: bytes) -> List[Dict]:
     return parse_props_from_text(ocr_text)
 
 def parse_any_input(input_obj) -> List[Dict]:
-    """Unified entry point: PIL Image -> OCR -> props, or string -> text -> props."""
     from PIL.Image import Image as PILImage
     if isinstance(input_obj, PILImage):
         img_bytes = io.BytesIO()
@@ -1689,6 +1599,222 @@ def parse_any_input(input_obj) -> List[Dict]:
     if hasattr(input_obj, 'read'):
         return parse_props_from_image(input_obj.read())
     return []
+
+# =============================================================================
+# NEW LIVE PROP ENGINE (PropLine → FlashLive → Odds-API.io)
+# =============================================================================
+
+PROP_LINE_BASE_URL = "https://player-props.p.rapidapi.com"
+PROP_LINE_HOST = "player-props.p.rapidapi.com"
+
+def _get_prop_line_headers():
+    api_key = st.secrets.get("RAPIDAPI_KEY", "")
+    return {
+        "X-RapidAPI-Key": api_key,
+        "X-RapidAPI-Host": PROP_LINE_HOST,
+    }
+
+def fetch_prop_line_props(sport: str = "NBA") -> List[Dict[str, Any]]:
+    api_key = st.secrets.get("RAPIDAPI_KEY", "")
+    if not api_key:
+        logging.warning("PropLine: RAPIDAPI_KEY missing in st.secrets")
+        update_health("PropLine (Live Props)", success=False, error_msg="Missing API key", fallback=True)
+        return []
+
+    url = f"{PROP_LINE_BASE_URL}/v1/props"
+    params = {"sport": sport.upper()}
+
+    try:
+        resp = requests.get(url, headers=_get_prop_line_headers(), params=params, timeout=15)
+        if resp.status_code != 200:
+            logging.warning(f"PropLine HTTP {resp.status_code}: {resp.text[:200]}")
+            update_health("PropLine (Live Props)", success=False, error_msg=f"HTTP {resp.status_code}", fallback=True)
+            return []
+
+        data = resp.json()
+        if isinstance(data, dict) and "data" in data:
+            items = data["data"]
+        else:
+            items = data
+
+        props: List[Dict[str, Any]] = []
+        for item in items:
+            player = item.get("player_name") or item.get("player") or ""
+            market = item.get("market") or item.get("stat_type") or item.get("bet_type") or ""
+            line = item.get("line") or item.get("line_score") or item.get("points") or 0
+            team = item.get("team") or item.get("team_name") or ""
+            league = item.get("league") or sport.upper()
+            odds = item.get("odds") or item.get("price") or -110
+
+            if not player or not market:
+                continue
+
+            props.append({
+                "player": str(player),
+                "team": str(team),
+                "league": str(league),
+                "sport": sport.upper(),
+                "market": str(market).upper(),
+                "line": float(line),
+                "pick": None,
+                "odds": int(odds),
+                "source": "PropLine",
+            })
+
+        update_health("PropLine (Live Props)", success=True, fallback=False)
+        logging.info(f"PropLine: fetched {len(props)} props for {sport}")
+        return props
+
+    except Exception as e:
+        logging.error(f"PropLine fetch failed: {e}")
+        update_health("PropLine (Live Props)", success=False, error_msg=str(e), fallback=True)
+        return []
+
+def fetch_flashlive_props_unified(sport: str = "NBA") -> List[Dict[str, Any]]:
+    sport_id = FLASHLIVE_SPORT_MAP.get(sport.upper())
+    if not sport_id:
+        return []
+
+    url = f"{FLASHLIVE_API_BASE_URL}/odds/player-props"
+    params = {"sport_id": sport_id}
+
+    try:
+        resp = requests.get(url, headers=_get_flashlive_headers(), params=params, timeout=15)
+        if resp.status_code != 200:
+            logging.warning(f"FlashLive props HTTP {resp.status_code}: {resp.text[:200]}")
+            return []
+
+        data = resp.json()
+        props: List[Dict[str, Any]] = []
+
+        for event in data.get("DATA", []):
+            league = event.get("league_name", "") or sport.upper()
+            for market in event.get("markets", []):
+                player = market.get("player_name") or ""
+                mkt = market.get("market_name") or ""
+                line = market.get("line") or 0
+                team = market.get("team") or ""
+                odds = market.get("odds") or -110
+
+                if not player or not mkt:
+                    continue
+
+                props.append({
+                    "player": str(player),
+                    "team": str(team),
+                    "league": str(league),
+                    "sport": sport.upper(),
+                    "market": str(mkt).upper(),
+                    "line": float(line),
+                    "pick": None,
+                    "odds": int(odds),
+                    "source": "FlashLive",
+                })
+
+        logging.info(f"FlashLive: fetched {len(props)} props for {sport}")
+        return props
+
+    except Exception as e:
+        logging.error(f"FlashLive props fetch failed: {e}")
+        return []
+
+def fetch_oddsapi_player_props_unified(sport_key: str = "basketball_nba") -> List[Dict[str, Any]]:
+    api_key = st.secrets.get("ODDS_API_IO_KEY", "")
+    if not api_key:
+        return []
+
+    url = f"https://api.the-odds-api.com/v4/sports/{sport_key}/odds"
+    params = {
+        "apiKey": api_key,
+        "regions": "us",
+        "markets": "player_props",
+        "oddsFormat": "american",
+    }
+
+    try:
+        resp = requests.get(url, params=params, timeout=15)
+        if resp.status_code != 200:
+            logging.warning(f"Odds-API.io HTTP {resp.status_code}: {resp.text[:200]}")
+            return []
+
+        data = resp.json()
+        props: List[Dict[str, Any]] = []
+
+        for game in data:
+            league = game.get("sport_title", "")
+            for bookmaker in game.get("bookmakers", []):
+                for market in bookmaker.get("markets", []):
+                    mkt_name = market.get("key", "")
+                    for outcome in market.get("outcomes", []):
+                        player = outcome.get("description") or ""
+                        line = outcome.get("point") or 0
+                        price = outcome.get("price") or -110
+
+                        if not player or not mkt_name:
+                            continue
+
+                        props.append({
+                            "player": str(player),
+                            "team": "",
+                            "league": str(league),
+                            "sport": sport_key.upper(),
+                            "market": str(mkt_name).upper(),
+                            "line": float(line),
+                            "pick": None,
+                            "odds": int(price),
+                            "source": "Odds-API.io",
+                        })
+
+        logging.info(f"Odds-API.io: fetched {len(props)} props for {sport_key}")
+        return props
+
+    except Exception as e:
+        logging.error(f"Odds-API.io props fetch failed: {e}")
+        return []
+
+def fetch_live_props_unified(
+    sport: str = "NBA",
+    include_prop_line: bool = True,
+    include_flashlive: bool = True,
+    include_oddsapi: bool = True,
+) -> List[Dict[str, Any]]:
+    all_props: List[Dict[str, Any]] = []
+
+    if include_prop_line:
+        pl_props = fetch_prop_line_props(sport=sport)
+        all_props.extend(pl_props)
+
+    if include_flashlive and not all_props:
+        fl_props = fetch_flashlive_props_unified(sport=sport)
+        all_props.extend(fl_props)
+
+    if include_oddsapi and not all_props:
+        sport_key_map = {
+            "NBA": "basketball_nba",
+            "NFL": "americanfootball_nfl",
+            "MLB": "baseball_mlb",
+            "NHL": "icehockey_nhl",
+        }
+        sport_key = sport_key_map.get(sport.upper(), "basketball_nba")
+        oa_props = fetch_oddsapi_player_props_unified(sport_key=sport_key)
+        all_props.extend(oa_props)
+
+    seen = set()
+    deduped: List[Dict[str, Any]] = []
+    for p in all_props:
+        key = (
+            p.get("player", "").strip().upper(),
+            p.get("market", "").strip().upper(),
+            float(p.get("line", 0.0) or 0.0),
+            p.get("source", ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(p)
+
+    logging.info(f"Unified live props: returning {len(deduped)} props for sport={sport}")
+    return deduped
 
 # =============================================================================
 # ENHANCED SLIP PARSER (for settled slips)
@@ -2190,7 +2316,7 @@ def generate_parlays(approved_bets: List[Dict], max_legs: int = 6, top_n: int = 
 def main():
     st.set_page_config(page_title="CLARITY 23.0 – Elite Multi‑Sport", layout="wide")
     st.title(f"CLARITY {VERSION}")
-    st.caption(f"Sniffer (PrizePicks/Underdog) + Prop Model + Game Analyzer + Best Bets (Parlays) • {BUILD_DATE}")
+    st.caption(f"Live Prop Engine + Game Analyzer + Best Bets (Parlays) • {BUILD_DATE}")
 
     # Initialize session state keys for player props
     if "pp_player" not in st.session_state:
@@ -2211,7 +2337,7 @@ def main():
     if not st.secrets.get("OCR_SPACE_API_KEY"):
         st.sidebar.warning("⚠️ OCR.space API key missing. Screenshot OCR will not work.")
     if not st.secrets.get("RAPIDAPI_KEY"):
-        st.sidebar.warning("⚠️ RapidAPI key missing. FlashLive, Tennis, & PGA will use fallback averages.")
+        st.sidebar.warning("⚠️ RapidAPI key missing. Live Props, FlashLive, Tennis, & PGA will use fallback averages.")
 
     current_bankroll = get_bankroll()
     new_bankroll = st.sidebar.number_input("Your Bankroll ($)", value=current_bankroll, min_value=100.0, step=50.0)
@@ -2226,33 +2352,33 @@ def main():
     with tabs[0]:
         st.header("Player Props Analyzer")
         sport = st.selectbox("Sport", list(SPORT_MODELS.keys()), key="pp_sport")
-        platform = st.radio("Fetch from:", ["Auto (PrizePicks → Underdog)", "Underdog only"], horizontal=True, key="pp_platform")
+        
+        # New Live Prop Engine replaces old sniffer radio
+        st.caption("Live props from PropLine → FlashLive → Odds-API.io (fallback).")
         if st.button(f"📡 Fetch Live Props", type="primary"):
-            with st.spinner(f"Fetching props (TLS + brute‑force + fallback)..."):
-                try:
-                    if platform == "Auto (PrizePicks → Underdog)":
-                        live = fetch_prizepicks_props(league_filter=sport)
-                    else:
-                        live = fetch_underdog_props(league_filter=sport)
-                    st.session_state['live_props'] = live
-                    if live:
-                        st.success(f"✅ Fetched {len(live)} props")
-                        st.toast(f"Loaded {len(live)} props", icon="✅")
-                    else:
-                        st.warning("No props found. Please use manual entry below.")
-                except Exception as e:
-                    st.error(f"Failed to fetch: {e}")
+            with st.spinner(f"Fetching live props for {sport}..."):
+                live_props = fetch_live_props_unified(sport=sport)
+                if live_props:
+                    st.session_state['live_props'] = live_props
+                    st.success(f"✅ Fetched {len(live_props)} live props")
+                    st.toast(f"Loaded {len(live_props)} props", icon="✅")
+                else:
+                    st.warning("No live props returned from APIs. You can still use OCR / Paste to analyze slips.")
                     st.session_state['live_props'] = []
+        
         if 'live_props' in st.session_state and st.session_state['live_props']:
             st.subheader("Live Props")
             prop_list = st.session_state['live_props']
-            options = {f"{p.player_name} - {p.stat_type} {p.line_score}": p for p in prop_list}
-            sel = st.selectbox("Select a prop to analyze", list(options.keys()))
-            prop = options[sel]
-            st.session_state.pp_player = prop.player_name
-            st.session_state.pp_market = prop.stat_type
-            st.session_state.pp_line = float(prop.line_score)
-            st.info(f"Loaded: {prop.player_name} | {prop.stat_type} o/u {prop.line_score}")
+            # Create display options
+            options = [f"{p.get('player', 'Unknown')} - {p.get('market', '')} {p.get('line', 0)}" for p in prop_list]
+            sel = st.selectbox("Select a prop to analyze", options)
+            if sel:
+                idx = options.index(sel)
+                prop = prop_list[idx]
+                st.session_state.pp_player = prop.get('player', '')
+                st.session_state.pp_market = prop.get('market', '')
+                st.session_state.pp_line = float(prop.get('line', 0))
+                st.info(f"Loaded: {prop.get('player')} | {prop.get('market')} line {prop.get('line')}")
 
         player = st.text_input("Player Name", value=st.session_state.pp_player, key="pp_player_input")
         if player != st.session_state.pp_player:
@@ -2484,8 +2610,13 @@ def main():
         
         if 'live_props' in st.session_state and st.session_state['live_props']:
             for prop in st.session_state['live_props']:
-                res_over = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "OVER", sport_for_bets, -110, new_bankroll)
-                res_under = analyze_prop(prop.player_name, prop.stat_type, prop.line_score, "UNDER", sport_for_bets, -110, new_bankroll)
+                player = prop.get('player', '')
+                market = prop.get('market', '')
+                line = prop.get('line', 0)
+                if not player or not market:
+                    continue
+                res_over = analyze_prop(player, market, line, "OVER", sport_for_bets, -110, new_bankroll)
+                res_under = analyze_prop(player, market, line, "UNDER", sport_for_bets, -110, new_bankroll)
                 if res_over['edge'] > res_under['edge']:
                     best_edge = res_over['edge']
                     best_pick = "OVER"
@@ -2496,22 +2627,22 @@ def main():
                     res = res_under
                 if best_edge > 0.04:
                     approved_bets.append({
-                        "description": f"{prop.player_name} {prop.stat_type} {best_pick} {prop.line_score}",
+                        "description": f"{player} {market} {best_pick} {line}",
                         "edge": best_edge,
                         "prob": res['prob'],
                         "odds": -110,
-                        "unique_key": prop.player_name + prop.stat_type + best_pick,
+                        "unique_key": f"{player}_{market}_{best_pick}",
                         "sport": sport_for_bets,
-                        "team": prop.team,
+                        "team": prop.get('team', ''),
                         "opponent": ""
                     })
                 elif best_edge > 0:
                     plus_ev_bets.append({
-                        "description": f"{prop.player_name} {prop.stat_type} {best_pick} {prop.line_score}",
+                        "description": f"{player} {market} {best_pick} {line}",
                         "edge": best_edge,
                         "prob": res['prob'],
                         "odds": -110,
-                        "unique_key": prop.player_name + prop.stat_type + best_pick
+                        "unique_key": f"{player}_{market}_{best_pick}"
                     })
         if 'auto_games' in st.session_state and st.session_state['auto_games']:
             for game in st.session_state['auto_games']:
@@ -2888,9 +3019,10 @@ def main():
         st.info(f"curl_cffi (TLS impersonation): {'✅ Available' if CURL_AVAILABLE else '❌ Not installed'}")
         st.info(f"BallsDontLie (NBA): {'✅ Set' if st.secrets.get('BALLSDONTLIE_API_KEY') else '❌ Missing'}")
         st.info(f"Odds‑API.io (game lines): {'✅ Set' if st.secrets.get('ODDS_API_IO_KEY') and st.secrets.get('ODDS_API_IO_KEY') != 'your_key_here' else '❌ Missing'}")
-        st.info(f"RapidAPI (FlashLive, Tennis, PGA): {'✅ Set' if st.secrets.get('RAPIDAPI_KEY') else '❌ Missing'}")
+        st.info(f"RapidAPI (PropLine, FlashLive, Tennis, PGA): {'✅ Set' if st.secrets.get('RAPIDAPI_KEY') else '❌ Missing'}")
         st.info(f"nhl-api-py: {'✅ Available' if NHL_AVAILABLE else '❌ Not installed'}")
-        st.info(f"FlashLive Sports (Primary): {'✅ Ready' if st.secrets.get('RAPIDAPI_KEY') else '❌ Missing key'}")
+        st.info(f"PropLine (Live Props Primary): {'✅ Ready' if st.secrets.get('RAPIDAPI_KEY') else '❌ Missing key'}")
+        st.info(f"FlashLive Sports (Secondary): {'✅ Ready' if st.secrets.get('RAPIDAPI_KEY') else '❌ Missing key'}")
         st.info(f"ESPN API (Fallback): {'✅ Ready' if st.secrets.get('RAPIDAPI_KEY') else '❌ Missing key'}")
         st.info(f"Slash Golf API (PGA): {'✅ Ready' if st.secrets.get('RAPIDAPI_KEY') else '❌ Missing key'}")
         st.info(f"Current thresholds: PROB_BOLT = {PROB_BOLT:.2f}, DTM_BOLT = {DTM_BOLT:.3f}")
