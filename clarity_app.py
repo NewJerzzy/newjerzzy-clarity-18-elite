@@ -21,6 +21,7 @@
 #   - **NEW:** Parser upgrade pack: OCR cleaning, market normalization, 
 #            confidence scoring, deduplication, auto sport detection, unified entry point
 #   - **NEW:** Live Prop Engine – PropLine → FlashLive → Odds‑API.io (replaces sniffer)
+#   - **TEMP:** API Diagnostics expander to debug live props
 # =============================================================================
 
 import os
@@ -2420,6 +2421,56 @@ def main():
                 })
                 st.success("Added to slip!")
                 st.toast("Slip added", icon="➕")
+
+        # ---------- TEMPORARY API DIAGNOSTICS (Remove after fixing) ----------
+        with st.expander("🔧 API Diagnostics (Temporary)", expanded=False):
+            st.markdown("Click the buttons below to see raw API responses.")
+            
+            if st.button("Test PropLine API"):
+                with st.spinner("Calling PropLine..."):
+                    try:
+                        headers = {
+                            "X-RapidAPI-Key": st.secrets.get("RAPIDAPI_KEY", ""),
+                            "X-RapidAPI-Host": "player-props.p.rapidapi.com"
+                        }
+                        url = "https://player-props.p.rapidapi.com/v1/props"
+                        params = {"sport": "NBA"}
+                        resp = requests.get(url, headers=headers, params=params, timeout=15)
+                        st.code(f"Status: {resp.status_code}")
+                        st.json(resp.json() if resp.status_code == 200 else resp.text)
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            
+            if st.button("Test FlashLive Props"):
+                with st.spinner("Calling FlashLive..."):
+                    try:
+                        headers = {
+                            "X-RapidAPI-Key": st.secrets.get("RAPIDAPI_KEY", ""),
+                            "X-RapidAPI-Host": "flashlive-sports.p.rapidapi.com"
+                        }
+                        url = "https://flashlive-sports.p.rapidapi.com/v1/odds/player-props"
+                        params = {"sport_id": 1}  # NBA
+                        resp = requests.get(url, headers=headers, params=params, timeout=15)
+                        st.code(f"Status: {resp.status_code}")
+                        st.json(resp.json() if resp.status_code == 200 else resp.text)
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+            
+            if st.button("Test Odds-API.io Props"):
+                with st.spinner("Calling Odds-API.io..."):
+                    try:
+                        url = "https://api.the-odds-api.com/v4/sports/basketball_nba/odds"
+                        params = {
+                            "apiKey": st.secrets.get("ODDS_API_IO_KEY", ""),
+                            "regions": "us",
+                            "markets": "player_props",
+                            "oddsFormat": "american"
+                        }
+                        resp = requests.get(url, params=params, timeout=15)
+                        st.code(f"Status: {resp.status_code}")
+                        st.json(resp.json() if resp.status_code == 200 else resp.text)
+                    except Exception as e:
+                        st.error(f"Error: {e}")
 
         # ---------- Prop Scanner (Text / Screenshot) ----------
         st.markdown("---")
