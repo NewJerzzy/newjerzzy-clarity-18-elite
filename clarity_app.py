@@ -17,6 +17,7 @@
 #         and ODDS_API_IO_KEY (odds‑api.io / fetch_game_score) – independent keys
 # [FIX 10] _get_historical_fallback() is tier‑aware: player_tier="elite"|"mid"|"bench"
 # [NEW]   Prop Scanner now accepts multiple screenshots at once
+# [NEW]   Enhanced slip parser with PrizePicks block detection (Goblin/Demon)
 # =============================================================================
 
 import os
@@ -1528,6 +1529,128 @@ def auto_detect_sport_from_market(market: str) -> Optional[str]:
         return "MLB"
     return None
 
+def _determine_result(pick: str, actual: float, line: float) -> str:
+    """Determine WIN/LOSS/PUSH for a prop or total based on pick, actual, and line."""
+    if pick is None:
+        return "PENDING"
+    p = pick.upper()
+    if p in ("OVER", "MORE"):
+        if actual > line:
+            return "WIN"
+        elif actual < line:
+            return "LOSS"
+        else:
+            return "PUSH"
+    if p in ("UNDER", "LESS"):
+        if actual < line:
+            return "WIN"
+        elif actual > line:
+            return "LOSS"
+        else:
+            return "PUSH"
+    return "PENDING"
+
+def _detect_pick_from_lines(lines: List[str]) -> Optional[str]:
+    """Look for MORE/LESS/OVER/UNDER in a small window of lines."""
+    joined = " ".join(l.upper() for l in lines)
+    if " MORE " in f" {joined} ":
+        return "MORE"
+    if " LESS " in f" {joined} ":
+        return "LESS"
+    if " OVER " in f" {joined} ":
+        return "OVER"
+    if " UNDER " in f" {joined} ":
+        return "UNDER"
+    return None
+
+def _normalize_market_name(raw: str) -> str:
+    """Normalize market strings like 'Rebs+Asts', 'Pts+Rebs', 'FG Made'."""
+    s = raw.strip().upper()
+    s = s.replace(" ", "_")
+    s = s.replace("REBS+ASTS", "REB_AST")
+    s = s.replace("PTS+REBS", "PTS_REB")
+    s = s.replace("PTS+ASTS", "PTS_AST")
+    s = s.replace("FG_MADE", "FG_MADE")
+    return s
+
+def _parse_prizepicks_blocks(lines: List[str]) -> List[Dict[str, Any]]:
+    """
+    Parse PrizePicks-style blocks (Goblin, Demon, regular props) like:
+
+    Jaylen BrownGoblin
+    BOS - G-F
+    Jaylen Brown
+    vs PHI Tue 4:10pm
+    19.5
+    Points
+    More
+    Trending
+    28.5K
+    """
+    bets: List[Dict[str, Any]] = []
+    i = 0
+    n = len(lines)
+
+    while i < n:
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+
+        m = re.match(r"^(.*?)(Goblin|Demon)?$", line, re.IGNORECASE)
+        if not m:
+            i += 1
+            continue
+
+        player_name = m.group(1).strip()
+        tag = (m.group(2) or "").strip().lower()
+
+        if i + 5 >= n:
+            i += 1
+            continue
+
+        team_pos      = lines[i + 1].strip()
+        matchup_line  = lines[i + 3].strip()
+        line_val_str  = lines[i + 4].strip()
+        market_raw    = lines[i + 5].strip()
+        window        = lines[i:i + 10]
+
+        try:
+            team_abbr = team_pos.split("-")[0].strip().upper()
+            league    = "NBA"
+
+            opp_m = re.search(r"(vs|@)\s+([A-Z]{2,3})\b", matchup_line)
+            opponent = opp_m.group(2).upper() if opp_m else ""
+
+            line_val = float(line_val_str)
+            market   = _normalize_market_name(market_raw)
+
+            pick = _detect_pick_from_lines(window)
+            if tag == "demon" and pick is None:
+                pick = "MORE"
+
+            bets.append({
+                "type": "PROP",
+                "player": player_name,
+                "sport": league,
+                "team": team_abbr,
+                "opponent": opponent,
+                "market": market,
+                "line": line_val,
+                "pick": pick or "MORE",
+                "result": "PENDING",
+                "actual": 0.0,
+                "odds": -110,
+                "tag": tag.upper() if tag else "",
+            })
+
+            i += 8
+        except Exception as e:
+            logging.warning(f"PrizePicks block parse error for {player_name}: {e}")
+            i += 1
+
+    return bets
+
 def parse_prizepicks_blocks(text: str) -> List[Dict]:
     if not text:
         return []
@@ -1868,32 +1991,24 @@ def fetch_propline_all_smart():
     return df
 
 # =============================================================================
-# ENHANCED SLIP PARSER (for settled slips)
-# [FIX 7] Now detects OVER/UNDER from actual slip text instead of hardcoding OVER
-# [FIX 8] Bare except: replaced throughout with except Exception as e: + logging
+# ENHANCED SLIP PARSER (for settled slips) – UPGRADED WITH PRIZEPICKS BLOCK PARSER
 # =============================================================================
-def _detect_pick_from_lines(block_lines: List[str], default: str = "OVER") -> str:
-    """
-    Scan a list of text lines for pick direction keywords.
-    Returns 'OVER' or 'UNDER'.
-    """
-    for ln in block_lines:
-        lw = ln.strip().lower()
-        if lw in ("over", "more", "higher"):
-            return "OVER"
-        if lw in ("under", "less", "lower"):
-            return "UNDER"
-    return default
-
 def parse_complex_slip(text: str) -> List[Dict]:
-    bets = []
+    bets: List[Dict] = []
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return bets
 
+    # First, try PrizePicks-style blocks (Goblin/Demon/regular props)
+    pp_bets = _parse_prizepicks_blocks(lines)
+    if pp_bets:
+        bets.extend(pp_bets)
+        # Note: we do NOT return early; we still let legacy patterns fire
+        # in case the slip mixes formats.
+
     i = 0
     while i < len(lines):
-        # ── Duplicate‑line player block (PrizePicks / Underdog style) ──
+        # ── Duplicate‑line player block (legacy PrizePicks / Underdog style) ──
         if i + 1 < len(lines) and lines[i] == lines[i + 1]:
             player_name = lines[i]
             block_lines = []
@@ -1905,24 +2020,23 @@ def parse_complex_slip(text: str) -> List[Dict]:
                     break
             if len(block_lines) >= 12:
                 try:
-                    league = block_lines[3].upper()
-                    team = block_lines[4]
-                    opponent = block_lines[6]
-                    line_val = float(block_lines[9])
+                    league     = block_lines[3].upper()
+                    team       = block_lines[4]
+                    opponent   = block_lines[6]
+                    line_val   = float(block_lines[9])
                     market_raw = block_lines[10]
                     actual_val = float(block_lines[11])
 
                     market = "PTS"
-                    if "Pitches" in market_raw: market = "PITCHES"
+                    if "Pitches" in market_raw:   market = "PITCHES"
                     elif "Assists" in market_raw: market = "AST"
-                    elif "Steals" in market_raw: market = "STL"
+                    elif "Steals"  in market_raw: market = "STL"
                     elif "Pts" in market_raw or "Rebs" in market_raw:
                         market = market_raw.replace("+", "").replace(" ", "")
                     else:
                         market = market_raw.upper()
 
-                    # [FIX 7] Detect pick from block text
-                    pick = _detect_pick_from_lines(block_lines)
+                    pick   = _detect_pick_from_lines(block_lines)
                     result = _determine_result(pick, actual_val, line_val)
 
                     bets.append({
@@ -1940,7 +2054,7 @@ def parse_complex_slip(text: str) -> List[Dict]:
         else:
             line = lines[i]
 
-            # ── Goblin line ──
+            # ── Goblin line (legacy) ──
             goblin_match = re.search(r'^Goblin\s+([\d\.]+)\s+(\w+)\s+([\d\.]+)$', line, re.IGNORECASE)
             if goblin_match:
                 player_name = "Unknown"
@@ -1953,16 +2067,13 @@ def parse_complex_slip(text: str) -> List[Dict]:
                         if len(candidate) > 2 and not candidate.isdigit():
                             player_name = candidate
                             break
-                line_val = float(goblin_match.group(1))
+                line_val   = float(goblin_match.group(1))
                 market_raw = goblin_match.group(2)
                 actual_val = float(goblin_match.group(3))
-                market = {"ASSISTS": "AST", "STEALS": "STL"}.get(market_raw.upper(), market_raw.upper())
-
-                # [FIX 7] Look for pick context in nearby lines
+                market     = {"ASSISTS": "AST", "STEALS": "STL"}.get(market_raw.upper(), market_raw.upper())
                 context_lines = lines[max(0, i-5):i+5]
-                pick = _detect_pick_from_lines(context_lines)
+                pick   = _detect_pick_from_lines(context_lines)
                 result = _determine_result(pick, actual_val, line_val)
-
                 bets.append({
                     "type": "PROP", "player": player_name, "sport": "NBA",
                     "team": "", "opponent": "", "market": market,
@@ -1972,11 +2083,11 @@ def parse_complex_slip(text: str) -> List[Dict]:
                 i += 1
                 continue
 
-            # ── Parlay ──
+            # ── Parlay (legacy) ──
             if re.search(r'\d+ Team Parlay', line, re.IGNORECASE):
-                parlay_result = None
-                parlay_risk = None
-                parlay_odds = None
+                parlay_result   = None
+                parlay_risk     = None
+                parlay_odds     = None
                 parlay_winnings = None
                 j = i
                 while j < len(lines) and j < i + 20:
@@ -1984,34 +2095,34 @@ def parse_complex_slip(text: str) -> List[Dict]:
                     if re.search(r'^(Win|Loss)$', l, re.IGNORECASE):
                         parlay_result = l.upper()
                     risk_m = re.search(r'Risk\s*\$?([\d\.]+)', l, re.IGNORECASE)
-                    if risk_m: parlay_risk = float(risk_m.group(1))
+                    if risk_m:  parlay_risk = float(risk_m.group(1))
                     odds_m = re.search(r'Odds\s*([+-]\d+)', l, re.IGNORECASE)
-                    if odds_m: parlay_odds = int(odds_m.group(1))
-                    win_m = re.search(r'Winnings\s*[+\$]?([\d\.]+)', l, re.IGNORECASE)
-                    if win_m: parlay_winnings = float(win_m.group(1))
+                    if odds_m:  parlay_odds = int(odds_m.group(1))
+                    win_m  = re.search(r'Winnings\s*[+\$]?([\d\.]+)', l, re.IGNORECASE)
+                    if win_m:   parlay_winnings = float(win_m.group(1))
                     j += 1
                 if parlay_result:
                     bets.append({
                         "type": "PARLAY", "result": parlay_result,
                         "raw": "\n".join(lines[i:j]),
-                        "odds": parlay_odds or 0,
-                        "risk": parlay_risk or 0,
+                        "odds":     parlay_odds    or 0,
+                        "risk":     parlay_risk    or 0,
                         "winnings": parlay_winnings or 0,
                     })
                 i = j
                 continue
 
-            # ── MyBookie / sportsbook team ML ──
+            # ── MyBookie / sportsbook team ML (legacy) ──
             mb_team_match = re.search(r'^([A-Za-z\s\.\-]+?)\s+([+-]\d+)$', line)
             if mb_team_match and i + 1 < len(lines):
-                team = mb_team_match.group(1).strip()
-                odds_val = int(mb_team_match.group(2))
-                next_line = lines[i + 1]
+                team       = mb_team_match.group(1).strip()
+                odds_val   = int(mb_team_match.group(2))
+                next_line  = lines[i + 1]
                 if "Winner" in next_line or "LOSS" in next_line.upper():
-                    result = "WIN" if "Winner" in next_line else "LOSS"
-                    sport = "NBA"
-                    opponent = ""
-                    game_date = ""
+                    result     = "WIN" if "Winner" in next_line else "LOSS"
+                    sport      = "NBA"
+                    opponent   = ""
+                    game_date  = ""
                     for k in range(i + 2, min(i + 10, len(lines))):
                         l = lines[k]
                         for sp in ("NBA","MLB","NHL","NFL"):
@@ -2023,12 +2134,12 @@ def parse_complex_slip(text: str) -> List[Dict]:
                         date_m = re.search(r'Game Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', l)
                         if date_m:
                             try:
-                                dt = datetime.strptime(date_m.group(1), "%b %d, %Y")
+                                dt        = datetime.strptime(date_m.group(1), "%b %d, %Y")
                                 game_date = dt.strftime("%Y-%m-%d")
                             except Exception as e:
                                 logging.warning(f"Date parse error: {e}")
                                 game_date = date_m.group(1)
-                    risk = None
+                    risk    = None
                     win_amt = None
                     for k in range(i + 2, min(i + 15, len(lines))):
                         l = lines[k]
@@ -2046,7 +2157,7 @@ def parse_complex_slip(text: str) -> List[Dict]:
                     i += 2
                     continue
 
-            # ── Simple prop: Player OVER/UNDER line market ──
+            # ── Simple prop: Player OVER/UNDER line market (legacy) ──
             m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)$', line, re.IGNORECASE)
             if m:
                 bets.append({
@@ -2057,63 +2168,9 @@ def parse_complex_slip(text: str) -> List[Dict]:
                 i += 1
                 continue
 
-            # ── Alt prop: Player market OVER/UNDER line ──
-            m = re.search(r'^(.+?)\s+(\w+)\s+(OVER|UNDER)\s+([\d\.]+)$', line, re.IGNORECASE)
-            if m:
-                bets.append({
-                    "type": "PROP", "player": m.group(1).strip(),
-                    "market": m.group(2).upper(), "pick": m.group(3).upper(),
-                    "line": float(m.group(4)), "sport": "NBA", "odds": -110,
-                })
-                i += 1
-                continue
-
-            # ── Team ML ──
-            m = re.search(r'^([A-Za-z\s\.\-]+?)(?:\s+vs\.?\s+([A-Za-z\s\.\-]+?))?\s+ML\s+([+-]\d+)$', line, re.IGNORECASE)
-            if m:
-                bets.append({
-                    "type": "GAME", "team": m.group(1).strip(),
-                    "opponent": m.group(2).strip() if m.group(2) else "",
-                    "odds": int(m.group(3)), "market_type": "ML", "line": 0.0,
-                    "pick": m.group(1).strip(), "sport": "NBA",
-                })
-                i += 1
-                continue
-
-            # ── Spread ──
-            m = re.search(r'^([A-Za-z\s\.\-]+?)\s+([+-][\d\.]+)\s*\(([+-]\d+)\)$', line, re.IGNORECASE)
-            if m:
-                bets.append({
-                    "type": "GAME", "team": m.group(1).strip(),
-                    "spread": float(m.group(2)), "odds": int(m.group(3)),
-                    "market_type": "SPREAD", "line": float(m.group(2)),
-                    "pick": m.group(1).strip(), "sport": "NBA",
-                })
-                i += 1
-                continue
-
-            # ── Total ──
-            m = re.search(r'^(OVER|UNDER)\s+([\d\.]+)\s*\(([+-]\d+)\)$', line, re.IGNORECASE)
-            if m:
-                bets.append({
-                    "type": "GAME", "pick": m.group(1).upper(),
-                    "line": float(m.group(2)), "odds": int(m.group(3)),
-                    "market_type": "TOTAL", "sport": "NBA",
-                })
-                i += 1
-                continue
-
-            logging.warning(f"Unrecognized line: {line}")
             i += 1
 
     return bets
-
-def _determine_result(pick: str, actual: float, line: float) -> str:
-    """Helper to compute WIN/LOSS given pick direction, actual, and line."""
-    if pick == "OVER":
-        return "WIN" if actual > line else "LOSS"
-    else:
-        return "WIN" if actual < line else "LOSS"
 
 # =============================================================================
 # WHY ANALYSIS
