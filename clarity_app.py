@@ -18,6 +18,7 @@
 # [NEW] Monte Carlo simulation engine for advanced pricing
 # [NEW] DraftKings line integration
 # [NEW] Automatic data loaders for projections
+# [NEW] Full multi-sport Game Analyzer (NBA, MLB, NHL, NFL, etc.)
 
 import os
 import json
@@ -3401,10 +3402,153 @@ def main():
                     else:
                         st.write(f"No props detected in {img_file.name}")
 
-    # Tab 1: Game Analyzer (placeholder)
+    # Tab 1: Game Analyzer (Multi-Sport)
     with tabs[1]:
-        st.header("Game Analyzer (NBA)")
-        st.info("Full implementation available. Contact for details.")
+        st.header("🏟️ Game Analyzer - Spreads, Totals & Moneylines")
+        st.caption("Analyze NBA, MLB, NHL, NFL, and more using CLARITY's advanced model")
+        
+        # Sport selection
+        sport = st.selectbox("Select Sport", list(SPORT_MODELS.keys()), key="game_sport")
+        
+        # Fetch games using GameScanner
+        if st.button("📡 Fetch Games", type="primary"):
+            with st.spinner(f"Fetching {sport} games..."):
+                games = game_scanner.fetch_games_by_date([sport], days_offset=0)
+                if games:
+                    st.session_state['fetched_games'] = games
+                    st.success(f"Found {len(games)} games")
+                else:
+                    st.warning(f"No games found for {sport}")
+        
+        # Display and analyze selected game
+        if 'fetched_games' in st.session_state and st.session_state['fetched_games']:
+            games = st.session_state['fetched_games']
+            
+            # Create game selection options
+            game_options = []
+            for game in games:
+                home = game.get('home_team', 'HOME')
+                away = game.get('away_team', 'AWAY')
+                start = game.get('commence_time', 'Unknown')
+                game_options.append(f"{away} @ {home} ({start})")
+            
+            selected_idx = st.selectbox("Select Game", range(len(game_options)), format_func=lambda i: game_options[i])
+            selected_game = games[selected_idx]
+            
+            home_team = selected_game.get('home_team', '')
+            away_team = selected_game.get('away_team', '')
+            
+            st.subheader(f"{away_team} @ {home_team}")
+            
+            # Display available lines
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("**Spread**")
+                spread = selected_game.get('spread')
+                spread_odds = selected_game.get('spread_odds')
+                if spread is not None:
+                    st.write(f"Line: {spread:+.1f}")
+                    st.write(f"Odds: {spread_odds}")
+                else:
+                    st.write("No spread data")
+            
+            with col2:
+                st.markdown("**Moneyline**")
+                home_ml = selected_game.get('home_ml')
+                away_ml = selected_game.get('away_ml')
+                if home_ml:
+                    st.write(f"{home_team}: {home_ml}")
+                    st.write(f"{away_team}: {away_ml}")
+                else:
+                    st.write("No moneyline data")
+            
+            with col3:
+                st.markdown("**Total**")
+                total = selected_game.get('total')
+                over_odds = selected_game.get('over_odds')
+                under_odds = selected_game.get('under_odds')
+                if total is not None:
+                    st.write(f"Line: {total}")
+                    st.write(f"Over: {over_odds} | Under: {under_odds}")
+                else:
+                    st.write("No total data")
+            
+            st.divider()
+            
+            # Analysis buttons
+            if st.button("🔍 Analyze Spread", type="primary"):
+                if spread is not None and spread_odds is not None:
+                    with st.spinner("Analyzing spread..."):
+                        res = analyze_spread_advanced(home_team, away_team, sport, spread, spread_odds)
+                        
+                        st.subheader("📊 Spread Analysis")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric(f"{home_team} Cover Prob", f"{res['home_cover_prob']:.1%}")
+                            st.metric("Edge", f"{res['home_edge']:+.1%}")
+                            st.metric("Tier", res['home_tier'])
+                        with col2:
+                            st.metric(f"{away_team} Cover Prob", f"{res['away_cover_prob']:.1%}")
+                            st.metric("Edge", f"{res['away_edge']:+.1%}")
+                            st.metric("Tier", res['away_tier'])
+                        
+                        if res['home_bolt'] == "SOVEREIGN BOLT":
+                            st.success(f"⚡ SOVEREIGN BOLT: {home_team} +{spread}")
+                        if res['away_bolt'] == "SOVEREIGN BOLT":
+                            st.success(f"⚡ SOVEREIGN BOLT: {away_team} {spread:+.1f}")
+                else:
+                    st.error("Spread data not available for this game")
+            
+            if st.button("🔍 Analyze Total", type="primary"):
+                if total is not None and over_odds is not None and under_odds is not None:
+                    with st.spinner("Analyzing total..."):
+                        res = analyze_total_advanced(home_team, away_team, sport, total, over_odds, under_odds)
+                        
+                        st.subheader("📊 Total Analysis")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric("Over Probability", f"{res['over_prob']:.1%}")
+                            st.metric("Projection", f"{res['projection']:.1f}")
+                            st.metric("Edge", f"{res['over_edge']:+.1%}")
+                            st.metric("Tier", res['over_tier'])
+                        with col2:
+                            st.metric("Under Probability", f"{res['under_prob']:.1%}")
+                            st.metric("Total Line", f"{total}")
+                            st.metric("Edge", f"{res['under_edge']:+.1%}")
+                            st.metric("Tier", res['under_tier'])
+                        
+                        if res['over_bolt'] == "SOVEREIGN BOLT":
+                            st.success(f"⚡ SOVEREIGN BOLT: OVER {total}")
+                        if res['under_bolt'] == "SOVEREIGN BOLT":
+                            st.success(f"⚡ SOVEREIGN BOLT: UNDER {total}")
+                else:
+                    st.error("Total data not available for this game")
+            
+            if st.button("🔍 Analyze Moneyline", type="primary"):
+                home_ml = selected_game.get('home_ml')
+                away_ml = selected_game.get('away_ml')
+                if home_ml is not None and away_ml is not None:
+                    with st.spinner("Analyzing moneyline..."):
+                        res = analyze_moneyline_advanced(home_team, away_team, sport, home_ml, away_ml)
+                        
+                        st.subheader("📊 Moneyline Analysis")
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.metric(f"{home_team} Win Prob", f"{res['home_prob']:.1%}")
+                            st.metric("Edge", f"{res['home_edge']:+.1%}")
+                            st.metric("Tier", res['home_tier'])
+                        with col2:
+                            st.metric(f"{away_team} Win Prob", f"{res['away_prob']:.1%}")
+                            st.metric("Edge", f"{res['away_edge']:+.1%}")
+                            st.metric("Tier", res['away_tier'])
+                        
+                        if res['home_bolt'] == "SOVEREIGN BOLT":
+                            st.success(f"⚡ SOVEREIGN BOLT: {home_team} ML")
+                        if res['away_bolt'] == "SOVEREIGN BOLT":
+                            st.success(f"⚡ SOVEREIGN BOLT: {away_team} ML")
+                else:
+                    st.error("Moneyline data not available for this game")
 
     # Tab 2: Best Bets (placeholder)
     with tabs[2]:
@@ -3433,7 +3577,7 @@ def main():
         else:
             st.info("No settled slips yet.")
 
-    # Tab 5: Model Bets (NEW - Monte Carlo + Analytical with automatic data loaders)
+    # Tab 5: Model Bets (Monte Carlo + Analytical)
     with tabs[5]:
         st.header("🤖 Model-Priced Bets (DraftKings)")
         
@@ -3446,7 +3590,6 @@ def main():
         
         with st.spinner("Fetching DraftKings lines and building projections..."):
             try:
-                # Fetch DK lines
                 dk_df = fetch_dk_lines_as_dataframe()
                 if dk_df.empty:
                     st.warning("No DraftKings lines fetched. Check API or try again later.")
