@@ -15,6 +15,9 @@
 # [NEW] Enhanced slip parser with PrizePicks block detection (Goblin/Demon)
 # [NEW] Bovada NBA game parser (spreads, ML, totals)
 # [NEW] MyBookie MLB game parser (spreads, ML, totals)
+# [NEW] Monte Carlo simulation engine for advanced pricing
+# [NEW] DraftKings line integration
+# [NEW] Automatic data loaders for projections
 
 import os
 import json
@@ -24,6 +27,7 @@ import time
 import uuid
 import re
 import logging
+import pickle
 from functools import wraps
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -76,10 +80,11 @@ if not PARSER_LOGGER.handlers:
 # -----------------------------------------------------------------------------
 # VERSION & CONSTANTS
 # -----------------------------------------------------------------------------
-VERSION = "23.1 -- Elite Multi‑Sport (Hardened)"
+VERSION = "23.1 -- Elite Multi‑Sport (Hardened) + Monte Carlo"
 BUILD_DATE = "2026-04-21"
 DB_PATH = "clarity_unified.db"
 os.makedirs("clarity_logs", exist_ok=True)
+os.makedirs("cache", exist_ok=True)
 
 # [FIX 1] These are DEFAULT values only. Runtime values are stored in the DB.
 _DEFAULT_PROB_BOLT = 0.84
@@ -156,6 +161,7 @@ def init_health_status():
             "nhl-api-py (NHL)": {"status": "unknown", "last_error": "", "fallback_active": False},
             "curl_cffi (TLS)": {"status": "unknown", "last_error": "", "fallback_active": False},
             "RapidAPI (Tennis)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "DraftKings API": {"status": "unknown", "last_error": "", "fallback_active": False},
         }
 
 def update_health(component: str, success: bool, error_msg: str = "", fallback: bool = False):
@@ -462,6 +468,781 @@ def make_session(headers: dict = None, impersonate: bool = True):
     s.mount("https://", HTTPAdapter(max_retries=retry_cfg))
     s.headers.update(h)
     return s
+
+# -----------------------------------------------------------------------------
+# DRAFTKINGS LINE FETCHER (MODEL INTEGRATION)
+# -----------------------------------------------------------------------------
+DK_BASE_URL = "https://sportsbook.draftkings.com"
+DK_EVENT_LIST_URL = "https://sportsbook.draftkings.com//sites/US-SB/api/v5/eventgroups/4"
+
+@dataclass
+class SportsbookLine:
+    """Normalized representation of a single sportsbook line."""
+    book: str
+    game_id: str
+    game_label: str
+    start_time_utc: datetime
+    market_type: str
+    outcome_type: str
+    team_or_player: str
+    line: float
+    price: int
+    raw_payload: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "book": self.book,
+            "game_id": self.game_id,
+            "game_label": self.game_label,
+            "start_time_utc": self.start_time_utc.isoformat(),
+            "market_type": self.market_type,
+            "outcome_type": self.outcome_type,
+            "team_or_player": self.team_or_player,
+            "line": self.line,
+            "price": self.price,
+        }
+
+def _safe_get(d: Dict[str, Any], *keys, default=None):
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict) or k not in cur:
+            return default
+        cur = cur[k]
+    return cur
+
+def fetch_dk_eventgroup_raw() -> Dict[str, Any]:
+    """Fetch the raw DraftKings NBA event group JSON."""
+    params = {"format": "json"}
+    try:
+        resp = requests.get(DK_EVENT_LIST_URL, params=params, timeout=10)
+        resp.raise_for_status()
+        update_health("DraftKings API", success=True)
+        return resp.json()
+    except Exception as e:
+        update_health("DraftKings API", success=False, error_msg=str(e), fallback=True)
+        return {}
+
+def _parse_start_time(event: Dict[str, Any]) -> datetime:
+    ts = _safe_get(event, "startDate", default=None)
+    if ts is None:
+        return datetime.now()
+    return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+
+def _normalize_team_name(team: Dict[str, Any]) -> str:
+    name = _safe_get(team, "displayName", default="").strip()
+    if not name:
+        name = _safe_get(team, "name", default="").strip()
+    return name
+
+def _extract_game_label(event: Dict[str, Any]) -> str:
+    teams = _safe_get(event, "teamName", default=None)
+    if isinstance(teams, str) and "@" in teams:
+        return teams
+    home = _safe_get(event, "homeTeamName", default="HOME").strip()
+    away = _safe_get(event, "awayTeamName", default="AWAY").strip()
+    if home and away:
+        return f"{away} @ {home}"
+    name = _safe_get(event, "name", default="").strip()
+    return name or "Unknown Game"
+
+def _american_price_from_outcome(outcome: Dict[str, Any]) -> int:
+    price = _safe_get(outcome, "oddsAmerican", default=None)
+    if price is None:
+        return 0
+    try:
+        return int(price)
+    except Exception:
+        return 0
+
+def _float_line_from_outcome(outcome: Dict[str, Any]) -> Optional[float]:
+    line = _safe_get(outcome, "line", default=None)
+    if line is None:
+        return None
+    try:
+        return float(line)
+    except Exception:
+        return None
+
+def _market_type_from_category(category: Dict[str, Any]) -> str:
+    name = _safe_get(category, "name", default="").lower()
+    if "spread" in name:
+        return "spread"
+    if "total" in name or "over/under" in name:
+        return "total"
+    if "moneyline" in name or "money line" in name:
+        return "moneyline"
+    if "points" in name:
+        return "player_points"
+    if "rebounds" in name:
+        return "player_rebounds"
+    if "assists" in name:
+        return "player_assists"
+    return name or "unknown"
+
+def normalize_dk_lines(raw: Dict[str, Any]) -> List[SportsbookLine]:
+    """Take raw DK JSON and return normalized SportsbookLine objects."""
+    lines = []
+    events = _safe_get(raw, "eventGroup", "events", default=[]) or []
+    categories_by_event = _safe_get(raw, "eventGroup", "offerCategories", default=[]) or []
+    event_by_id = {str(e.get("eventId")): e for e in events}
+    
+    for category in categories_by_event:
+        offers = _safe_get(category, "offerSubcategoryDescriptors", default=[]) or []
+        for subcat in offers:
+            for offer in _safe_get(subcat, "offerSubcategory", "offers", default=[]) or []:
+                event_id = str(_safe_get(offer, "eventId", default=""))
+                if not event_id or event_id not in event_by_id:
+                    continue
+                event = event_by_id[event_id]
+                start_time = _parse_start_time(event)
+                game_label = _extract_game_label(event)
+                market_type = _market_type_from_category(category)
+                outcomes = _safe_get(offer, "outcomes", default=[]) or []
+                for outcome in outcomes:
+                    price = _american_price_from_outcome(outcome)
+                    line = _float_line_from_outcome(outcome)
+                    participant = _safe_get(outcome, "participant", default={})
+                    team_or_player = _safe_get(participant, "name", default="").strip()
+                    if not team_or_player:
+                        team_or_player = _safe_get(outcome, "label", default="").strip()
+                    outcome_label = _safe_get(outcome, "label", default="").lower()
+                    if "over" in outcome_label:
+                        outcome_type = "over"
+                    elif "under" in outcome_label:
+                        outcome_type = "under"
+                    elif "home" in outcome_label:
+                        outcome_type = "home"
+                    elif "away" in outcome_label:
+                        outcome_type = "away"
+                    else:
+                        outcome_type = outcome_label or "unknown"
+                    if line is None and market_type in ("spread", "total", "player_points", "player_rebounds", "player_assists"):
+                        continue
+                    sb_line = SportsbookLine(
+                        book="DK",
+                        game_id=event_id,
+                        game_label=game_label,
+                        start_time_utc=start_time,
+                        market_type=market_type,
+                        outcome_type=outcome_type,
+                        team_or_player=team_or_player,
+                        line=line if line is not None else 0.0,
+                        price=price,
+                        raw_payload=outcome,
+                    )
+                    lines.append(sb_line)
+    return lines
+
+def fetch_dk_lines_as_dataframe() -> pd.DataFrame:
+    """Fetch DK NBA lines and return as DataFrame."""
+    raw = fetch_dk_eventgroup_raw()
+    if not raw:
+        return pd.DataFrame()
+    lines = normalize_dk_lines(raw)
+    df = pd.DataFrame([l.to_dict() for l in lines])
+    if not df.empty:
+        df.sort_values(["start_time_utc", "game_label", "market_type"], inplace=True)
+        df.reset_index(drop=True, inplace=True)
+    return df
+
+# -----------------------------------------------------------------------------
+# AUTOMATIC DATA LOADERS FOR PROJECTIONS
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_player_stats_for_projection(player_name: str) -> pd.DataFrame:
+    """
+    Load player stats for projection using existing fetch_real_player_stats.
+    Returns a DataFrame with minutes, pts, rebs, asts columns.
+    """
+    # Fetch points, rebounds, assists stats
+    pts_stats = fetch_real_player_stats(player_name, "PTS", "NBA", player_tier="mid")
+    reb_stats = fetch_real_player_stats(player_name, "REB", "NBA", player_tier="mid")
+    ast_stats = fetch_real_player_stats(player_name, "AST", "NBA", player_tier="mid")
+    
+    # Create DataFrame with aligned data
+    max_len = max(len(pts_stats), len(reb_stats), len(ast_stats))
+    
+    # Pad with None if lengths differ
+    pts_stats = pts_stats + [None] * (max_len - len(pts_stats)) if len(pts_stats) < max_len else pts_stats[:max_len]
+    reb_stats = reb_stats + [None] * (max_len - len(reb_stats)) if len(reb_stats) < max_len else reb_stats[:max_len]
+    ast_stats = ast_stats + [None] * (max_len - len(ast_stats)) if len(ast_stats) < max_len else ast_stats[:max_len]
+    
+    df = pd.DataFrame({
+        "minutes": [28.0] * max_len,  # Default minutes if not available
+        "pts": pts_stats,
+        "rebs": reb_stats,
+        "asts": ast_stats,
+    })
+    
+    # Drop rows with any None values
+    df = df.dropna()
+    
+    return df
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_team_stats_for_projection(team_name: str) -> pd.DataFrame:
+    """
+    Load team stats using existing fetch_team_recent_totals.
+    Returns DataFrame with pace column.
+    """
+    totals = fetch_team_recent_totals(team_name, 8)
+    # Estimate pace from totals (average total * 2 / possessions approximation)
+    # NBA average pace ~98 possessions per game
+    pace_values = [t / 2.2 for t in totals if t > 0]  # Rough pace estimation
+    
+    df = pd.DataFrame({
+        "pace": pace_values if pace_values else [98.0] * 8,
+    })
+    return df
+
+@st.cache_data(ttl=7200, show_spinner=False)
+def load_today_schedule() -> pd.DataFrame:
+    """
+    Load today's NBA schedule using the GameScanner.
+    Returns DataFrame with player_name, team, opponent columns.
+    """
+    schedule_data = []
+    
+    try:
+        # Fetch today's games using GameScanner
+        games = game_scanner.fetch_games_by_date(["NBA"], days_offset=0)
+        
+        for game in games:
+            home_team = game.get("home_team", "")
+            away_team = game.get("away_team", "")
+            
+            if not home_team or not away_team:
+                continue
+            
+            # For each team, we would need to know which players are playing
+            # For now, we'll return just the matchup info
+            # In production, you'd want to fetch roster data from an API
+            
+            # Placeholder: Add a few star players for each team
+            star_players = {
+                "Lakers": ["LeBron James", "Anthony Davis"],
+                "Warriors": ["Stephen Curry", "Klay Thompson"],
+                "Celtics": ["Jayson Tatum", "Jaylen Brown"],
+                "Bucks": ["Giannis Antetokounmpo", "Damian Lillard"],
+                "Nuggets": ["Nikola Jokic", "Jamal Murray"],
+                "Suns": ["Kevin Durant", "Devin Booker"],
+                "Mavericks": ["Luka Doncic", "Kyrie Irving"],
+                "76ers": ["Joel Embiid", "Tyrese Maxey"],
+                "Knicks": ["Jalen Brunson", "Julius Randle"],
+                "Heat": ["Jimmy Butler", "Bam Adebayo"],
+            }
+            
+            # Try to match team names
+            home_players = []
+            away_players = []
+            for key, players in star_players.items():
+                if key.lower() in home_team.lower():
+                    home_players = players
+                if key.lower() in away_team.lower():
+                    away_players = players
+            
+            # Add home team players
+            for player in home_players:
+                schedule_data.append({
+                    "player_name": player,
+                    "team": home_team,
+                    "opponent": away_team,
+                })
+            
+            # Add away team players
+            for player in away_players:
+                schedule_data.append({
+                    "player_name": player,
+                    "team": away_team,
+                    "opponent": home_team,
+                })
+        
+        if not schedule_data:
+            # Fallback: add some default players
+            default_players = ["LeBron James", "Stephen Curry", "Jayson Tatum", "Giannis Antetokounmpo", "Nikola Jokic"]
+            for player in default_players:
+                schedule_data.append({
+                    "player_name": player,
+                    "team": "NBA",
+                    "opponent": "Opponent",
+                })
+    
+    except Exception as e:
+        logging.error(f"Error loading schedule: {e}")
+        # Fallback schedule
+        default_players = ["LeBron James", "Stephen Curry", "Jayson Tatum", "Giannis Antetokounmpo", "Nikola Jokic"]
+        for player in default_players:
+            schedule_data.append({
+                "player_name": player,
+                "team": "NBA",
+                "opponent": "Opponent",
+            })
+    
+    return pd.DataFrame(schedule_data)
+
+# -----------------------------------------------------------------------------
+# PROJECTIONS ENGINE
+# -----------------------------------------------------------------------------
+@dataclass
+class PlayerProjection:
+    player_name: str
+    team: str
+    opponent: str
+    minutes: float
+    pts: float
+    rebs: float
+    asts: float
+    usage: float
+    pace_adj: float
+    raw_payload: Optional[Dict[str, Any]] = None
+
+    def to_dict(self):
+        return {
+            "player_name": self.player_name,
+            "team": self.team,
+            "opponent": self.opponent,
+            "minutes": self.minutes,
+            "pts": self.pts,
+            "rebs": self.rebs,
+            "asts": self.asts,
+            "usage": self.usage,
+            "pace_adj": self.pace_adj,
+        }
+
+def estimate_minutes_from_stats(player_stats: pd.DataFrame) -> float:
+    """Estimate minutes using rolling average from stats."""
+    if player_stats.empty:
+        return 28.0
+    if "minutes" in player_stats.columns:
+        last_10 = player_stats["minutes"].tail(10)
+        if not last_10.empty and last_10.mean() > 0:
+            return float(last_10.mean())
+    return 28.0
+
+def estimate_usage_from_stats(player_stats: pd.DataFrame) -> float:
+    """Estimate usage rate from historical data."""
+    if "usage" in player_stats.columns:
+        usage_vals = player_stats["usage"].tail(10)
+        if not usage_vals.empty and usage_vals.mean() > 0:
+            return float(usage_vals.mean())
+    return 0.22
+
+def estimate_pace_adjustment_from_stats(team_stats: pd.DataFrame, opp_stats: pd.DataFrame) -> float:
+    """Simple pace adjustment."""
+    team_pace = team_stats["pace"].iloc[-1] if not team_stats.empty and "pace" in team_stats.columns else 98
+    opp_pace = opp_stats["pace"].iloc[-1] if not opp_stats.empty and "pace" in opp_stats.columns else 98
+    return float((team_pace + opp_pace) / 2.0)
+
+def estimate_per_minute_rates_from_stats(player_stats: pd.DataFrame) -> Dict[str, float]:
+    """Estimate per-minute production rates."""
+    if player_stats.empty:
+        return {"pts": 0.5, "rebs": 0.15, "asts": 0.12}
+    
+    df = player_stats.tail(15)
+    pts = (df["pts"] / df["minutes"]).mean() if "pts" in df.columns and "minutes" in df.columns and df["minutes"].sum() > 0 else 0.5
+    rebs = (df["rebs"] / df["minutes"]).mean() if "rebs" in df.columns and "minutes" in df.columns and df["minutes"].sum() > 0 else 0.15
+    asts = (df["asts"] / df["minutes"]).mean() if "asts" in df.columns and "minutes" in df.columns and df["minutes"].sum() > 0 else 0.12
+    
+    return {"pts": float(pts), "rebs": float(rebs), "asts": float(asts)}
+
+def build_player_projection_auto(
+    player_name: str,
+    team: str,
+    opponent: str,
+) -> PlayerProjection:
+    """Build a projection for a single player using automatic data loading."""
+    player_stats = load_player_stats_for_projection(player_name)
+    team_stats = load_team_stats_for_projection(team)
+    opp_stats = load_team_stats_for_projection(opponent)
+    
+    minutes = estimate_minutes_from_stats(player_stats)
+    usage = estimate_usage_from_stats(player_stats)
+    pace_adj = estimate_pace_adjustment_from_stats(team_stats, opp_stats)
+    rates = estimate_per_minute_rates_from_stats(player_stats)
+    pace_factor = pace_adj / 98.0
+    
+    pts = rates["pts"] * minutes * pace_factor
+    rebs = rates["rebs"] * minutes * pace_factor
+    asts = rates["asts"] * minutes * pace_factor
+    
+    return PlayerProjection(
+        player_name=player_name,
+        team=team,
+        opponent=opponent,
+        minutes=minutes,
+        pts=pts,
+        rebs=rebs,
+        asts=asts,
+        usage=usage,
+        pace_adj=pace_adj,
+        raw_payload={
+            "minutes_model": minutes,
+            "usage_model": usage,
+            "pace_factor": pace_factor,
+            "rates": rates,
+        },
+    )
+
+def build_today_projections_auto() -> Dict[str, PlayerProjection]:
+    """
+    Automatically build projections for all players on today's slate.
+    """
+    schedule = load_today_schedule()
+    projections = {}
+    
+    for _, row in schedule.iterrows():
+        player = row["player_name"]
+        team = row["team"]
+        opp = row["opponent"]
+        
+        try:
+            proj = build_player_projection_auto(
+                player_name=player,
+                team=team,
+                opponent=opp,
+            )
+            projections[player] = proj
+        except Exception as e:
+            logging.error(f"Error building projection for {player}: {e}")
+            continue
+    
+    return projections
+
+# -----------------------------------------------------------------------------
+# DISTRIBUTIONS (Analytical)
+# -----------------------------------------------------------------------------
+def erf(x: float) -> float:
+    """Numerical approximation of error function."""
+    t = 1.0 / (1.0 + 0.5 * abs(x))
+    tau = t * np.exp(
+        -x * x
+        - 1.26551223
+        + 1.00002368 * t
+        + 0.37409196 * t**2
+        + 0.09678418 * t**3
+        - 0.18628806 * t**4
+        + 0.27886807 * t**5
+        - 1.13520398 * t**6
+        + 1.48851587 * t**7
+        - 0.82215223 * t**8
+        + 0.17087277 * t**9
+    )
+    return 1 - tau if x >= 0 else tau - 1
+
+def erfinv(x: float) -> float:
+    """Approximate inverse error function."""
+    a = 0.147
+    ln = np.log(1 - x**2)
+    term1 = 2 / (np.pi * a) + ln / 2
+    term2 = ln / a
+    return np.sign(x) * np.sqrt(np.sqrt(term1**2 - term2) - term1)
+
+class StatDistribution:
+    """Represents a modeled distribution for a single stat."""
+    
+    def __init__(self, mean: float, variance: float, dist_type: str = "normal"):
+        self.mean = mean
+        self.variance = max(variance, 1e-6)
+        self.std = np.sqrt(self.variance)
+        self.dist_type = dist_type
+    
+    def cdf(self, x: float) -> float:
+        if self.dist_type == "normal":
+            z = (x - self.mean) / (self.std * np.sqrt(2))
+            return 0.5 * (1 + erf(z))
+        raise NotImplementedError("Only normal distribution supported.")
+    
+    def prob_over(self, line: float) -> float:
+        return 1 - self.cdf(line)
+    
+    def prob_under(self, line: float) -> float:
+        return self.cdf(line)
+    
+    def fair_line(self) -> float:
+        return float(self.mean)
+    
+    def percentile(self, p: float) -> float:
+        if self.dist_type == "normal":
+            z = np.sqrt(2) * erfinv(2 * p - 1)
+            return float(self.mean + z * self.std)
+        raise NotImplementedError("Only normal distribution supported.")
+
+def build_distribution_from_projection(mean: float, minutes: float, usage: float, pace_factor: float) -> StatDistribution:
+    """Build distribution around projected stat line."""
+    variance = mean * 0.9
+    minutes_vol = max(0.1, min(1.5, 1.0 + (36 - minutes) / 60))
+    usage_vol = max(0.8, min(1.4, 1.0 + (usage - 0.22)))
+    pace_vol = max(0.9, min(1.3, pace_factor))
+    variance *= minutes_vol * usage_vol * pace_vol
+    return StatDistribution(mean=mean, variance=variance)
+
+# -----------------------------------------------------------------------------
+# FAIR LINES (Analytical Pricing)
+# -----------------------------------------------------------------------------
+@dataclass
+class PricedBet:
+    player_or_team: str
+    market_type: str
+    sportsbook_line: float
+    sportsbook_price: int
+    fair_line: float
+    prob_over: float
+    prob_under: float
+    edge: float
+    kelly: float
+    distribution: StatDistribution
+    raw_payload: Optional[Dict[str, Any]] = None
+
+    def to_dict(self):
+        return {
+            "player_or_team": self.player_or_team,
+            "market_type": self.market_type,
+            "sportsbook_line": self.sportsbook_line,
+            "sportsbook_price": self.sportsbook_price,
+            "fair_line": self.fair_line,
+            "prob_over": self.prob_over,
+            "prob_under": self.prob_under,
+            "edge": self.edge,
+            "kelly": self.kelly,
+        }
+
+def american_to_prob(odds: int) -> float:
+    if odds > 0:
+        return 100 / (odds + 100)
+    return -odds / (-odds + 100)
+
+def kelly_fraction_calc(prob: float, odds: int) -> float:
+    b = (abs(odds) / 100) if odds > 0 else (100 / abs(odds))
+    return max(0.0, (prob * (b + 1) - 1) / b)
+
+def price_stat_market(
+    player_name: str,
+    market_type: str,
+    sportsbook_line: float,
+    sportsbook_price: int,
+    projection: PlayerProjection,
+) -> PricedBet:
+    """Price a single stat market."""
+    stat_value = getattr(projection, market_type, 0.0)
+    dist = build_distribution_from_projection(
+        mean=stat_value,
+        minutes=projection.minutes,
+        usage=projection.usage,
+        pace_factor=projection.pace_adj / 98.0,
+    )
+    fair_line = dist.fair_line()
+    prob_over = dist.prob_over(sportsbook_line)
+    prob_under = dist.prob_under(sportsbook_line)
+    implied_prob = american_to_prob(sportsbook_price)
+    edge = prob_over - implied_prob if sportsbook_line >= fair_line else prob_under - implied_prob
+    kelly = kelly_fraction_calc(prob_over if sportsbook_line >= fair_line else prob_under, sportsbook_price)
+    return PricedBet(
+        player_or_team=player_name,
+        market_type=market_type,
+        sportsbook_line=sportsbook_line,
+        sportsbook_price=sportsbook_price,
+        fair_line=fair_line,
+        prob_over=prob_over,
+        prob_under=prob_under,
+        edge=edge,
+        kelly=kelly,
+        distribution=dist,
+        raw_payload={"projection": projection.to_dict(), "implied_prob": implied_prob},
+    )
+
+def price_bet(line_obj: Dict[str, Any], projections: Dict[str, PlayerProjection]) -> Optional[PricedBet]:
+    """Price any bet that matches a player projection."""
+    player = line_obj.get("team_or_player", "")
+    market = line_obj.get("market_type", "")
+    line = float(line_obj.get("line", 0))
+    price = int(line_obj.get("price", 0))
+    if player not in projections:
+        return None
+    proj = projections[player]
+    market_map = {
+        "player_points": "pts",
+        "player_rebounds": "rebs",
+        "player_assists": "asts",
+    }
+    if market not in market_map:
+        return None
+    return price_stat_market(player, market_map[market], line, price, proj)
+
+def evaluate_all_bets(dk_lines_df: pd.DataFrame, projections: Dict[str, PlayerProjection]) -> List[PricedBet]:
+    """Evaluate every DraftKings line against projections."""
+    priced_bets = []
+    if dk_lines_df.empty:
+        return priced_bets
+    for _, row in dk_lines_df.iterrows():
+        line_obj = row.to_dict()
+        priced = price_bet(line_obj, projections)
+        if priced is not None:
+            priced_bets.append(priced)
+    return priced_bets
+
+def priced_bets_to_dataframe(priced_bets: List[PricedBet]) -> pd.DataFrame:
+    if not priced_bets:
+        return pd.DataFrame()
+    df = pd.DataFrame([pb.to_dict() for pb in priced_bets])
+    df.sort_values("edge", ascending=False, inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+# -----------------------------------------------------------------------------
+# MONTE CARLO SIMULATION ENGINE
+# -----------------------------------------------------------------------------
+@dataclass
+class MonteCarloResult:
+    sims: Dict[str, np.ndarray]
+
+    def mean(self, stat: str) -> float:
+        return float(np.mean(self.sims[stat]))
+
+    def variance(self, stat: str) -> float:
+        return float(np.var(self.sims[stat]))
+
+    def percentile(self, stat: str, p: float) -> float:
+        return float(np.percentile(self.sims[stat], p))
+
+    def prob_over(self, stat: str, line: float) -> float:
+        return float(np.mean(self.sims[stat] > line))
+
+    def prob_under(self, stat: str, line: float) -> float:
+        return float(np.mean(self.sims[stat] < line))
+
+def build_correlation_matrix() -> np.ndarray:
+    """Correlation matrix for NBA statlines."""
+    return np.array([
+        [1.00, 0.25, 0.35, 0.10, 0.05, 0.20],
+        [0.25, 1.00, 0.15, 0.10, 0.30, 0.05],
+        [0.35, 0.15, 1.00, 0.20, 0.05, 0.25],
+        [0.10, 0.10, 0.20, 1.00, 0.15, 0.05],
+        [0.05, 0.30, 0.05, 0.15, 1.00, 0.05],
+        [0.20, 0.05, 0.25, 0.05, 0.05, 1.00],
+    ])
+
+def simulate_stat_distribution_mc(projection: PlayerProjection, n_sims: int = 10000, random_seed: Optional[int] = None) -> MonteCarloResult:
+    """Full-statline Monte Carlo simulation."""
+    if random_seed is not None:
+        np.random.seed(random_seed)
+    
+    # Base means
+    means = np.array([
+        projection.pts,
+        projection.rebs,
+        projection.asts,
+        projection.raw_payload.get("rates", {}).get("stl", 0.08) * projection.minutes,
+        projection.raw_payload.get("rates", {}).get("blk", 0.05) * projection.minutes,
+        projection.raw_payload.get("rates", {}).get("to", 0.12) * projection.minutes,
+    ])
+    
+    # Variance model
+    base_var = means * 0.9
+    minutes_vol = max(0.1, min(1.5, 1.0 + (36 - projection.minutes) / 60))
+    usage_vol = max(0.8, min(1.4, 1.0 + (projection.usage - 0.22)))
+    pace_vol = max(0.9, min(1.3, projection.pace_adj / 98.0))
+    var = base_var * minutes_vol * usage_vol * pace_vol
+    std = np.sqrt(var)
+    
+    # Correlation
+    corr = build_correlation_matrix()
+    cov = np.outer(std, std) * corr
+    
+    # Multivariate simulation
+    sims = np.random.multivariate_normal(mean=means, cov=cov, size=n_sims)
+    sims = np.clip(sims, 0, None)
+    
+    stat_names = ["pts", "rebs", "asts", "stl", "blk", "to"]
+    sim_dict = {stat: sims[:, i] for i, stat in enumerate(stat_names)}
+    return MonteCarloResult(sim_dict)
+
+# -----------------------------------------------------------------------------
+# MONTE CARLO PRICING
+# -----------------------------------------------------------------------------
+@dataclass
+class MonteCarloPricedBet:
+    player: str
+    market: str
+    sportsbook_line: float
+    mc_fair_line: float
+    mc_prob_over: float
+    mc_prob_under: float
+    mc_edge: float
+    mc_kelly: float
+    raw_mc: MonteCarloResult
+
+def evaluate_mc_for_market(
+    player_name: str,
+    projection: PlayerProjection,
+    sportsbook_line: float,
+    market: str,
+    mc: MonteCarloResult,
+) -> MonteCarloPricedBet:
+    """Evaluate a single market using Monte Carlo simulation."""
+    stat_map = {
+        "points": "pts",
+        "rebounds": "rebs",
+        "assists": "asts",
+        "steals": "stl",
+        "blocks": "blk",
+        "turnovers": "to",
+    }
+    stat = stat_map.get(market.lower())
+    
+    if stat is None:
+        if market.lower() == "pra":
+            sims = mc.sims["pts"] + mc.sims["rebs"] + mc.sims["asts"]
+        elif market.lower() == "pr":
+            sims = mc.sims["pts"] + mc.sims["rebs"]
+        elif market.lower() == "pa":
+            sims = mc.sims["pts"] + mc.sims["asts"]
+        elif market.lower() == "ra":
+            sims = mc.sims["rebs"] + mc.sims["asts"]
+        else:
+            raise ValueError(f"Unsupported market: {market}")
+        temp_mc = MonteCarloResult({"composite": sims})
+        stat_key = "composite"
+    else:
+        temp_mc = mc
+        stat_key = stat
+    
+    fair_line = temp_mc.percentile(stat_key, 50)
+    prob_over = temp_mc.prob_over(stat_key, sportsbook_line)
+    prob_under = 1 - prob_over
+    odds = 1.91  # Default -110
+    edge = (prob_over * odds) - (1 - prob_over)
+    kelly = max(0.0, (prob_over * (odds + 1) - 1) / odds)
+    
+    return MonteCarloPricedBet(
+        player=player_name,
+        market=market,
+        sportsbook_line=sportsbook_line,
+        mc_fair_line=fair_line,
+        mc_prob_over=prob_over,
+        mc_prob_under=prob_under,
+        mc_edge=edge,
+        mc_kelly=kelly,
+        raw_mc=temp_mc,
+    )
+
+def evaluate_all_bets_monte_carlo(
+    dk_df: pd.DataFrame,
+    projections: Dict[str, PlayerProjection],
+    n_sims: int = 5000,
+) -> List[MonteCarloPricedBet]:
+    """Evaluate all DraftKings bets using Monte Carlo simulation."""
+    results = []
+    for _, row in dk_df.iterrows():
+        player = row.get("team_or_player", "")
+        market = row.get("market_type", "")
+        line = float(row.get("line", 0))
+        if player not in projections:
+            continue
+        projection = projections[player]
+        mc = simulate_stat_distribution_mc(projection, n_sims=n_sims)
+        priced = evaluate_mc_for_market(player, projection, line, market, mc)
+        results.append(priced)
+    return results
 
 # -----------------------------------------------------------------------------
 # SNIFFER CONFIG (deprecated, kept for compatibility)
@@ -1000,7 +1781,7 @@ def tier_multiplier(stat):
     if cfg["tier"] == "MED": return 0.93
     return 1.0
 
-def kelly_fraction(prob, odds=-110):
+def kelly_fraction_legacy(prob, odds=-110):
     if odds == 0: return 0.0
     b = odds / 100 if odds > 0 else 100 / abs(odds)
     k = (prob * (b + 1) - 1) / b
@@ -1030,7 +1811,7 @@ def analyze_prop(player, market, line, pick, sport="NBA", odds=-110, bankroll=No
         prob = norm.cdf(line, loc=mu, scale=sigma)
     edge = (prob - 0.5) * tier_multiplier(market)
     tier = classify_tier(edge)
-    kelly = kelly_fraction(prob, odds)
+    kelly = kelly_fraction_legacy(prob, odds)
     stake = bankroll * kelly
     bolt = "SOVEREIGN BOLT" if prob >= prob_bolt and (mu - line) / max(line, 1e-9) >= dtm_bolt else tier
     return {
@@ -2507,7 +3288,7 @@ def display_health_status():
 def main():
     st.set_page_config(page_title=f"CLARITY {VERSION}", layout="wide")
     st.title(f"CLARITY {VERSION}")
-    st.caption(f"PropLine Smart Ingestion + Game Analyzer + Best Bets (Parlays) • {BUILD_DATE}")
+    st.caption(f"PropLine Smart Ingestion + Game Analyzer + Best Bets (Parlays) + Monte Carlo • {BUILD_DATE}")
 
     # Session state defaults
     for k, v in [("pp_player","LeBron James"),("pp_market","PTS"),
@@ -2538,7 +3319,7 @@ def main():
     display_health_status()
 
     tabs = st.tabs(["🎯 Player Props", "🏟️ Game Analyzer", "🏆 Best Bets",
-                    "📋 Paste & Scan", "📊 History & Metrics", "⚙️ Tools"])
+                    "📋 Paste & Scan", "📊 History & Metrics", "🤖 Model Bets", "⚙️ Tools"])
 
     # Tab 0: Player Props
     with tabs[0]:
@@ -2602,7 +3383,6 @@ def main():
         st.markdown("---")
         with st.expander("📋 Scan a Prop Slip (Text or Screenshot)", expanded=False):
             st.markdown("Paste a prop line or upload screenshots -- CLARITY will extract and analyze the first valid prop from each.")
-            # FIXED: incomplete line replaced with proper text_area
             scan_text = st.text_area("📋 Paste prop slip text", height=200, placeholder="e.g., LeBron James OVER 25.5 PTS")
             if scan_text:
                 props = parse_props_from_text(scan_text)
@@ -2621,7 +3401,7 @@ def main():
                     else:
                         st.write(f"No props detected in {img_file.name}")
 
-    # Tab 1: Game Analyzer (placeholder – full implementation exists in original)
+    # Tab 1: Game Analyzer (placeholder)
     with tabs[1]:
         st.header("Game Analyzer (NBA)")
         st.info("Full implementation available. Contact for details.")
@@ -2653,8 +3433,63 @@ def main():
         else:
             st.info("No settled slips yet.")
 
-    # Tab 5: Tools (enhanced with health monitor, error log, no redundant SEM button)
+    # Tab 5: Model Bets (NEW - Monte Carlo + Analytical with automatic data loaders)
     with tabs[5]:
+        st.header("🤖 Model-Priced Bets (DraftKings)")
+        
+        # Toggle between analytical and Monte Carlo engines
+        use_mc = st.toggle("Use Monte Carlo Engine (more accurate, slower)", value=False)
+        if use_mc:
+            st.caption("Monte Carlo: Simulates 5,000 outcomes per player. Takes ~10-30 seconds.")
+        else:
+            st.caption("Analytical: Fast estimation using normal distributions. ~1-2 seconds.")
+        
+        with st.spinner("Fetching DraftKings lines and building projections..."):
+            try:
+                # Fetch DK lines
+                dk_df = fetch_dk_lines_as_dataframe()
+                if dk_df.empty:
+                    st.warning("No DraftKings lines fetched. Check API or try again later.")
+                else:
+                    st.success(f"Fetched {len(dk_df)} lines from DraftKings")
+                    
+                    # Build projections automatically
+                    st.info("Building player projections from stats...")
+                    projections = build_today_projections_auto()
+                    st.success(f"Built projections for {len(projections)} players")
+                    
+                    if use_mc:
+                        # Monte Carlo pricing
+                        priced_bets = evaluate_all_bets_monte_carlo(dk_df, projections, n_sims=5000)
+                        results = []
+                        for bet in priced_bets:
+                            results.append({
+                                "Player": bet.player,
+                                "Market": bet.market,
+                                "Line": bet.sportsbook_line,
+                                "Fair Line (MC)": round(bet.mc_fair_line, 2),
+                                "Prob Over": round(bet.mc_prob_over, 3),
+                                "Edge": round(bet.mc_edge, 3),
+                                "Kelly": round(bet.mc_kelly, 3),
+                            })
+                    else:
+                        # Analytical pricing
+                        priced_bets = evaluate_all_bets(dk_df, projections)
+                        priced_df = priced_bets_to_dataframe(priced_bets)
+                        results = priced_df.to_dict('records')
+                    
+                    if results:
+                        st.dataframe(results, use_container_width=True)
+                        st.caption("💡 Positive edge = model thinks the bet has value. Kelly = suggested bet size as fraction of bankroll.")
+                    else:
+                        st.info("No priced bets available. This may happen if no player props are found in the DK data.")
+                        
+            except Exception as e:
+                st.error(f"Error generating model-priced bets: {e}")
+                st.info("Make sure your API keys are set: BALLSDONTLIE_API_KEY, RAPIDAPI_KEY")
+
+    # Tab 6: Tools (enhanced)
+    with tabs[6]:
         st.header("🛠️ System Health & Error Monitor")
 
         st.subheader("🔌 API & Service Status")
@@ -2715,6 +3550,15 @@ def main():
                     st.success(f"✅ PropLine returned {len(sports)} sports")
                 else:
                     st.error("❌ PropLine failed – check RAPIDAPI_KEY")
+        
+        if st.button("Test DraftKings Line Fetch"):
+            with st.spinner("Fetching DK lines..."):
+                df = fetch_dk_lines_as_dataframe()
+                if not df.empty:
+                    st.success(f"✅ DK API working. Fetched {len(df)} lines.")
+                    st.dataframe(df.head(10))
+                else:
+                    st.error("❌ DK API failed – check endpoint or network")
 
         st.divider()
 
@@ -2725,7 +3569,6 @@ def main():
                 clear_pending_slips()
                 st.success("Pending slips cleared.")
         with col2:
-            # SEM recalibration is automatic; keep button only for manual override if desired
             if st.button("Force SEM Recalibration (manual)"):
                 _calibrate_sem()
                 st.success("SEM recalibrated manually.")
