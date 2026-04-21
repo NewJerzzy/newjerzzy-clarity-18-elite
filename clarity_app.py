@@ -18,6 +18,8 @@
 # [FIX 10] _get_historical_fallback() is tier‑aware: player_tier="elite"|"mid"|"bench"
 # [NEW]   Prop Scanner now accepts multiple screenshots at once
 # [NEW]   Enhanced slip parser with PrizePicks block detection (Goblin/Demon)
+# [NEW]   Bovada NBA game parser (spreads, ML, totals)
+# [NEW]   MyBookie MLB game parser (spreads, ML, totals)
 # =============================================================================
 
 import os
@@ -1651,6 +1653,272 @@ def _parse_prizepicks_blocks(lines: List[str]) -> List[Dict[str, Any]]:
 
     return bets
 
+def _parse_bovada_games(lines: List[str]) -> List[Dict[str, Any]]:
+    """
+    Parse Bovada NBA game blocks like:
+
+    4/21/26
+    4:00 PM
+    Philadelphia 76ers
+    Boston Celtics
+    + 649 Bets
+    +14.5 (-110)
+    -14.5 (-110)
+    +600
+    -950
+    O217.0 (-110)
+    U217.0 (-110)
+    East 1st Round - Game 2, BOS leads series 1-0
+    """
+    bets: List[Dict[str, Any]] = []
+    i = 0
+    n = len(lines)
+
+    while i + 10 < n:
+        # Date line: 4/21/26
+        date_line = lines[i]
+        time_line = lines[i + 1]
+        away_team = lines[i + 2]
+        home_team = lines[i + 3]
+        bets_line = lines[i + 4]
+
+        if not re.match(r"\d{1,2}/\d{1,2}/\d{2}", date_line):
+            i += 1
+            continue
+
+        # Next lines: spreads, ML, totals
+        spread1 = lines[i + 5]
+        spread2 = lines[i + 6]
+        ml1     = lines[i + 7]
+        ml2     = lines[i + 8]
+        total_o = lines[i + 9]
+        total_u = lines[i + 10]
+
+        # Try to extract spreads
+        def parse_spread(line: str) -> Optional[Tuple[float, int]]:
+            m = re.search(r'([+-]\d+\.?\d*)\s*\(([-+]?\d+)\)', line)
+            if not m:
+                return None
+            return float(m.group(1)), int(m.group(2))
+
+        def parse_total(line: str) -> Optional[Tuple[str, float, int]]:
+            m = re.search(r'([OU])(\d+\.?\d*)\s*\(([-+]?\d+)\)', line, re.IGNORECASE)
+            if not m:
+                return None
+            return ("OVER" if m.group(1).upper() == "O" else "UNDER",
+                    float(m.group(2)), int(m.group(3)))
+
+        def parse_ml(line: str) -> Optional[int]:
+            m = re.match(r'^([+-]\d+)$', line.strip())
+            return int(m.group(1)) if m else None
+
+        # Spreads
+        sp1 = parse_spread(spread1)
+        sp2 = parse_spread(spread2)
+        if sp1:
+            line_val, odds_val = sp1
+            bets.append({
+                "type": "GAME",
+                "sport": "NBA",
+                "team": away_team,
+                "opponent": home_team,
+                "market": "SPREAD",
+                "line": line_val,
+                "pick": away_team,
+                "odds": odds_val,
+                "is_alt": False,
+            })
+        if sp2:
+            line_val, odds_val = sp2
+            bets.append({
+                "type": "GAME",
+                "sport": "NBA",
+                "team": home_team,
+                "opponent": away_team,
+                "market": "SPREAD",
+                "line": line_val,
+                "pick": home_team,
+                "odds": odds_val,
+                "is_alt": False,
+            })
+
+        # Moneylines
+        ml_away = parse_ml(ml1)
+        ml_home = parse_ml(ml2)
+        if ml_away is not None:
+            bets.append({
+                "type": "GAME",
+                "sport": "NBA",
+                "team": away_team,
+                "opponent": home_team,
+                "market": "ML",
+                "line": 0.0,
+                "pick": away_team,
+                "odds": ml_away,
+                "is_alt": False,
+            })
+        if ml_home is not None:
+            bets.append({
+                "type": "GAME",
+                "sport": "NBA",
+                "team": home_team,
+                "opponent": away_team,
+                "market": "ML",
+                "line": 0.0,
+                "pick": home_team,
+                "odds": ml_home,
+                "is_alt": False,
+            })
+
+        # Totals
+        tot_o = parse_total(total_o)
+        tot_u = parse_total(total_u)
+        if tot_o:
+            pick, line_val, odds_val = tot_o
+            bets.append({
+                "type": "GAME",
+                "sport": "NBA",
+                "team": home_team,
+                "opponent": away_team,
+                "market": "TOTAL",
+                "line": line_val,
+                "pick": pick,
+                "odds": odds_val,
+                "is_alt": False,
+            })
+        if tot_u:
+            pick, line_val, odds_val = tot_u
+            bets.append({
+                "type": "GAME",
+                "sport": "NBA",
+                "team": home_team,
+                "opponent": away_team,
+                "market": "TOTAL",
+                "line": line_val,
+                "pick": pick,
+                "odds": odds_val,
+                "is_alt": False,
+            })
+
+        # Move to next block (each Bovada game is ~11–12 lines)
+        i += 11
+
+    return bets
+
+def _parse_mybookie_games(lines: List[str]) -> List[Dict[str, Any]]:
+    """
+    Parse MyBookie MLB game blocks like:
+
+    Houston Astros - Weiss, Ryan -R
+    Cleveland Guardians - Messick, Parker -L
+    Apr 21 3:10 PM
+    More Wagers >
+    +1.5
+    -167
+    +124
+    O 8.5
+    -118
+    -1.5
+    +135
+    -145
+    U 8.5
+    -104
+    """
+    bets: List[Dict[str, Any]] = []
+    i = 0
+    n = len(lines)
+
+    while i + 8 < n:
+        away_line = lines[i]
+        home_line = lines[i + 1]
+        date_line = lines[i + 2]
+
+        # crude check: date line like "Apr 21 3:10 PM"
+        if not re.search(r'\b[A-Za-z]{3}\s+\d{1,2}\s+\d{1,2}:\d{2}\s+[AP]M\b', date_line):
+            i += 1
+            continue
+
+        away_team = away_line.split("-")[0].strip()
+        home_team = home_line.split("-")[0].strip()
+
+        # Next lines: spreads, ML, totals in a fixed pattern
+        block = lines[i + 4:i + 4 + 9]  # +1.5, -167, +124, O 8.5, -118, -1.5, +135, -145, U 8.5, -104 (we'll be lenient)
+
+        # We'll scan the block for patterns instead of relying on exact positions
+        j = 0
+        while j < len(block) - 1:
+            l = block[j].strip()
+            nxt = block[j + 1].strip()
+
+            # Spread
+            if re.match(r'^[+-]\d+(\.\d+)?$', l) and re.match(r'^[+-]\d+$', nxt):
+                line_val = float(l)
+                odds_val = int(nxt)
+                # Decide which side this belongs to: first spread we see → away, second → home
+                side = "AWAY" if not any(b.get("market") == "SPREAD" and b.get("team") == home_team for b in bets) else "HOME"
+                team = away_team if side == "AWAY" else home_team
+                opp  = home_team if side == "AWAY" else away_team
+                bets.append({
+                    "type": "GAME",
+                    "sport": "MLB",
+                    "team": team,
+                    "opponent": opp,
+                    "market": "SPREAD",
+                    "line": line_val,
+                    "pick": team,
+                    "odds": odds_val,
+                    "is_alt": False,
+                })
+                j += 2
+                continue
+
+            # Totals: O 8.5 / U 8.5 with odds on next line
+            m_tot = re.match(r'^([OU])\s+(\d+(\.\d+)?)$', l, re.IGNORECASE)
+            if m_tot and re.match(r'^[+-]\d+$', nxt):
+                ou = "OVER" if m_tot.group(1).upper() == "O" else "UNDER"
+                line_val = float(m_tot.group(2))
+                odds_val = int(nxt)
+                bets.append({
+                    "type": "GAME",
+                    "sport": "MLB",
+                    "team": home_team,
+                    "opponent": away_team,
+                    "market": "TOTAL",
+                    "line": line_val,
+                    "pick": ou,
+                    "odds": odds_val,
+                    "is_alt": False,
+                })
+                j += 2
+                continue
+
+            # Moneyline: standalone +124 / -145 etc
+            if re.match(r'^[+-]\d+$', l):
+                odds_val = int(l)
+                # First ML we see → away, second → home
+                side = "AWAY" if not any(b.get("market") == "ML" and b.get("team") == home_team for b in bets) else "HOME"
+                team = away_team if side == "AWAY" else home_team
+                opp  = home_team if side == "AWAY" else away_team
+                bets.append({
+                    "type": "GAME",
+                    "sport": "MLB",
+                    "team": team,
+                    "opponent": opp,
+                    "market": "ML",
+                    "line": 0.0,
+                    "pick": team,
+                    "odds": odds_val,
+                    "is_alt": False,
+                })
+                j += 1
+                continue
+
+            j += 1
+
+        i += 10  # move to next game block
+
+    return bets
+
 def parse_prizepicks_blocks(text: str) -> List[Dict]:
     if not text:
         return []
@@ -1999,12 +2267,20 @@ def parse_complex_slip(text: str) -> List[Dict]:
     if not lines:
         return bets
 
-    # First, try PrizePicks-style blocks (Goblin/Demon/regular props)
+    # First, try PrizePicks-style blocks
     pp_bets = _parse_prizepicks_blocks(lines)
     if pp_bets:
         bets.extend(pp_bets)
-        # Note: we do NOT return early; we still let legacy patterns fire
-        # in case the slip mixes formats.
+
+    # Then Bovada-style NBA games
+    bov_bets = _parse_bovada_games(lines)
+    if bov_bets:
+        bets.extend(bov_bets)
+
+    # Then MyBookie-style MLB games
+    mb_bets = _parse_mybookie_games(lines)
+    if mb_bets:
+        bets.extend(mb_bets)
 
     i = 0
     while i < len(lines):
@@ -2568,486 +2844,4 @@ def main():
         st.markdown("---")
         with st.expander("📋 Scan a Prop Slip (Text or Screenshot)", expanded=False):
             st.markdown("Paste a prop line or upload screenshots – CLARITY will extract and analyze the first valid prop from each.")
-            scan_text = st.text_area("Paste prop text", key="prop_scan_text")
-            scan_images = st.file_uploader("Or upload screenshots (multiple)", type=["jpg","jpeg","png","webp"],
-                                           accept_multiple_files=True, key="prop_scan_images")
-
-            if st.button("🔍 Extract & Analyze Prop", key="prop_scan_button"):
-                all_extracted = []
-                # Process images first
-                if scan_images:
-                    for img_file in scan_images:
-                        img = Image.open(img_file)
-                        props = parse_any_input(img)
-                        if props:
-                            all_extracted.extend(props)
-                # Process text if provided
-                if scan_text.strip():
-                    props = parse_any_input(scan_text.strip())
-                    if props:
-                        all_extracted.extend(props)
-
-                if not all_extracted:
-                    st.error("Could not extract any valid props from the provided text/images.")
-                else:
-                    # Deduplicate across all inputs
-                    seen = set()
-                    unique_props = []
-                    for p in all_extracted:
-                        key = (p.get('player',''), p.get('market',''), p.get('line',0), p.get('pick',''))
-                        if key not in seen:
-                            seen.add(key)
-                            unique_props.append(p)
-
-                    if len(unique_props) == 1:
-                        selected = unique_props[0]
-                    else:
-                        options = [f"{p['player']} {p['pick']} {p['line']} {p['market']}" for p in unique_props]
-                        selected_idx = st.selectbox("Select a prop to analyze", range(len(options)), format_func=lambda x: options[x])
-                        selected = unique_props[selected_idx]
-
-                    st.session_state.pp_player = str(selected.get("player","")).strip()
-                    st.session_state.pp_market = str(selected.get("market","PTS")).strip().upper()
-                    st.session_state.pp_line = float(selected.get("line", 0))
-                    st.session_state.pp_pick = str(selected.get("pick","OVER")).strip().upper()
-                    st.session_state.pp_odds = int(selected.get("odds", -110))
-
-                    st.success(f"Extracted: {st.session_state.pp_player} {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market} ({st.session_state.pp_odds})")
-
-                    res = analyze_prop(st.session_state.pp_player, st.session_state.pp_market,
-                                       st.session_state.pp_line, st.session_state.pp_pick,
-                                       sport, st.session_state.pp_odds, new_bankroll)
-
-                    st.markdown("### Analysis Result")
-                    col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Win Prob", f"{res['prob']:.1%}")
-                    col2.metric("Edge", f"{res['edge']:+.1%}")
-                    col3.metric("Kelly Stake", f"${res['stake']:.2f}")
-                    col4.metric("Tier", res["tier"])
-                    if res["bolt_signal"] == "SOVEREIGN BOLT":
-                        st.success(f"⚡ SOVEREIGN BOLT — {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market}")
-                    elif res["edge"] > 0.04:
-                        st.success(f"{res['bolt_signal']} — Recommended")
-                    else:
-                        st.error("PASS — No edge")
-
-    # ─────────────────────── Tab 1: Game Analyzer ───────────────────────
-    with tabs[1]:
-        st.header("Game Analyzer – ML, Spreads, Totals with CLARITY Approval")
-        st.caption("Fetches real team stats (NBA) and applies the full WMA / volatility / edge / tier model.")
-        sport2 = st.selectbox("Sport", ["NBA","NFL","MLB","NHL"], index=0, key="game_sport")
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            load_tomorrow = st.checkbox("Load tomorrow's games", value=False, key="load_tomorrow")
-        with col2:
-            if st.button("📅 Load Games", type="primary"):
-                days_offset = 1 if load_tomorrow else 0
-                with st.spinner(f"Fetching {'tomorrow' if days_offset else 'today'}'s games..."):
-                    games = game_scanner.fetch_games_by_date([sport2], days_offset)
-                    if games:
-                        st.session_state["auto_games"] = games
-                        st.success(f"Loaded {len(games)} games")
-                    else:
-                        st.warning("No games found.")
-        if "auto_games" in st.session_state and st.session_state["auto_games"]:
-            for game in st.session_state["auto_games"]:
-                home = game.get('home_team', '')
-                away = game.get('away_team', '')
-                if not home or not away:
-                    continue
-                st.subheader(f"{home} vs {away}")
-
-                if game.get('home_ml') and game.get('away_ml'):
-                    ml_res = analyze_moneyline_advanced(home, away, sport2, game['home_ml'], game['away_ml'])
-                    col_ml1, col_ml2 = st.columns(2)
-                    with col_ml1:
-                        if ml_res['home_tier'] != "PASS":
-                            st.success(f"**{home} ML ({game['home_ml']})**")
-                            st.caption(f"{ml_res['home_bolt']} | Edge: {ml_res['home_edge']:.1%} | Prob: {ml_res['home_prob']:.1%}")
-                        else:
-                            st.error(f"**{home} ML ({game['home_ml']})** — PASS")
-                    with col_ml2:
-                        if ml_res['away_tier'] != "PASS":
-                            st.success(f"**{away} ML ({game['away_ml']})**")
-                            st.caption(f"{ml_res['away_bolt']} | Edge: {ml_res['away_edge']:.1%} | Prob: {ml_res['away_prob']:.1%}")
-                        else:
-                            st.error(f"**{away} ML ({game['away_ml']})** — PASS")
-
-                if game.get('spread') is not None and game.get('spread_odds'):
-                    # [FIX 3] Correct arg order: (home, away, sport, spread, spread_odds)
-                    spread_res = analyze_spread_advanced(home, away, sport2, game['spread'], game['spread_odds'])
-                    col_sp1, col_sp2 = st.columns(2)
-                    with col_sp1:
-                        if spread_res['home_tier'] != "PASS":
-                            st.success(f"**{home} {game['spread']:+.1f} ({game['spread_odds']})**")
-                            st.caption(f"{spread_res['home_bolt']} | Edge: {spread_res['home_edge']:.1%} | Cover Prob: {spread_res['home_cover_prob']:.1%}")
-                        else:
-                            st.error(f"**{home} {game['spread']:+.1f} ({game['spread_odds']})** — PASS")
-                    with col_sp2:
-                        if spread_res['away_tier'] != "PASS":
-                            st.success(f"**{away} {game['spread']:+.1f} ({game['spread_odds']})**")
-                            st.caption(f"{spread_res['away_bolt']} | Edge: {spread_res['away_edge']:.1%} | Cover Prob: {spread_res['away_cover_prob']:.1%}")
-                        else:
-                            st.error(f"**{away} {game['spread']:+.1f} ({game['spread_odds']})** — PASS")
-
-                if game.get('total') is not None and game.get('over_odds') and game.get('under_odds'):
-                    total_res = analyze_total_advanced(home, away, sport2, game['total'], game['over_odds'], game['under_odds'])
-                    col_tot1, col_tot2 = st.columns(2)
-                    with col_tot1:
-                        if total_res['over_tier'] != "PASS":
-                            st.success(f"**OVER {game['total']} ({game['over_odds']})**")
-                            st.caption(f"{total_res['over_bolt']} | Edge: {total_res['over_edge']:.1%} | Prob: {total_res['over_prob']:.1%} | Proj: {total_res['projection']:.1f}")
-                        else:
-                            st.error(f"**OVER {game['total']} ({game['over_odds']})** — PASS")
-                    with col_tot2:
-                        if total_res['under_tier'] != "PASS":
-                            st.success(f"**UNDER {game['total']} ({game['under_odds']})**")
-                            st.caption(f"{total_res['under_bolt']} | Edge: {total_res['under_edge']:.1%} | Prob: {total_res['under_prob']:.1%} | Proj: {total_res['projection']:.1f}")
-                        else:
-                            st.error(f"**UNDER {game['total']} ({game['under_odds']})** — PASS")
-                st.markdown("---")
-
-        st.subheader("Manual Entry (fallback)")
-        with st.expander("Click to enter a game manually"):
-            home_man = st.text_input("Home Team", key="game_home")
-            away_man = st.text_input("Away Team", key="game_away")
-            market_man = st.selectbox("Market", ["ML","SPREAD","TOTAL"], key="game_market")
-            if market_man == "ML":
-                home_odds = st.number_input("Home Odds", value=-110, key="ml_home")
-                away_odds = st.number_input("Away Odds", value=-110, key="ml_away")
-                if st.button("Analyze ML (Manual)"):
-                    res = analyze_moneyline_advanced(home_man, away_man, sport2, home_odds, away_odds)
-                    st.markdown(f"{home_man}: {'✅ '+res['home_tier'] if res['home_tier']!='PASS' else '❌ PASS'} (Edge: {res['home_edge']:.1%})")
-                    st.markdown(f"{away_man}: {'✅ '+res['away_tier'] if res['away_tier']!='PASS' else '❌ PASS'} (Edge: {res['away_edge']:.1%})")
-            elif market_man == "SPREAD":
-                spread = st.number_input("Spread (home margin)", value=-5.5, key="spread_line")
-                odds_sp = st.number_input("Odds", value=-110, key="spread_odds")
-                if st.button("Analyze Spread (Manual)"):
-                    # [FIX 3] Correct arg order
-                    res = analyze_spread_advanced(home_man, away_man, sport2, spread, odds_sp)
-                    st.markdown(f"{home_man} {spread:+.1f}: {'✅ '+res['home_tier'] if res['home_tier']!='PASS' else '❌ PASS'} (Edge: {res['home_edge']:.1%})")
-                    st.markdown(f"{away_man} {spread:+.1f}: {'✅ '+res['away_tier'] if res['away_tier']!='PASS' else '❌ PASS'} (Edge: {res['away_edge']:.1%})")
-            else:
-                total_line = st.number_input("Total Line", value=220.5, key="total_line")
-                over_odds = st.number_input("Over Odds", value=-110, key="over_odds")
-                under_odds = st.number_input("Under Odds", value=-110, key="under_odds")
-                if st.button("Analyze Total (Manual)"):
-                    res = analyze_total_advanced(home_man, away_man, sport2, total_line, over_odds, under_odds)
-                    st.markdown(f"OVER {total_line}: {'✅ '+res['over_tier'] if res['over_tier']!='PASS' else '❌ PASS'} (Edge: {res['over_edge']:.1%})")
-                    st.markdown(f"UNDER {total_line}: {'✅ '+res['under_tier'] if res['under_tier']!='PASS' else '❌ PASS'} (Edge: {res['under_edge']:.1%})")
-
-    # ─────────────────────── Tab 2: Best Bets ───────────────────────
-    with tabs[2]:
-        st.header("🏆 Best Bets – Parlays (2-6 legs) from Clarity Approved")
-        st.markdown("Automatically generated from fetched props (edge > 4%) and loaded game lines (edge > 2%). "
-                    "Minimum 2 legs required. Same‑game parlays are filtered to avoid conflicts.")
-
-        if 'game_sport' not in st.session_state:
-            st.session_state.game_sport = "NBA"
-
-        if st.button("🔄 Refresh Best Bets"):
-            st.session_state['generate_best_bets'] = True
-
-        approved_bets = []
-        plus_ev_bets = []
-        sport_for_bets = st.session_state.get("game_sport", "NBA")
-
-        if 'live_props_df' in st.session_state and not st.session_state['live_props_df'].empty:
-            df = st.session_state['live_props_df']
-            for _, row in df.iterrows():
-                player = row.get('entity', '')
-                market = row.get('market_clean', '')
-                line = row.get('point', 0)
-                if not player or not market or line is None:
-                    continue
-                try:
-                    line_val = float(line)
-                except Exception:
-                    continue
-
-                res_over = analyze_prop(player, market, line_val, "OVER", sport_for_bets, -110, new_bankroll)
-                res_under = analyze_prop(player, market, line_val, "UNDER", sport_for_bets, -110, new_bankroll)
-
-                if res_over['edge'] >= res_under['edge']:
-                    best_edge, best_pick, res = res_over['edge'], "OVER", res_over
-                else:
-                    best_edge, best_pick, res = res_under['edge'], "UNDER", res_under
-
-                entry = {
-                    "description": f"{player} {market} {best_pick} {line_val}",
-                    "edge": best_edge, "prob": res['prob'], "odds": -110,
-                    "unique_key": f"{player}_{market}_{best_pick}",
-                    "sport": sport_for_bets, "team": row.get('team',''), "opponent": "",
-                }
-                if best_edge > 0.04:
-                    approved_bets.append(entry)
-                elif best_edge > 0:
-                    plus_ev_bets.append(entry)
-
-        if 'auto_games' in st.session_state and st.session_state['auto_games']:
-            for game in st.session_state['auto_games']:
-                sport_g = game.get('sport', sport_for_bets)
-                home = game.get('home_team', '')
-                away = game.get('away_team', '')
-                if game.get('home_ml') and game.get('away_ml'):
-                    ml_res = analyze_moneyline_advanced(home, away, sport_g, game['home_ml'], game['away_ml'])
-                    for side, team, opp, edge, prob, ml in [
-                        ("home", home, away, ml_res['home_edge'], ml_res['home_prob'], game['home_ml']),
-                        ("away", away, home, ml_res['away_edge'], ml_res['away_prob'], game['away_ml']),
-                    ]:
-                        entry = {"description": f"{team} ML ({ml})", "edge": edge, "prob": prob,
-                                 "odds": ml, "unique_key": f"{team}_ML", "sport": sport_g,
-                                 "team": team, "opponent": opp, "market": "ML"}
-                        if edge > 0.02: approved_bets.append(entry)
-                        elif edge > 0: plus_ev_bets.append(entry)
-
-                # [FIX 3] Correct arg order throughout Best Bets tab
-                if game.get('spread') is not None and game.get('spread_odds'):
-                    spread_res = analyze_spread_advanced(home, away, sport_g, game['spread'], game['spread_odds'])
-                    for side, team, opp, edge, prob in [
-                        ("home", home, away, spread_res['home_edge'], spread_res['home_cover_prob']),
-                        ("away", away, home, spread_res['away_edge'], spread_res['away_cover_prob']),
-                    ]:
-                        entry = {
-                            "description": f"{team} {game['spread']:+.1f} ({game['spread_odds']})",
-                            "edge": edge, "prob": prob, "odds": game['spread_odds'],
-                            "unique_key": f"{team}_spread", "sport": sport_g,
-                            "team": team, "opponent": opp, "market": "SPREAD",
-                        }
-                        if edge > 0.02: approved_bets.append(entry)
-                        elif edge > 0: plus_ev_bets.append(entry)
-
-                if game.get('total') is not None and game.get('over_odds') and game.get('under_odds'):
-                    total_res = analyze_total_advanced(home, away, sport_g, game['total'], game['over_odds'], game['under_odds'])
-                    for label, edge, prob, o_odds, uk in [
-                        (f"OVER {game['total']}", total_res['over_edge'], total_res['over_prob'], game['over_odds'], f"OVER_{game['total']}"),
-                        (f"UNDER {game['total']}", total_res['under_edge'], total_res['under_prob'], game['under_odds'], f"UNDER_{game['total']}"),
-                    ]:
-                        entry = {"description": f"{label} ({o_odds})", "edge": edge, "prob": prob,
-                                 "odds": o_odds, "unique_key": uk, "sport": sport_g,
-                                 "team": "", "opponent": "", "market": "TOTAL"}
-                        if edge > 0.02: approved_bets.append(entry)
-                        elif edge > 0: plus_ev_bets.append(entry)
-
-        if not approved_bets:
-            st.warning("No approved bets (edge > 4% for props, >2% for games). Load games or fetch props first.")
-        else:
-            st.subheader(f"📈 Approved Bets ({len(approved_bets)} legs available)")
-            st.dataframe(pd.DataFrame([{
-                "Bet": b['description'], "Edge": f"{b['edge']:.1%}",
-                "Win Prob": f"{b['prob']:.1%}", "Odds": b['odds'],
-            } for b in approved_bets]), use_container_width=True)
-
-            parlays = generate_parlays(approved_bets, max_legs=6, top_n=20)
-            if parlays:
-                st.subheader(f"🎲 Top Parlays ({len(parlays)} combinations, 2-6 legs)")
-                for i, p in enumerate(parlays):
-                    with st.expander(f"#{i+1}: {p['num_legs']}-Leg Parlay – Total Edge: {p['total_edge']:.1%} – Est. Odds: {p['estimated_odds']:+d}"):
-                        st.markdown("**Legs:**")
-                        for leg in p['legs']:
-                            st.markdown(f"- {leg}")
-                        st.metric("Confidence (product of win probs)", f"{p['confidence']:.1%}")
-                        st.metric("Total Edge", f"{p['total_edge']:.1%}")
-                        st.caption(f"Estimated parlay odds: {p['estimated_odds']:+d}")
-            else:
-                st.info("Not enough approved bets to form a 2‑leg parlay (need at least 2 unique legs).")
-
-        if plus_ev_bets:
-            st.subheader("💰 +EV Suggestions (edge > 0% but below approval threshold)")
-            st.dataframe(pd.DataFrame([{
-                "Bet": b['description'], "Edge": f"{b['edge']:.1%}",
-                "Win Prob": f"{b['prob']:.1%}", "Odds": b['odds'],
-            } for b in plus_ev_bets]), use_container_width=True)
-            st.caption("These bets have positive edge but did not meet the strict approval threshold.")
-
-    # ─────────────────────── Tab 3: Paste & Scan ───────────────────────
-    with tabs[3]:
-        st.header("Paste & Scan Slips")
-        st.markdown("Paste any slip – Clarity will extract individual bets and explain why you won or lost.")
-
-        text_key = "slip_text_input"
-        text = st.text_area("Paste slip text", height=200, key=text_key)
-        col_clear, col_scan = st.columns([1, 4])
-        with col_clear:
-            if st.button("🗑️ Clear Text", use_container_width=True):
-                if text_key in st.session_state:
-                    del st.session_state[text_key]
-                st.rerun()
-        with col_scan:
-            scan_clicked = st.button("🔍 Scan & Analyze (Text)", type="primary", use_container_width=True)
-
-        st.markdown("---")
-        st.subheader("📸 Or upload screenshots (multiple)")
-        uploader_key = "screenshot_uploader"
-        uploaded_images = st.file_uploader("Choose images (JPG, PNG, WEBP)", type=["jpg","jpeg","png","webp"],
-                                           accept_multiple_files=True, key=uploader_key)
-        use_for_sem = st.checkbox("Use these external slips for SEM calibration (improves model, does NOT affect your bankroll)", value=True)
-
-        col_img_clear, col_img_scan = st.columns([1, 4])
-        with col_img_clear:
-            if st.button("🗑️ Clear Images", use_container_width=True):
-                for k in (uploader_key, "ocr_results"):
-                    if k in st.session_state:
-                        del st.session_state[k]
-                st.rerun()
-        with col_img_scan:
-            ocr_clicked = st.button("📷 Extract & Analyze Images", use_container_width=True)
-
-        if ocr_clicked and uploaded_images:
-            ocr_api_key = st.secrets.get("OCR_SPACE_API_KEY", "")
-            if not ocr_api_key:
-                st.error("OCR API key missing. Please add OCR_SPACE_API_KEY to your secrets.")
-            else:
-                all_text = ""
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                for i, img_file in enumerate(uploaded_images):
-                    status_text.text(f"Processing image {i+1} of {len(uploaded_images)}...")
-                    img_bytes = img_file.read()
-                    extracted_text, error = ocr_image(img_bytes, ocr_api_key)
-                    if error:
-                        st.error(f"OCR failed for {img_file.name}: {error}")
-                    else:
-                        all_text += extracted_text + "\n\n"
-                    progress_bar.progress((i + 1) / len(uploaded_images))
-                status_text.empty()
-                if all_text.strip():
-                    st.success("OCR complete. Parsing bets...")
-                    parsed_bets = parse_complex_slip(all_text)
-                    if not parsed_bets:
-                        st.error("No bets recognized in the extracted text.")
-                    else:
-                        st.success(f"Detected {len(parsed_bets)} bets from images.")
-                        st.session_state["ocr_results"] = parsed_bets
-                        for bet in parsed_bets:
-                            explanation = generate_why_analysis(bet)
-                            with st.expander(f"{bet.get('sport','UNK')} – {bet.get('team','')} {bet.get('market_type','ML')} at {bet.get('odds','?')}"):
-                                st.markdown(explanation)
-                                if use_for_sem and bet.get('result') in ['WIN','LOSS'] and bet.get('prob') is not None:
-                                    insert_external_slip(bet.get('prob', 0.5), bet.get('result'), source="OCR")
-                                    st.caption("✅ Used for SEM calibration.")
-                                elif bet.get('result') in ['WIN','LOSS']:
-                                    st.caption("ℹ️ Not used for SEM calibration (toggle off).")
-                                else:
-                                    st.caption("⚠️ Could not determine result – not used for SEM.")
-                else:
-                    st.warning("No text extracted from the uploaded images.")
-        elif ocr_clicked and not uploaded_images:
-            st.warning("Please upload at least one image.")
-
-        if scan_clicked:
-            if not text.strip():
-                st.warning("Please paste some slip text.")
-            else:
-                parsed_bets = parse_complex_slip(text)
-                if not parsed_bets:
-                    st.error("No bets recognized. Check format.")
-                else:
-                    st.success(f"Detected {len(parsed_bets)} bets.")
-                    for bet in parsed_bets:
-                        if bet.get('type') == 'PARLAY':
-                            with st.expander(f"PARLAY – {bet.get('result','Unknown')}"):
-                                st.markdown(bet.get('raw', ''))
-                                st.info("Parlay legs cannot be auto‑analyzed individually.")
-                                profit = 0 if bet.get('result') == 'WIN' else -100
-                                insert_slip({
-                                    "type": "PARLAY", "sport": "MULTI", "player": "", "team": "",
-                                    "opponent": "", "market": "PARLAY", "line": 0, "pick": "",
-                                    "odds": bet.get('odds', 0), "edge": 0, "prob": 0.5,
-                                    "kelly": 0, "tier": "", "bolt_signal": "",
-                                    "result": bet.get('result'), "actual": 0,
-                                    "settled_date": datetime.now().strftime("%Y-%m-%d"),
-                                    "profit": profit, "bankroll": new_bankroll,
-                                })
-                                st.success("Parlay result added to history.")
-                        else:
-                            explanation = generate_why_analysis(bet)
-                            with st.expander(f"{bet.get('sport','UNK')} – {bet.get('team','')} {bet.get('market_type','ML')} at {bet.get('odds','?')}"):
-                                st.markdown(explanation)
-                                odds_v = bet.get('odds', -110)
-                                profit = ((odds_v / 100) * 100 if odds_v > 0 else (100 / abs(odds_v)) * 100) \
-                                    if bet.get('result') == 'WIN' else -100
-                                insert_slip({
-                                    "type": "GAME", "sport": bet.get('sport','NBA'),
-                                    "player": "", "team": bet.get('team',''),
-                                    "opponent": bet.get('opponent',''),
-                                    "market": bet.get('market_type','ML'), "line": bet.get('line',0),
-                                    "pick": bet.get('pick', bet.get('team','')),
-                                    "odds": bet.get('odds',-110), "edge": 0,
-                                    "prob": bet.get('prob', 0.5), "kelly": 0,
-                                    "tier": "", "bolt_signal": "",
-                                    "result": bet.get('result'), "actual": bet.get('actual',0),
-                                    "settled_date": datetime.now().strftime("%Y-%m-%d"),
-                                    "profit": profit, "bankroll": new_bankroll,
-                                })
-                                st.success("Bet added to history.")
-
-    # ─────────────────────── Tab 4: History & Metrics ───────────────────────
-    with tabs[4]:
-        st.header("📊 History & Metrics (Self‑Evaluation)")
-        st.markdown("CLARITY automatically evaluates its own performance and tunes thresholds.")
-        acc = get_accuracy_dashboard()
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Bets", acc['total_bets'])
-        col2.metric("Win Rate", f"{acc['win_rate']}%")
-        col3.metric("ROI", f"{acc['roi']}%")
-        col4.metric("Units Profit", f"{acc['units_profit']}")
-        st.subheader("By Sport")
-        st.dataframe(pd.DataFrame(acc['by_sport']).T) if acc['by_sport'] else st.info("No settled bets by sport yet.")
-        st.subheader("By Tier (Bolt Signal)")
-        st.dataframe(pd.DataFrame(acc['by_tier']).T) if acc['by_tier'] else st.info("No settled bets by tier yet.")
-        st.metric("SEM Score (Calibration)", f"{acc['sem_score']}/100")
-        st.caption("SEM score measures how well predicted probabilities match actual outcomes. Higher = better calibrated.")
-        st.subheader("Auto‑Tune History")
-        conn_t = sqlite3.connect(DB_PATH)
-        try:
-            df_tune = pd.read_sql_query("SELECT * FROM tuning_log ORDER BY id DESC", conn_t)
-        except Exception as e:
-            logging.error(f"Tune log read error: {e}")
-            df_tune = pd.DataFrame()
-        finally:
-            conn_t.close()
-        st.dataframe(df_tune) if not df_tune.empty else st.info("No tuning events yet.")
-        st.subheader("Recent Bets")
-        df_recent = get_all_slips(limit=50)
-        if df_recent.empty:
-            st.info("No bets yet.")
-        else:
-            st.dataframe(df_recent[["date","type","player","team","market","pick","result","profit"]])
-
-    # ─────────────────────── Tab 5: Tools ───────────────────────
-    with tabs[5]:
-        st.header("Tools")
-        st.subheader("📡 System Health Dashboard")
-        if st.button("🔄 Refresh Health Status"):
-            st.rerun()
-        health_data = []
-        for component, info in st.session_state.health_status.items():
-            status_icon = "✅" if info["status"] == "ok" else ("⚠️" if info["fallback_active"] else "❌")
-            health_data.append({
-                "Component": component,
-                "Status": status_icon,
-                "Fallback Active": info["fallback_active"],
-                "Last Error": info["last_error"][:80] + "..." if len(info["last_error"]) > 80 else info["last_error"],
-            })
-        st.dataframe(pd.DataFrame(health_data), use_container_width=True)
-        st.subheader("⚙️ System Information")
-        # [FIX 9] Separate key status display
-        st.info(f"curl_cffi (TLS): {'✅ Available' if CURL_AVAILABLE else '❌ Not installed'}")
-        st.info(f"BallsDontLie (NBA): {'✅ Set' if st.secrets.get('BALLSDONTLIE_API_KEY') else '❌ Missing'}")
-        st.info(f"The Odds API (GameScanner): {'✅ Set' if st.secrets.get('ODDS_API_KEY') and st.secrets.get('ODDS_API_KEY') != 'your_key_here' else '❌ Missing'}")
-        st.info(f"Odds‑API.io (game scores): {'✅ Set' if st.secrets.get('ODDS_API_IO_KEY') else '❌ Missing'}")
-        st.info(f"RapidAPI (PropLine/FlashLive/Tennis/PGA): {'✅ Set' if st.secrets.get('RAPIDAPI_KEY') else '❌ Missing'}")
-        st.info(f"nhl‑api‑py: {'✅ Available' if NHL_AVAILABLE else '❌ Not installed'}")
-        st.info(f"Current thresholds: PROB_BOLT = {get_prob_bolt():.2f}, DTM_BOLT = {get_dtm_bolt():.3f}")
-        st.info(f"Fractional Kelly multiplier: {KELLY_FRACTION:.0%}")
-        st.caption("Self‑evaluation runs automatically when you settle bets or paste winning/losing slips.")
-        if os.path.exists("clarity_debug.log"):
-            with open("clarity_debug.log", "r") as f:
-                log_content = f.read()
-            st.download_button("📥 Download Debug Log", data=log_content, file_name="clarity_debug.log", mime="text/plain")
-        else:
-            st.info("No log file yet.")
-
-if __name__ == "__main__":
-    main()
+            scan_text =
