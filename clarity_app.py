@@ -1,22 +1,22 @@
 # =============================================================================
-# CLARITY 23.1 – ELITE MULTI-SPORT ENGINE (BUG-FIXED & HARDENED)
+# CLARITY 23.1 – ELITE MULTI‑SPORT ENGINE (BUG‑FIXED & HARDENED)
 #
 # Fixes applied (v23.0 → v23.1):
-#   [FIX 1]  PROB_BOLT/DTM_BOLT are no longer mutated globals — all reads/writes
-#            go through get_threshold() / set_threshold() backed by the DB
-#   [FIX 2]  Golf fallback: random.uniform removed; deterministic rank-offset used
-#   [FIX 3]  analyze_spread_advanced() arg order corrected in Best Bets tab
-#   [FIX 4]  Slip IDs now use uuid4 — no MD5 collision risk
-#   [FIX 5]  All SQLite access uses "with conn:" context managers
-#   [FIX 6]  Redundant _stats_cache / _game_score_cache dicts removed
-#            (@st.cache_data already handles caching on the underlying functions)
-#   [FIX 7]  parse_complex_slip() now reads OVER/UNDER/MORE/LESS from slip text
-#            instead of hardcoding "OVER"
-#   [FIX 8]  All bare except: clauses replaced with except Exception as e: + logging
-#   [FIX 9]  Two separate secrets: ODDS_API_KEY (the-odds-api.com / GameScanner)
-#            and ODDS_API_IO_KEY (odds-api.io / fetch_game_score) — independent keys
-#   [FIX 10] _get_historical_fallback() is tier-aware: pass player_tier="elite"|
-#            "mid"|"bench" (defaults "mid") to get realistic per-tier ranges
+# [FIX 1] PROB_BOLT/DTM_BOLT are no longer mutated globals – all reads/writes
+#         go through get_threshold() / set_threshold() backed by the DB
+# [FIX 2] Golf fallback: random.uniform removed; deterministic rank‑offset used
+# [FIX 3] analyze_spread_advanced() arg order corrected in Best Bets tab
+# [FIX 4] Slip IDs now use uuid4 – no MD5 collision risk
+# [FIX 5] All SQLite access uses "with conn:" context managers
+# [FIX 6] Redundant _stats_cache / _game_score_cache dicts removed
+#         (@st.cache_data already handles caching on the underlying functions)
+# [FIX 7] parse_complex_slip() now reads OVER/UNDER/MORE/LESS from slip text
+#         instead of hardcoding "OVER"
+# [FIX 8] All bare except: clauses replaced with except Exception as e: + logging
+# [FIX 9] Two separate secrets: ODDS_API_KEY (the‑odds‑api.com / GameScanner)
+#         and ODDS_API_IO_KEY (odds‑api.io / fetch_game_score) – independent keys
+# [FIX 10] _get_historical_fallback() is tier‑aware: player_tier="elite"|"mid"|"bench"
+# [NEW]   Prop Scanner now accepts multiple screenshots at once
 # =============================================================================
 
 import os
@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Tuple
 from itertools import combinations
 import base64
+
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
@@ -44,7 +45,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 from PIL import Image
 import io
 
-# Sport-specific libraries (optional)
+# Sport‑specific libraries (optional)
 try:
     from nhlpy import NHLClient
     NHL_AVAILABLE = True
@@ -63,7 +64,6 @@ warnings.filterwarnings("ignore")
 # =============================================================================
 # LOGGING SETUP
 # =============================================================================
-
 logging.basicConfig(
     filename='clarity_debug.log',
     level=logging.INFO,
@@ -82,91 +82,88 @@ if not PARSER_LOGGER.handlers:
 # =============================================================================
 # VERSION & CONSTANTS
 # =============================================================================
-
-VERSION = "23.1 – Elite Multi-Sport (Hardened)"
+VERSION = "23.1 – Elite Multi‑Sport (Hardened)"
 BUILD_DATE = "2026-04-21"
-DB_PATH = "clarity_unified.db"
 
+DB_PATH = "clarity_unified.db"
 os.makedirs("clarity_logs", exist_ok=True)
 
 # [FIX 1] These are DEFAULT values only. Runtime values are stored in the DB
-# via get_threshold() / set_threshold(). Never mutate these module-level names.
+# via get_threshold() / set_threshold(). Never mutate these module‑level names.
 _DEFAULT_PROB_BOLT = 0.84
-_DEFAULT_DTM_BOLT  = 0.15
-KELLY_FRACTION     = 0.25   # Fractional Kelly for conservative staking
+_DEFAULT_DTM_BOLT = 0.15
+KELLY_FRACTION = 0.25   # Fractional Kelly for conservative staking
 
 # =============================================================================
 # SPORT DATA & STAT CONFIG
 # =============================================================================
-
 SPORT_MODELS = {
-    "NBA":     {"variance_factor": 1.18, "avg_total": 228.5, "home_advantage": 3.0},
-    "MLB":     {"variance_factor": 1.10, "avg_total": 8.5,   "home_advantage": 0.12},
-    "NHL":     {"variance_factor": 1.15, "avg_total": 6.0,   "home_advantage": 0.15},
-    "NFL":     {"variance_factor": 1.22, "avg_total": 44.5,  "home_advantage": 2.8},
-    "PGA":     {"variance_factor": 1.10, "avg_total": 70.5,  "home_advantage": 0.0},
-    "TENNIS":  {"variance_factor": 1.05, "avg_total": 22.0,  "home_advantage": 0.0},
-    "SOCCER":  {"variance_factor": 1.12, "avg_total": 2.5,   "home_advantage": 0.3},
-    "MMA":     {"variance_factor": 1.08, "avg_total": 2.5,   "home_advantage": 0.1},
-    "F1":      {"variance_factor": 1.05, "avg_total": 0.0,   "home_advantage": 0.0},
+    "NBA": {"variance_factor": 1.18, "avg_total": 228.5, "home_advantage": 3.0},
+    "MLB": {"variance_factor": 1.10, "avg_total": 8.5, "home_advantage": 0.12},
+    "NHL": {"variance_factor": 1.15, "avg_total": 6.0, "home_advantage": 0.15},
+    "NFL": {"variance_factor": 1.22, "avg_total": 44.5, "home_advantage": 2.8},
+    "PGA": {"variance_factor": 1.10, "avg_total": 70.5, "home_advantage": 0.0},
+    "TENNIS": {"variance_factor": 1.05, "avg_total": 22.0, "home_advantage": 0.0},
+    "SOCCER": {"variance_factor": 1.12, "avg_total": 2.5, "home_advantage": 0.3},
+    "MMA": {"variance_factor": 1.08, "avg_total": 2.5, "home_advantage": 0.1},
+    "F1": {"variance_factor": 1.05, "avg_total": 0.0, "home_advantage": 0.0},
     "CRICKET": {"variance_factor": 1.15, "avg_total": 300.0, "home_advantage": 15.0},
-    "BOXING":  {"variance_factor": 1.08, "avg_total": 9.5,   "home_advantage": 0.0},
+    "BOXING": {"variance_factor": 1.08, "avg_total": 9.5, "home_advantage": 0.0},
 }
 
 SPORT_CATEGORIES = {
-    "NBA":     ["PTS", "REB", "AST", "STL", "BLK", "THREES", "PRA", "PR", "PA"],
-    "MLB":     ["OUTS", "KS", "HITS", "TB", "HR"],
-    "NHL":     ["SOG", "SAVES", "GOALS", "ASSISTS", "HITS", "BLK_SHOTS"],
-    "NFL":     ["PASS_YDS", "RUSH_YDS", "REC_YDS", "TD"],
-    "PGA":     ["STROKES", "BIRDIES", "BOGEYS", "EAGLES", "DRIVING_DISTANCE", "GIR"],
-    "TENNIS":  ["ACES", "DOUBLE_FAULTS", "GAMES_WON", "TOTAL_GAMES", "BREAK_PTS"],
-    "SOCCER":  ["GOALS", "ASSISTS", "SHOTS", "SHOTS_ON_TARGET", "FOULS", "CARDS"],
-    "MMA":     ["STRIKES", "TAKEDOWNS", "SUBMISSIONS", "KNOCKDOWNS"],
-    "F1":      ["POINTS", "POSITION", "FASTEST_LAP"],
+    "NBA": ["PTS", "REB", "AST", "STL", "BLK", "THREES", "PRA", "PR", "PA"],
+    "MLB": ["OUTS", "KS", "HITS", "TB", "HR"],
+    "NHL": ["SOG", "SAVES", "GOALS", "ASSISTS", "HITS", "BLK_SHOTS"],
+    "NFL": ["PASS_YDS", "RUSH_YDS", "REC_YDS", "TD"],
+    "PGA": ["STROKES", "BIRDIES", "BOGEYS", "EAGLES", "DRIVING_DISTANCE", "GIR"],
+    "TENNIS": ["ACES", "DOUBLE_FAULTS", "GAMES_WON", "TOTAL_GAMES", "BREAK_PTS"],
+    "SOCCER": ["GOALS", "ASSISTS", "SHOTS", "SHOTS_ON_TARGET", "FOULS", "CARDS"],
+    "MMA": ["STRIKES", "TAKEDOWNS", "SUBMISSIONS", "KNOCKDOWNS"],
+    "F1": ["POINTS", "POSITION", "FASTEST_LAP"],
     "CRICKET": ["RUNS", "WICKETS", "BOUNDARIES", "SIXES"],
-    "BOXING":  ["PUNCHES", "JABS", "POWER_PUNCHES", "KNOCKDOWNS"],
+    "BOXING": ["PUNCHES", "JABS", "POWER_PUNCHES", "KNOCKDOWNS"],
 }
 
 STAT_CONFIG = {
-    "PTS":    {"tier": "MED",  "buffer": 1.5},
-    "REB":    {"tier": "LOW",  "buffer": 1.0},
-    "AST":    {"tier": "LOW",  "buffer": 1.5},
-    "PRA":    {"tier": "HIGH", "buffer": 3.0},
-    "PR":     {"tier": "HIGH", "buffer": 2.0},
-    "PA":     {"tier": "HIGH", "buffer": 2.0},
-    "SOG":    {"tier": "LOW",  "buffer": 0.5},
-    "SAVES":  {"tier": "LOW",  "buffer": 2.0},
-    "STROKES":{"tier": "LOW",  "buffer": 2.0},
-    "BIRDIES":{"tier": "MED",  "buffer": 1.0},
-    "ACES":   {"tier": "HIGH", "buffer": 1.0},
+    "PTS": {"tier": "MED", "buffer": 1.5},
+    "REB": {"tier": "LOW", "buffer": 1.0},
+    "AST": {"tier": "LOW", "buffer": 1.5},
+    "PRA": {"tier": "HIGH", "buffer": 3.0},
+    "PR":  {"tier": "HIGH", "buffer": 2.0},
+    "PA":  {"tier": "HIGH", "buffer": 2.0},
+    "SOG": {"tier": "LOW", "buffer": 0.5},
+    "SAVES": {"tier": "LOW", "buffer": 2.0},
+    "STROKES":{"tier": "LOW", "buffer": 2.0},
+    "BIRDIES":{"tier": "MED", "buffer": 1.0},
+    "ACES": {"tier": "HIGH", "buffer": 1.0},
     "DOUBLE_FAULTS": {"tier": "HIGH", "buffer": 1.0},
-    "GAMES_WON":     {"tier": "LOW",  "buffer": 1.5},
-    "GOALS":         {"tier": "HIGH", "buffer": 0.5},
-    "ASSISTS":       {"tier": "MED",  "buffer": 0.5},
-    "STRIKES":       {"tier": "MED",  "buffer": 10.0},
-    "RUNS":          {"tier": "MED",  "buffer": 20.0},
-    "TOTAL":         {"tier": "MED",  "buffer": 5.0},
-    "SPREAD":        {"tier": "MED",  "buffer": 3.0},
-    "ML":            {"tier": "HIGH", "buffer": 0.0},
+    "GAMES_WON": {"tier": "LOW", "buffer": 1.5},
+    "GOALS": {"tier": "HIGH", "buffer": 0.5},
+    "ASSISTS": {"tier": "MED", "buffer": 0.5},
+    "STRIKES": {"tier": "MED", "buffer": 10.0},
+    "RUNS": {"tier": "MED", "buffer": 20.0},
+    "TOTAL": {"tier": "MED", "buffer": 5.0},
+    "SPREAD": {"tier": "MED", "buffer": 3.0},
+    "ML": {"tier": "HIGH", "buffer": 0.0},
 }
 
 # =============================================================================
 # HEALTH STATUS TRACKING
 # =============================================================================
-
 def init_health_status():
     if "health_status" not in st.session_state:
         st.session_state.health_status = {
-            "BallsDontLie (NBA)":              {"status": "unknown", "last_error": "", "fallback_active": False},
-            "Odds-API.io (game scores)":        {"status": "unknown", "last_error": "", "fallback_active": False},
-            "The Odds API (game scanner)":      {"status": "unknown", "last_error": "", "fallback_active": False},
-            "PropLine (Live Props)":            {"status": "unknown", "last_error": "", "fallback_active": False},
-            "Slash Golf API (PGA)":             {"status": "unknown", "last_error": "", "fallback_active": False},
-            "FlashLive Sports (Multi-Sport)":   {"status": "unknown", "last_error": "", "fallback_active": False},
-            "ESPN API (Fallback)":              {"status": "unknown", "last_error": "", "fallback_active": False},
-            "nhl-api-py (NHL)":                 {"status": "unknown", "last_error": "", "fallback_active": False},
-            "curl_cffi (TLS)":                  {"status": "unknown", "last_error": "", "fallback_active": False},
-            "RapidAPI (Tennis)":                {"status": "unknown", "last_error": "", "fallback_active": False},
+            "BallsDontLie (NBA)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "Odds-API.io (game scores)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "The Odds API (game scanner)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "PropLine (Live Props)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "Slash Golf API (PGA)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "FlashLive Sports (Multi‑Sport)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "ESPN API (Fallback)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "nhl-api-py (NHL)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "curl_cffi (TLS)": {"status": "unknown", "last_error": "", "fallback_active": False},
+            "RapidAPI (Tennis)": {"status": "unknown", "last_error": "", "fallback_active": False},
         }
 
 def update_health(component: str, success: bool, error_msg: str = "", fallback: bool = False):
@@ -185,7 +182,6 @@ init_health_status()
 # DATABASE – WITH INDEXES, BANKROLL PERSISTENCE, AND THRESHOLD STORAGE
 # [FIX 5] All DB functions use "with conn:" context managers
 # =============================================================================
-
 def ensure_slips_schema():
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -242,7 +238,6 @@ def init_db():
             c.execute("CREATE INDEX IF NOT EXISTS idx_slips_date ON slips(date)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_slips_sport ON slips(sport)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_slips_settled ON slips(settled_date)")
-
             c.execute("""CREATE TABLE IF NOT EXISTS tuning_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT,
@@ -273,7 +268,6 @@ def init_db():
             )""")
     finally:
         conn.close()
-
     # Seed threshold defaults if not present
     if get_threshold('prob_bolt') is None:
         set_threshold('prob_bolt', _DEFAULT_PROB_BOLT)
@@ -281,7 +275,7 @@ def init_db():
         set_threshold('dtm_bolt', _DEFAULT_DTM_BOLT)
     set_bankroll(get_bankroll())
 
-# [FIX 1] Threshold helpers — all reads/writes go through the DB
+# [FIX 1] Threshold helpers – all reads/writes go through the DB
 def get_threshold(key: str, default: float = None) -> Optional[float]:
     """Read a runtime threshold from the settings table."""
     conn = sqlite3.connect(DB_PATH)
@@ -290,7 +284,7 @@ def get_threshold(key: str, default: float = None) -> Optional[float]:
             c = conn.cursor()
             c.execute("SELECT value FROM settings WHERE key = ?", (key,))
             row = c.fetchone()
-        return row[0] if row else default
+            return row[0] if row else default
     except Exception as e:
         logging.error(f"get_threshold({key}) error: {e}")
         return default
@@ -322,7 +316,7 @@ def get_bankroll() -> float:
             c = conn.cursor()
             c.execute("SELECT value FROM settings WHERE key = 'bankroll'")
             row = c.fetchone()
-        return row[0] if row else 1000.0
+            return row[0] if row else 1000.0
     except Exception as e:
         logging.error(f"get_bankroll error: {e}")
         return 1000.0
@@ -385,7 +379,6 @@ def insert_slip(entry: dict):
         logging.error(f"insert_slip error: {e}")
     finally:
         conn.close()
-
     if entry.get("result") in ["WIN", "LOSS"]:
         if "profit" in entry:
             update_bankroll_from_slip(entry["profit"])
@@ -462,7 +455,6 @@ init_db()
 # =============================================================================
 # SESSION FACTORY — curl_cffi → requests (TLS impersonation)
 # =============================================================================
-
 def make_session(headers: dict = None, impersonate: bool = True):
     h = headers or {}
     if CURL_AVAILABLE and impersonate:
@@ -475,7 +467,6 @@ def make_session(headers: dict = None, impersonate: bool = True):
             update_health("curl_cffi (TLS)", success=False, error_msg=str(e))
     else:
         update_health("curl_cffi (TLS)", success=False, error_msg="curl_cffi not available", fallback=True)
-
     s = requests.Session()
     from requests.adapters import HTTPAdapter
     from urllib3.util.retry import Retry
@@ -489,7 +480,6 @@ def make_session(headers: dict = None, impersonate: bool = True):
 # =============================================================================
 # SNIFFER CONFIG
 # =============================================================================
-
 BASE_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "application/json, text/plain, */*",
@@ -545,7 +535,6 @@ class PlayerProp:
 # =============================================================================
 # SNIFFER HELPERS
 # =============================================================================
-
 def _fetch_pages(session, url: str, params: dict = None, max_pages: int = 30, delay: float = 0.25):
     all_data, all_included = [], []
     next_url = url
@@ -588,35 +577,42 @@ def _safe(d: dict, *keys, default=""):
     return default
 
 def _extract_props(records: list, inc_map: dict, source: str = "PrizePicks") -> List[PlayerProp]:
-    players1   = inc_map.get("new_player", {})
-    players2   = inc_map.get("player", {})
-    leagues    = inc_map.get("league", {})
-    stats_map  = inc_map.get("stat_type", {})
+    players1 = inc_map.get("new_player", {})
+    players2 = inc_map.get("player", {})
+    leagues = inc_map.get("league", {})
+    stats_map = inc_map.get("stat_type", {})
     props = []
+
     for rec in records:
         attrs = rec.get("attributes", {})
-        rels  = rec.get("relationships", {})
-        line  = float(_safe(attrs, "line_score", "line", "value") or 0)
+        rels = rec.get("relationships", {})
+
+        line = float(_safe(attrs, "line_score", "line", "value") or 0)
         stat_type = _safe(attrs, "stat_type", "stat_display_name", "stat", "description")
         if not stat_type:
-            st_rel    = ((rels.get("stat_type") or {}).get("data")) or {}
+            st_rel = ((rels.get("stat_type") or {}).get("data")) or {}
             stat_type = (stats_map.get(str(st_rel.get("id", ""))) or {}).get("name", "")
+
         player_name = _safe(attrs, "player_name", "name")
-        team        = _safe(attrs, "team", "team_name", "team_abbreviation")
+        team = _safe(attrs, "team", "team_name", "team_abbreviation")
         if not player_name:
-            p_rel       = ((rels.get("new_player") or rels.get("player") or {}).get("data")) or {}
-            p_id        = str(p_rel.get("id", ""))
-            p_attrs     = players1.get(p_id) or players2.get(p_id) or {}
+            p_rel = ((rels.get("new_player") or rels.get("player") or {}).get("data")) or {}
+            p_id = str(p_rel.get("id", ""))
+            p_attrs = players1.get(p_id) or players2.get(p_id) or {}
             player_name = _safe(p_attrs, "name", "display_name", "full_name") or p_id
-            team        = team or _safe(p_attrs, "team", "team_name")
+            team = team or _safe(p_attrs, "team", "team_name")
+
         league = _safe(attrs, "league", "league_name", "league_display_name")
         if not league:
-            l_rel  = ((rels.get("league") or {}).get("data")) or {}
-            l_id   = str(l_rel.get("id", ""))
+            l_rel = ((rels.get("league") or {}).get("data")) or {}
+            l_id = str(l_rel.get("id", ""))
             league = _safe(leagues.get(l_id) or {}, "name", "display_name", "abbreviation") or l_id
+
         is_promo = bool(attrs.get("is_promo") or attrs.get("is_promoted") or attrs.get("flash_sale_line_score"))
+
         if not player_name or not stat_type:
             continue
+
         props.append(PlayerProp(
             projection_id=str(rec.get("id", "")),
             player_name=str(player_name),
@@ -642,15 +638,14 @@ def fetch_underdog_props(league_filter: str = None) -> List[PlayerProp]:
     return []
 
 # =============================================================================
-# FLASHLIVE SPORTS API INTEGRATION (Primary Multi-Sport Source)
+# FLASHLIVE SPORTS API INTEGRATION (Primary Multi‑Sport Source)
 # =============================================================================
-
-FLASHLIVE_API_HOST    = "flashlive-sports.p.rapidapi.com"
+FLASHLIVE_API_HOST = "flashlive-sports.p.rapidapi.com"
 FLASHLIVE_API_BASE_URL = "https://flashlive-sports.p.rapidapi.com/v1"
 
 def _get_flashlive_headers():
     return {
-        "X-RapidAPI-Key":  st.secrets.get("RAPIDAPI_KEY", ""),
+        "X-RapidAPI-Key": st.secrets.get("RAPIDAPI_KEY", ""),
         "X-RapidAPI-Host": FLASHLIVE_API_HOST,
     }
 
@@ -663,12 +658,14 @@ FLASHLIVE_SPORT_MAP = {
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_flashlive_player_stats(player_name: str, sport: str, market: str) -> List[float]:
     if not st.secrets.get("RAPIDAPI_KEY"):
-        update_health("FlashLive Sports (Multi-Sport)", success=False, error_msg="No RapidAPI key", fallback=True)
+        update_health("FlashLive Sports (Multi‑Sport)", success=False, error_msg="No RapidAPI key", fallback=True)
         return []
+
     sport_id = FLASHLIVE_SPORT_MAP.get(sport.upper())
     if not sport_id:
-        update_health("FlashLive Sports (Multi-Sport)", success=False, error_msg=f"Sport {sport} not mapped", fallback=True)
+        update_health("FlashLive Sports (Multi‑Sport)", success=False, error_msg=f"Sport {sport} not mapped", fallback=True)
         return []
+
     try:
         resp = requests.get(
             f"{FLASHLIVE_API_BASE_URL}/players/search",
@@ -677,15 +674,18 @@ def fetch_flashlive_player_stats(player_name: str, sport: str, market: str) -> L
             timeout=10,
         )
         if resp.status_code != 200:
-            update_health("FlashLive Sports (Multi-Sport)", success=False, error_msg=f"Search HTTP {resp.status_code}", fallback=True)
+            update_health("FlashLive Sports (Multi‑Sport)", success=False, error_msg=f"Search HTTP {resp.status_code}", fallback=True)
             return []
+
         players = resp.json().get("DATA", [])
         if not players:
-            update_health("FlashLive Sports (Multi-Sport)", success=False, error_msg="Player not found", fallback=True)
+            update_health("FlashLive Sports (Multi‑Sport)", success=False, error_msg="Player not found", fallback=True)
             return []
+
         player_id = players[0].get("id")
         if not player_id:
             return []
+
         stats_resp = requests.get(
             f"{FLASHLIVE_API_BASE_URL}/players/statistics",
             headers=_get_flashlive_headers(),
@@ -693,31 +693,33 @@ def fetch_flashlive_player_stats(player_name: str, sport: str, market: str) -> L
             timeout=10,
         )
         if stats_resp.status_code != 200:
-            update_health("FlashLive Sports (Multi-Sport)", success=False, error_msg=f"Stats HTTP {stats_resp.status_code}", fallback=True)
+            update_health("FlashLive Sports (Multi‑Sport)", success=False, error_msg=f"Stats HTTP {stats_resp.status_code}", fallback=True)
             return []
+
         game_logs = stats_resp.json().get("DATA", {}).get("game_log", [])
-        stat_key  = market.lower()
-        values    = [float(g[stat_key]) for g in game_logs[:8] if isinstance(g.get(stat_key), (int, float))]
+        stat_key = market.lower()
+        values = [float(g[stat_key]) for g in game_logs[:8] if isinstance(g.get(stat_key), (int, float))]
+
         if values:
-            update_health("FlashLive Sports (Multi-Sport)", success=True, fallback=False)
+            update_health("FlashLive Sports (Multi‑Sport)", success=True, fallback=False)
         else:
-            update_health("FlashLive Sports (Multi-Sport)", success=False, error_msg="No stats found", fallback=True)
+            update_health("FlashLive Sports (Multi‑Sport)", success=False, error_msg="No stats found", fallback=True)
         return values
+
     except Exception as e:
-        update_health("FlashLive Sports (Multi-Sport)", success=False, error_msg=str(e), fallback=True)
+        update_health("FlashLive Sports (Multi‑Sport)", success=False, error_msg=str(e), fallback=True)
         return []
 
 # =============================================================================
 # ESPN API FALLBACK (Universal Backup)
 # =============================================================================
-
-ESPN_API_HOST     = "espn-api.p.rapidapi.com"
+ESPN_API_HOST = "espn-api.p.rapidapi.com"
 ESPN_API_BASE_URL = "https://espn-api.p.rapidapi.com"
 
 def _get_espn_headers():
     return {
         "x-rapidapi-host": ESPN_API_HOST,
-        "x-rapidapi-key":  st.secrets.get("RAPIDAPI_KEY", ""),
+        "x-rapidapi-key": st.secrets.get("RAPIDAPI_KEY", ""),
         "Accept": "application/json",
     }
 
@@ -726,6 +728,7 @@ def fetch_espn_player_stats(player_name: str, sport: str, market: str) -> List[f
     if not st.secrets.get("RAPIDAPI_KEY"):
         update_health("ESPN API (Fallback)", success=False, error_msg="No RapidAPI key", fallback=True)
         return []
+
     sport_map = {
         "NBA": "basketball", "NFL": "football", "MLB": "baseball",
         "NHL": "hockey", "PGA": "golf", "TENNIS": "tennis",
@@ -733,6 +736,7 @@ def fetch_espn_player_stats(player_name: str, sport: str, market: str) -> List[f
         "F1": "racing", "CRICKET": "cricket",
     }
     espn_sport = sport_map.get(sport.upper(), sport.lower())
+
     try:
         resp = requests.get(
             f"{ESPN_API_BASE_URL}/search",
@@ -743,27 +747,33 @@ def fetch_espn_player_stats(player_name: str, sport: str, market: str) -> List[f
         if resp.status_code != 200:
             update_health("ESPN API (Fallback)", success=False, error_msg=f"Search HTTP {resp.status_code}", fallback=True)
             return []
-        data     = resp.json()
+
+        data = resp.json()
         athletes = data.get("athletes", []) if isinstance(data, dict) else []
         if not athletes:
             update_health("ESPN API (Fallback)", success=False, error_msg="Player not found", fallback=True)
             return []
+
         player_id = athletes[0].get("id")
         if not player_id:
             return []
+
         stats_resp = requests.get(f"{ESPN_API_BASE_URL}/athlete/{player_id}/stats", headers=_get_espn_headers(), timeout=15)
         if stats_resp.status_code != 200:
             update_health("ESPN API (Fallback)", success=False, error_msg=f"Stats HTTP {stats_resp.status_code}", fallback=True)
             return []
+
         stats_data = stats_resp.json()
-        game_logs  = stats_data.get("gameLog", []) if isinstance(stats_data, dict) else []
-        stat_key   = market.lower()
-        values     = [float(g[stat_key]) for g in game_logs[:8] if isinstance(g.get(stat_key), (int, float))]
+        game_logs = stats_data.get("gameLog", []) if isinstance(stats_data, dict) else []
+        stat_key = market.lower()
+        values = [float(g[stat_key]) for g in game_logs[:8] if isinstance(g.get(stat_key), (int, float))]
+
         if values:
             update_health("ESPN API (Fallback)", success=True, fallback=False)
         else:
             update_health("ESPN API (Fallback)", success=False, error_msg="No stats found", fallback=True)
         return values
+
     except Exception as e:
         update_health("ESPN API (Fallback)", success=False, error_msg=str(e), fallback=True)
         return []
@@ -771,7 +781,6 @@ def fetch_espn_player_stats(player_name: str, sport: str, market: str) -> List[f
 # =============================================================================
 # REAL STATS FETCHING (NBA, NHL, PGA, Tennis)
 # =============================================================================
-
 @st.cache_data(ttl=3600, show_spinner=False)
 def _fetch_nba_stats_cached(player_name: str, market: str, game_date: str = None) -> List[float]:
     stat_map = {
@@ -780,10 +789,11 @@ def _fetch_nba_stats_cached(player_name: str, market: str, game_date: str = None
         "PR": "pts+reb", "PA": "pts+ast",
     }
     stat_abbr = stat_map.get(market.upper(), "pts")
-    headers   = {"Authorization": st.secrets.get("BALLSDONTLIE_API_KEY", "")}
+    headers = {"Authorization": st.secrets.get("BALLSDONTLIE_API_KEY", "")}
     if not headers["Authorization"]:
         update_health("BallsDontLie (NBA)", success=False, error_msg="API key missing", fallback=True)
         return []
+
     try:
         resp = requests.get(
             f"https://api.balldontlie.io/v1/players?search={player_name.replace(' ', '%20')}",
@@ -792,10 +802,12 @@ def _fetch_nba_stats_cached(player_name: str, market: str, game_date: str = None
         if resp.status_code != 200:
             update_health("BallsDontLie (NBA)", success=False, error_msg=f"HTTP {resp.status_code}", fallback=True)
             return []
+
         players = resp.json().get("data", [])
         if not players:
             update_health("BallsDontLie (NBA)", success=False, error_msg="Player not found", fallback=True)
             return []
+
         player_id = players[0].get("id")
         if game_date:
             stats_url = f"https://api.balldontlie.io/v1/stats?player_ids[]={player_id}&dates[]={game_date}"
@@ -805,34 +817,35 @@ def _fetch_nba_stats_cached(player_name: str, market: str, game_date: str = None
         if stats_resp.status_code != 200:
             update_health("BallsDontLie (NBA)", success=False, error_msg=f"Stats HTTP {stats_resp.status_code}", fallback=True)
             return []
-        games  = stats_resp.json().get("data", [])
+
+        games = stats_resp.json().get("data", [])
         values = [float(g[stat_abbr]) for g in games if isinstance(g.get(stat_abbr), (int, float))]
         if values:
             update_health("BallsDontLie (NBA)", success=True, fallback=False)
         else:
             update_health("BallsDontLie (NBA)", success=False, error_msg="No stats returned", fallback=True)
         return values
+
     except Exception as e:
         update_health("BallsDontLie (NBA)", success=False, error_msg=str(e), fallback=True)
         logging.error(f"NBA stats fetch error: {e}")
         return []
 
-# [FIX 10] Tier-aware fallback stats
-# player_tier: "elite" | "mid" | "bench"
+# [FIX 10] Tier‑aware fallback stats
 _FALLBACK_TIERS = {
     "elite": {
-        ("NBA","PTS"):   [32.1,29.8,31.5,33.2,28.9,30.4,32.8,29.1,31.0,33.5,28.5,32.3],
-        ("NBA","REB"):   [10.5,9.8,11.2,10.1,9.5,10.8,11.5,9.2,10.3,11.0,9.9,10.7],
-        ("NBA","AST"):   [8.2, 7.9,8.8, 7.5, 8.5,9.1, 7.8, 8.4,9.3, 7.6, 8.0,8.9],
+        ("NBA","PTS"): [32.1,29.8,31.5,33.2,28.9,30.4,32.8,29.1,31.0,33.5,28.5,32.3],
+        ("NBA","REB"): [10.5,9.8,11.2,10.1,9.5,10.8,11.5,9.2,10.3,11.0,9.9,10.7],
+        ("NBA","AST"): [8.2, 7.9,8.8, 7.5, 8.5,9.1, 7.8, 8.4,9.3, 7.6, 8.0,8.9],
         ("PGA","STROKES"):[67.5,68.1,67.8,68.4,67.2,68.0,67.9,68.3,67.6,68.2,67.4,68.5],
-        ("NHL","SOG"):   [4.2, 3.8,4.5, 3.5, 4.0,4.8, 3.7, 4.3,4.9, 3.9, 4.1,4.6],
+        ("NHL","SOG"): [4.2, 3.8,4.5, 3.5, 4.0,4.8, 3.7, 4.3,4.9, 3.9, 4.1,4.6],
     },
     "mid": {
-        ("NBA","PTS"):   [22.5,23.1,21.8,24.2,22.9,23.5,21.5,24.0,22.7,23.3,21.9,23.8],
-        ("NBA","REB"):   [7.2, 7.5,6.9, 7.8, 7.3,7.6, 6.8, 7.9,7.1, 7.4, 6.7,7.7],
-        ("NBA","AST"):   [5.1, 5.3,4.9, 5.6, 5.2,5.4, 4.8, 5.7,5.0, 5.5, 4.7,5.8],
+        ("NBA","PTS"): [22.5,23.1,21.8,24.2,22.9,23.5,21.5,24.0,22.7,23.3,21.9,23.8],
+        ("NBA","REB"): [7.2, 7.5,6.9, 7.8, 7.3,7.6, 6.8, 7.9,7.1, 7.4, 6.7,7.7],
+        ("NBA","AST"): [5.1, 5.3,4.9, 5.6, 5.2,5.4, 4.8, 5.7,5.0, 5.5, 4.7,5.8],
         ("PGA","STROKES"):[70.2,70.5,69.8,71.0,70.3,70.6,69.5,71.2,70.0,70.8,69.7,71.1],
-        ("NHL","SOG"):   [2.5, 2.7,2.4, 2.8, 2.6,2.7, 2.3, 2.9,2.5, 2.8, 2.4,2.9],
+        ("NHL","SOG"): [2.5, 2.7,2.4, 2.8, 2.6,2.7, 2.3, 2.9,2.5, 2.8, 2.4,2.9],
         ("NHL","SAVES"): [25.0,26.1,24.5,27.2,25.8,26.5,24.2,27.5,25.3,26.8,24.8,27.1],
         ("PGA","BIRDIES"):[4.2, 4.5,3.9, 4.8, 4.3,4.6, 3.8, 4.9,4.1, 4.4, 3.7,4.7],
         ("TENNIS","ACES"):[4.5,4.8,4.3, 5.0, 4.6,4.9, 4.2, 5.1,4.4, 4.7, 4.1,5.2],
@@ -841,19 +854,19 @@ _FALLBACK_TIERS = {
         ("MMA","STRIKES"):[85.0,92.0,78.0,95.0,88.0,90.0,80.0,97.0,84.0,91.0,82.0,94.0],
         ("BOXING","PUNCHES"):[120.0,135.0,110.0,145.0,125.0,130.0,115.0,140.0,122.0,132.0,118.0,138.0],
         ("CRICKET","RUNS"):[45.0,52.0,38.0,60.0,48.0,55.0,40.0,65.0,42.0,58.0,35.0,62.0],
-        ("F1","POINTS"):  [10.0,15.0,8.0,18.0,12.0,14.0,6.0,25.0,10.0,16.0,8.0,20.0],
+        ("F1","POINTS"): [10.0,15.0,8.0,18.0,12.0,14.0,6.0,25.0,10.0,16.0,8.0,20.0],
     },
     "bench": {
-        ("NBA","PTS"):   [8.5, 9.1,7.8, 10.2,8.9, 9.4, 7.5, 10.5,8.3, 9.7, 7.2,10.0],
-        ("NBA","REB"):   [3.5, 3.8,3.2, 4.0, 3.6, 3.9, 3.1, 4.2, 3.4, 3.7, 3.0,4.1],
-        ("NBA","AST"):   [1.8, 2.1,1.6, 2.3, 1.9, 2.2, 1.5, 2.5, 1.7, 2.0, 1.4,2.4],
+        ("NBA","PTS"): [8.5, 9.1,7.8, 10.2,8.9, 9.4, 7.5, 10.5,8.3, 9.7, 7.2,10.0],
+        ("NBA","REB"): [3.5, 3.8,3.2, 4.0, 3.6, 3.9, 3.1, 4.2, 3.4, 3.7, 3.0,4.1],
+        ("NBA","AST"): [1.8, 2.1,1.6, 2.3, 1.9, 2.2, 1.5, 2.5, 1.7, 2.0, 1.4,2.4],
         ("PGA","STROKES"):[73.5,74.0,73.0,74.5,73.2,74.2,72.8,74.8,73.1,74.3,72.9,74.6],
     },
 }
 
 def _get_historical_fallback(market: str, sport: str = "NBA", player_tier: str = "mid") -> List[float]:
     """
-    [FIX 10] Tier-aware fallback. player_tier: 'elite', 'mid', or 'bench'.
+    [FIX 10] Tier‑aware fallback. player_tier: 'elite', 'mid', or 'bench'.
     Callers that know player context (e.g., star vs. rotation) should pass the tier.
     Unknown tier defaults to 'mid'.
     """
@@ -870,15 +883,14 @@ def _get_historical_fallback(market: str, sport: str = "NBA", player_tier: str =
 # =============================================================================
 # SLASH GOLF API INTEGRATION (PGA)
 # =============================================================================
-
-GOLF_API_HOST     = "live-golf-data.p.rapidapi.com"
+GOLF_API_HOST = "live-golf-data.p.rapidapi.com"
 GOLF_API_BASE_URL = "https://live-golf-data.p.rapidapi.com"
 
 def _get_golf_headers():
     return {
-        "Content-Type":   "application/json",
+        "Content-Type": "application/json",
         "x-rapidapi-host": GOLF_API_HOST,
-        "x-rapidapi-key":  st.secrets.get("RAPIDAPI_KEY", ""),
+        "x-rapidapi-key": st.secrets.get("RAPIDAPI_KEY", ""),
     }
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -926,7 +938,7 @@ def fetch_golf_players() -> Optional[List[Dict]]:
 
 def fetch_golf_player_recent_scores(player_name: str, num_tournaments: int = 5) -> List[float]:
     """
-    [FIX 2] Replaced random.uniform with a deterministic rank-based offset.
+    [FIX 2] Replaced random.uniform with a deterministic rank‑based offset.
     Rank 1 → ~68.5 strokes; rank 200 → ~73.5 strokes. No randomness.
     """
     try:
@@ -951,11 +963,10 @@ def fetch_golf_player_recent_scores(player_name: str, num_tournaments: int = 5) 
 # UNIFIED STATS FETCHER (FlashLive → ESPN → Tier Fallback)
 # [FIX 6] Removed redundant _stats_cache dict; @st.cache_data handles caching
 # =============================================================================
-
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
 def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA",
                             game_date: str = None, player_tier: str = "mid") -> List[float]:
-    stats           = []
+    stats = []
     primary_success = False
 
     if sport.upper() == "NBA":
@@ -970,10 +981,10 @@ def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA",
         stats = fetch_flashlive_player_stats(player_name, sport, market)
         if stats and len(stats) >= 3:
             primary_success = True
-            update_health("FlashLive Sports (Multi-Sport)", success=True, fallback=False)
+            update_health("FlashLive Sports (Multi‑Sport)", success=True, fallback=False)
 
     if not primary_success or len(stats) < 3:
-        logging.info(f"Primary API failed for {player_name} ({sport}), trying ESPN fallback…")
+        logging.info(f"Primary API failed for {player_name} ({sport}), trying ESPN fallback...")
         espn_stats = fetch_espn_player_stats(player_name, sport, market)
         if espn_stats and len(espn_stats) >= 3:
             stats = espn_stats
@@ -984,7 +995,7 @@ def fetch_real_player_stats(player_name: str, market: str, sport: str = "NBA",
     if not stats or len(stats) < 3:
         logging.warning(f"Using historical fallback stats for {player_name} {market} {sport} (tier={player_tier})")
         stats = _get_historical_fallback(market, sport, player_tier)
-        update_health("FlashLive Sports (Multi-Sport)", success=False, error_msg="Using fallback stats", fallback=True)
+        update_health("FlashLive Sports (Multi‑Sport)", success=False, error_msg="Using fallback stats", fallback=True)
 
     return stats
 
@@ -993,11 +1004,10 @@ def fetch_single_game_stat(player_name: str, market: str, game_date: str) -> Opt
     return stats[0] if stats else None
 
 # =============================================================================
-# GAME SCORES FETCHING (Odds-API.io)
-# [FIX 9] Uses ODDS_API_IO_KEY specifically for odds-api.io
+# GAME SCORES FETCHING (Odds‑API.io)
+# [FIX 9] Uses ODDS_API_IO_KEY specifically for odds‑api.io
 # [FIX 6] Removed redundant _game_score_cache dict
 # =============================================================================
-
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_game_score(team: str, opponent: str, sport: str, game_date: str) -> Tuple[Optional[float], Optional[float]]:
     sport_map = {"NBA": "basketball", "MLB": "baseball", "NHL": "icehockey", "NFL": "americanfootball"}
@@ -1006,18 +1016,18 @@ def fetch_game_score(team: str, opponent: str, sport: str, game_date: str) -> Tu
         update_health("Odds-API.io (game scores)", success=False, error_msg=f"Unsupported sport {sport}", fallback=True)
         return None, None
 
-    # [FIX 9] Dedicated key for odds-api.io
+    # [FIX 9] Dedicated key for odds‑api.io
     odds_io_key = st.secrets.get("ODDS_API_IO_KEY", "")
     if not odds_io_key:
         update_health("Odds-API.io (game scores)", success=False, error_msg="ODDS_API_IO_KEY missing", fallback=True)
         return None, None
 
-    url    = f"https://api.odds-api.io/v4/sports/{sport_key}/events"
+    url = f"https://api.odds-api.io/v4/sports/{sport_key}/events"
     params = {"apiKey": odds_io_key, "date": game_date}
     try:
         r = requests.get(url, params=params, timeout=10)
         if r.status_code == 200:
-            data   = r.json()
+            data = r.json()
             events = data.get("data", []) if isinstance(data, dict) else data
             for event in events:
                 home = event.get("home_team", "")
@@ -1041,19 +1051,18 @@ def fetch_game_score(team: str, opponent: str, sport: str, game_date: str) -> Tu
 # PROP MODEL ENGINE (WMA, volatility, edge, Kelly)
 # [FIX 1] All references to PROB_BOLT/DTM_BOLT go through get_prob_bolt() / get_dtm_bolt()
 # =============================================================================
-
 def weighted_moving_average(values, window=6):
     if not values: return 0.0
-    arr     = np.array(values[-window:])
+    arr = np.array(values[-window:])
     weights = np.arange(1, len(arr) + 1)
     return float(np.sum(arr * weights) / np.sum(weights))
 
 def weighted_standard_error(values, window=8):
     if len(values) < 2: return 1.0
-    arr     = np.array(values[-window:])
+    arr = np.array(values[-window:])
     weights = np.arange(1, len(arr) + 1)
-    mean    = np.sum(arr * weights) / np.sum(weights)
-    var     = np.sum(weights * (arr - mean) ** 2) / np.sum(weights)
+    mean = np.sum(arr * weights) / np.sum(weights)
+    var = np.sum(weights * (arr - mean) ** 2) / np.sum(weights)
     return float(max(np.sqrt(var / len(arr)), 0.5))
 
 def l42_volatility_buffer(values):
@@ -1064,14 +1073,14 @@ def l42_volatility_buffer(values):
 def tier_multiplier(stat):
     cfg = STAT_CONFIG.get(stat.upper(), {"tier": "LOW"})
     if cfg["tier"] == "HIGH": return 0.85
-    if cfg["tier"] == "MED":  return 0.93
+    if cfg["tier"] == "MED": return 0.93
     return 1.0
 
 def kelly_fraction(prob, odds=-110):
     if odds == 0: return 0.0
-    b           = odds / 100 if odds > 0 else 100 / abs(odds)
-    k           = (prob * (b + 1) - 1) / b
-    full_kelly  = max(0.0, min(k, 0.25))
+    b = odds / 100 if odds > 0 else 100 / abs(odds)
+    k = (prob * (b + 1) - 1) / b
+    full_kelly = max(0.0, min(k, 0.25))
     return full_kelly * KELLY_FRACTION
 
 def classify_tier(edge):
@@ -1084,22 +1093,26 @@ def analyze_prop(player, market, line, pick, sport="NBA", odds=-110, bankroll=No
     if bankroll is None:
         bankroll = get_bankroll()
     prob_bolt = get_prob_bolt()
-    dtm_bolt  = get_dtm_bolt()
-    stats     = fetch_real_player_stats(player, market, sport, player_tier=player_tier)
-    wma       = weighted_moving_average(stats)
-    wse       = weighted_standard_error(stats)
-    vol_buf   = l42_volatility_buffer(stats)
-    sigma     = max(wse * vol_buf, 0.75)
-    mu        = wma
+    dtm_bolt = get_dtm_bolt()
+
+    stats = fetch_real_player_stats(player, market, sport, player_tier=player_tier)
+    wma = weighted_moving_average(stats)
+    wse = weighted_standard_error(stats)
+    vol_buf = l42_volatility_buffer(stats)
+    sigma = max(wse * vol_buf, 0.75)
+    mu = wma
+
     if pick == "OVER":
         prob = 1 - norm.cdf(line, loc=mu, scale=sigma)
     else:
         prob = norm.cdf(line, loc=mu, scale=sigma)
-    edge  = (prob - 0.5) * tier_multiplier(market)
-    tier  = classify_tier(edge)
+
+    edge = (prob - 0.5) * tier_multiplier(market)
+    tier = classify_tier(edge)
     kelly = kelly_fraction(prob, odds)
     stake = bankroll * kelly
-    bolt  = "SOVEREIGN BOLT" if prob >= prob_bolt and (mu - line) / max(line, 1e-9) >= dtm_bolt else tier
+    bolt = "SOVEREIGN BOLT" if prob >= prob_bolt and (mu - line) / max(line, 1e-9) >= dtm_bolt else tier
+
     return {
         "prob": prob, "edge": edge, "mu": mu, "sigma": sigma, "wma": wma,
         "tier": tier, "kelly": kelly, "stake": stake, "bolt_signal": bolt,
@@ -1109,7 +1122,6 @@ def analyze_prop(player, market, line, pick, sport="NBA", odds=-110, bankroll=No
 # =============================================================================
 # GAME MODEL
 # =============================================================================
-
 def implied_prob(american_odds) -> float:
     try:
         odds = float(american_odds)
@@ -1123,7 +1135,6 @@ def implied_prob(american_odds) -> float:
 # =============================================================================
 # NBA TEAM STATS FETCHING (BallsDontLie)
 # =============================================================================
-
 NBA_TEAM_IDS = {
     "ATLANTA HAWKS": 1, "BOSTON CELTICS": 2, "BROOKLYN NETS": 3,
     "CHARLOTTE HORNETS": 4, "CHICAGO BULLS": 5, "CLEVELAND CAVALIERS": 6,
@@ -1152,6 +1163,7 @@ def fetch_team_recent_totals(team_name: str, window: int = 8) -> List[float]:
                 break
     if not team_id:
         return _fallback_team_stats("NBA_TOTALS")
+
     headers = {"Authorization": st.secrets.get("BALLSDONTLIE_API_KEY", "")}
     try:
         resp = requests.get(
@@ -1160,7 +1172,7 @@ def fetch_team_recent_totals(team_name: str, window: int = 8) -> List[float]:
         )
         if resp.status_code != 200:
             return _fallback_team_stats("NBA_TOTALS")
-        games  = resp.json().get("data", [])
+        games = resp.json().get("data", [])
         totals = [g["home_team_score"] if g["home_team"]["id"] == team_id else g["visitor_team_score"] for g in games]
         totals.reverse()
         return totals if totals else _fallback_team_stats("NBA_TOTALS")
@@ -1178,6 +1190,7 @@ def fetch_team_recent_margins(team_name: str, window: int = 8) -> List[float]:
                 break
     if not team_id:
         return _fallback_team_stats("NBA_MARGINS")
+
     headers = {"Authorization": st.secrets.get("BALLSDONTLIE_API_KEY", "")}
     try:
         resp = requests.get(
@@ -1186,7 +1199,7 @@ def fetch_team_recent_margins(team_name: str, window: int = 8) -> List[float]:
         )
         if resp.status_code != 200:
             return _fallback_team_stats("NBA_MARGINS")
-        games   = resp.json().get("data", [])
+        games = resp.json().get("data", [])
         margins = []
         for game in games:
             if game["home_team"]["id"] == team_id:
@@ -1210,39 +1223,45 @@ def _fallback_team_stats(stat_type: str) -> List[float]:
 # ADVANCED GAME ANALYSIS (CLARITY FULL MODEL)
 # [FIX 1] Uses get_prob_bolt() / get_dtm_bolt() instead of globals
 # =============================================================================
-
 def analyze_total_advanced(home_team: str, away_team: str, sport: str,
                            total_line: float, over_odds: int, under_odds: int) -> Dict:
     prob_bolt = get_prob_bolt()
-    dtm_bolt  = get_dtm_bolt()
+    dtm_bolt = get_dtm_bolt()
+
     if sport == "NBA":
         home_totals = fetch_team_recent_totals(home_team, 8)
         away_totals = fetch_team_recent_totals(away_team, 8)
-        home_avg    = weighted_moving_average(home_totals)
-        away_avg    = weighted_moving_average(away_totals)
-        proj        = home_avg + away_avg
-        combined    = [h + a for h, a in zip(home_totals, away_totals)]
+        home_avg = weighted_moving_average(home_totals)
+        away_avg = weighted_moving_average(away_totals)
+        proj = home_avg + away_avg
+
+        combined = [h + a for h, a in zip(home_totals, away_totals)]
         if len(combined) < 3:
             combined = home_totals + away_totals
-        wse     = weighted_standard_error(combined)
+        wse = weighted_standard_error(combined)
         vol_buf = l42_volatility_buffer(combined)
-        sigma   = max(wse * vol_buf, 0.75)
+        sigma = max(wse * vol_buf, 0.75)
     else:
         avg_total = SPORT_MODELS.get(sport, {}).get("avg_total", 220.0)
-        proj      = avg_total
-        sigma     = avg_total * 0.08
+        proj = avg_total
+        sigma = avg_total * 0.08
 
-    over_prob  = 1 - norm.cdf(total_line, loc=proj, scale=sigma)
+    over_prob = 1 - norm.cdf(total_line, loc=proj, scale=sigma)
     under_prob = norm.cdf(total_line, loc=proj, scale=sigma)
-    over_imp   = implied_prob(over_odds)
-    under_imp  = implied_prob(under_odds)
-    mult       = tier_multiplier("TOTAL")
-    over_edge  = (over_prob - over_imp) * mult
+
+    over_imp = implied_prob(over_odds)
+    under_imp = implied_prob(under_odds)
+
+    mult = tier_multiplier("TOTAL")
+    over_edge = (over_prob - over_imp) * mult
     under_edge = (under_prob - under_imp) * mult
-    over_tier  = classify_tier(over_edge)
+
+    over_tier = classify_tier(over_edge)
     under_tier = classify_tier(under_edge)
-    over_bolt  = "SOVEREIGN BOLT" if (over_prob >= prob_bolt and (proj - total_line) / max(total_line, 1e-9) >= dtm_bolt) else over_tier
+
+    over_bolt = "SOVEREIGN BOLT" if (over_prob >= prob_bolt and (proj - total_line) / max(total_line, 1e-9) >= dtm_bolt) else over_tier
     under_bolt = "SOVEREIGN BOLT" if (under_prob >= prob_bolt and (total_line - proj) / max(total_line, 1e-9) >= dtm_bolt) else under_tier
+
     return {
         "projection": proj, "sigma": sigma,
         "over_prob": over_prob, "over_edge": over_edge, "over_tier": over_tier, "over_bolt": over_bolt,
@@ -1252,34 +1271,39 @@ def analyze_total_advanced(home_team: str, away_team: str, sport: str,
 def analyze_spread_advanced(home_team: str, away_team: str, sport: str,
                             spread: float, spread_odds: int) -> Dict:
     prob_bolt = get_prob_bolt()
-    dtm_bolt  = get_dtm_bolt()
+    dtm_bolt = get_dtm_bolt()
+
     if sport == "NBA":
-        home_margins    = fetch_team_recent_margins(home_team, 8)
-        away_margins    = fetch_team_recent_margins(away_team, 8)
-        home_avg        = weighted_moving_average(home_margins)
-        away_avg        = weighted_moving_average(away_margins)
-        proj_margin     = home_avg - away_avg + 3.0
+        home_margins = fetch_team_recent_margins(home_team, 8)
+        away_margins = fetch_team_recent_margins(away_team, 8)
+        home_avg = weighted_moving_average(home_margins)
+        away_avg = weighted_moving_average(away_margins)
+        proj_margin = home_avg - away_avg + 3.0
+
         combined_margins = [h - a for h, a in zip(home_margins, away_margins)]
         if len(combined_margins) < 3:
             combined_margins = home_margins + [-x for x in away_margins]
-        wse     = weighted_standard_error(combined_margins)
+        wse = weighted_standard_error(combined_margins)
         vol_buf = l42_volatility_buffer(combined_margins)
-        sigma   = max(wse * vol_buf, 0.75)
+        sigma = max(wse * vol_buf, 0.75)
     else:
         proj_margin = SPORT_MODELS.get(sport, {}).get("home_advantage", 3.0)
-        sigma       = 10.0
+        sigma = 10.0
 
     home_cover_prob = 1 - norm.cdf(spread, loc=proj_margin, scale=sigma)
     away_cover_prob = norm.cdf(spread, loc=proj_margin, scale=sigma)
-    imp             = implied_prob(spread_odds)
-    mult            = tier_multiplier("SPREAD")
-    home_edge       = (home_cover_prob - imp) * mult
-    away_edge       = (away_cover_prob - (1 - imp)) * mult
-    home_tier       = classify_tier(home_edge)
-    away_tier       = classify_tier(away_edge)
-    denom           = abs(spread) + 1e-9
+
+    imp = implied_prob(spread_odds)
+    mult = tier_multiplier("SPREAD")
+    home_edge = (home_cover_prob - imp) * mult
+    away_edge = (away_cover_prob - (1 - imp)) * mult
+
+    home_tier = classify_tier(home_edge)
+    away_tier = classify_tier(away_edge)
+    denom = abs(spread) + 1e-9
     home_bolt = "SOVEREIGN BOLT" if (home_cover_prob >= prob_bolt and (proj_margin - spread) / denom >= dtm_bolt) else home_tier
     away_bolt = "SOVEREIGN BOLT" if (away_cover_prob >= prob_bolt and (spread - proj_margin) / denom >= dtm_bolt) else away_tier
+
     return {
         "projected_margin": proj_margin, "sigma": sigma,
         "home_cover_prob": home_cover_prob, "home_edge": home_edge, "home_tier": home_tier, "home_bolt": home_bolt,
@@ -1288,44 +1312,49 @@ def analyze_spread_advanced(home_team: str, away_team: str, sport: str,
 
 def analyze_moneyline_advanced(home_team: str, away_team: str, sport: str,
                                home_odds: int, away_odds: int) -> Dict:
-    prob_bolt  = get_prob_bolt()
+    prob_bolt = get_prob_bolt()
     spread_res = analyze_spread_advanced(home_team, away_team, sport, 0.0, home_odds)
     proj_margin = spread_res["projected_margin"]
-    sigma       = spread_res["sigma"]
+    sigma = spread_res["sigma"]
+
     if sport == "NBA":
         home_prob = 1 / (1 + np.exp(-0.13 * proj_margin))
     else:
         home_prob = 1 - norm.cdf(0, loc=proj_margin, scale=sigma)
     away_prob = 1 - home_prob
-    home_imp  = implied_prob(home_odds)
-    away_imp  = implied_prob(away_odds)
-    mult      = tier_multiplier("ML")
+
+    home_imp = implied_prob(home_odds)
+    away_imp = implied_prob(away_odds)
+
+    mult = tier_multiplier("ML")
     home_edge = (home_prob - home_imp) * mult
     away_edge = (away_prob - away_imp) * mult
+
     home_tier = classify_tier(home_edge)
     away_tier = classify_tier(away_edge)
     home_bolt = "SOVEREIGN BOLT" if (home_prob >= prob_bolt and home_edge >= 0.15) else home_tier
     away_bolt = "SOVEREIGN BOLT" if (away_prob >= prob_bolt and away_edge >= 0.15) else away_tier
+
     return {
         "home_prob": home_prob, "home_edge": home_edge, "home_tier": home_tier, "home_bolt": home_bolt,
         "away_prob": away_prob, "away_edge": away_edge, "away_tier": away_tier, "away_bolt": away_bolt,
     }
 
 # =============================================================================
-# GAME SCANNER – uses The Odds API (the-odds-api.com)
+# GAME SCANNER – uses The Odds API (the‑odds‑api.com)
 # [FIX 9] Uses ODDS_API_KEY (separate from ODDS_API_IO_KEY)
 # =============================================================================
-
 class GameScanner:
     def __init__(self):
-        # [FIX 9] The Odds API key (the-odds-api.com)
-        self.api_key  = st.secrets.get("ODDS_API_KEY", "")
+        # [FIX 9] The Odds API key (the‑odds‑api.com)
+        self.api_key = st.secrets.get("ODDS_API_KEY", "")
         self.base_url = "https://api.the-odds-api.com/v4"
 
     def fetch_games_by_date(self, sports: List[str], days_offset: int = 0) -> List[Dict]:
         if not self.api_key or self.api_key == "your_key_here":
             st.error("The Odds API key (ODDS_API_KEY) is missing or invalid. Please set it in your Streamlit secrets.")
             return []
+
         all_games = []
         sport_key_map = {
             "NBA": "basketball_nba",
@@ -1333,20 +1362,23 @@ class GameScanner:
             "MLB": "baseball_mlb",
             "NHL": "icehockey_nhl",
         }
+
         for sport in sports:
             sport_key = sport_key_map.get(sport, sport.lower().replace(" ", "_"))
-            events    = self._fetch_events_with_odds(sport_key, days_offset)
+            events = self._fetch_events_with_odds(sport_key, days_offset)
             for event in events:
                 event["sport"] = sport
             all_games.extend(events)
+
         if not all_games:
             st.info(f"No games found for {', '.join(sports)}. Try a different date or check your API key.")
         else:
             update_health("The Odds API (game scanner)", success=True)
+
         return all_games
 
     def _fetch_events_with_odds(self, sport_key: str, days_offset: int) -> List[Dict]:
-        events_url    = f"{self.base_url}/sports/{sport_key}/events"
+        events_url = f"{self.base_url}/sports/{sport_key}/events"
         events_params = {"apiKey": self.api_key, "days": days_offset + 1}
         try:
             response = requests.get(events_url, params=events_params, timeout=10)
@@ -1357,13 +1389,13 @@ class GameScanner:
             update_health("The Odds API (game scanner)", success=False, error_msg=str(e), fallback=True)
             return []
 
-        odds_url    = f"{self.base_url}/sports/{sport_key}/odds"
+        odds_url = f"{self.base_url}/sports/{sport_key}/odds"
         odds_params = {
-            "apiKey":      self.api_key,
-            "regions":     "us",
-            "markets":     "h2h,spreads,totals",
-            "oddsFormat":  "american",
-            "days":        days_offset + 1,
+            "apiKey": self.api_key,
+            "regions": "us",
+            "markets": "h2h,spreads,totals",
+            "oddsFormat": "american",
+            "days": days_offset + 1,
         }
         try:
             odds_response = requests.get(odds_url, params=odds_params, timeout=10)
@@ -1376,29 +1408,30 @@ class GameScanner:
 
         odds_by_event = {o.get("id"): o for o in odds_data if o.get("id")}
         for event in events:
-            event_id  = event.get("id")
+            event_id = event.get("id")
             odds_info = odds_by_event.get(event_id, {})
             bookmakers = odds_info.get("bookmakers", [])
             if bookmakers:
-                bm      = bookmakers[0]
+                bm = bookmakers[0]
                 markets = bm.get("markets", [])
                 for m in markets:
                     if m["key"] == "h2h":
-                        outcomes         = m["outcomes"]
+                        outcomes = m["outcomes"]
                         event["home_ml"] = next((o["price"] for o in outcomes if o["name"] == event.get("home_team")), None)
                         event["away_ml"] = next((o["price"] for o in outcomes if o["name"] == event.get("away_team")), None)
                     elif m["key"] == "spreads":
-                        outcomes              = m["outcomes"]
-                        event["spread"]       = next((o["point"] for o in outcomes if o["name"] == event.get("home_team")), None)
-                        event["spread_odds"]  = next((o["price"] for o in outcomes if o["name"] == event.get("home_team")), None)
+                        outcomes = m["outcomes"]
+                        event["spread"] = next((o["point"] for o in outcomes if o["name"] == event.get("home_team")), None)
+                        event["spread_odds"] = next((o["price"] for o in outcomes if o["name"] == event.get("home_team")), None)
                     elif m["key"] == "totals":
-                        outcomes           = m["outcomes"]
-                        event["total"]     = outcomes[0].get("point")
+                        outcomes = m["outcomes"]
+                        event["total"] = outcomes[0].get("point")
                         event["over_odds"] = next((o["price"] for o in outcomes if o["name"] == "Over"), None)
-                        event["under_odds"]= next((o["price"] for o in outcomes if o["name"] == "Under"), None)
+                        event["under_odds"] = next((o["price"] for o in outcomes if o["name"] == "Under"), None)
             else:
                 for key in ("home_ml","away_ml","spread","spread_odds","total","over_odds","under_odds"):
                     event[key] = None
+
         return events
 
 game_scanner = GameScanner()
@@ -1406,18 +1439,17 @@ game_scanner = GameScanner()
 # =============================================================================
 # OCR FUNCTION (Using OCR.space)
 # =============================================================================
-
 def ocr_image(image_bytes, api_key):
     try:
         encoded = base64.b64encode(image_bytes).decode('utf-8')
         payload = {
             'base64Image': f"data:image/png;base64,{encoded}",
-            'apikey':      api_key,
-            'language':    'eng',
-            'OCREngine':   2,
+            'apikey': api_key,
+            'language': 'eng',
+            'OCREngine': 2,
         }
-        response    = requests.post('https://api.ocr.space/parse/image', data=payload, timeout=30)
-        result      = response.json()
+        response = requests.post('https://api.ocr.space/parse/image', data=payload, timeout=30)
+        result = response.json()
         if result.get('IsErroredOnProcessing'):
             error_msg = result.get('ErrorMessage', ['Unknown error'])[0]
             return None, f"OCR error: {error_msg}"
@@ -1429,7 +1461,6 @@ def ocr_image(image_bytes, api_key):
 # =============================================================================
 # PARSER UPGRADE PACK
 # =============================================================================
-
 def clean_ocr_text(text: str) -> str:
     if not text:
         return ""
@@ -1443,13 +1474,13 @@ def normalize_market(market: str) -> str:
     if not market:
         return ""
     m = market.upper().replace(" ", "")
-    m = m.replace("THREES",    "3PTM")
-    m = m.replace("3PTMADE",   "3PTM")
-    m = m.replace("3PM",       "3PTM")
-    m = m.replace("2PTMADE",   "2PTM")
+    m = m.replace("THREES", "3PTM")
+    m = m.replace("3PTMADE", "3PTM")
+    m = m.replace("3PM", "3PTM")
+    m = m.replace("2PTMADE", "2PTM")
     m = m.replace("PTS+REB+AST","PRA")
-    m = m.replace("PTS+REB",   "PR")
-    m = m.replace("PTS+AST",   "PA")
+    m = m.replace("PTS+REB", "PR")
+    m = m.replace("PTS+AST", "PA")
     return m
 
 def is_goblin_board(text: str) -> bool:
@@ -1513,7 +1544,6 @@ def parse_prizepicks_blocks(text: str) -> List[Dict]:
                 number_indices.append(i)
         except Exception:
             continue
-
     for idx in number_indices:
         if idx in used:
             continue
@@ -1556,17 +1586,16 @@ def parse_prizepicks_blocks(text: str) -> List[Dict]:
         if not player:
             continue
         prop = {
-            "player":  player,
-            "market":  raw_market,
-            "line":    line_val,
-            "pick":    pick,
-            "odds":    -110,
+            "player": player,
+            "market": raw_market,
+            "line": line_val,
+            "pick": pick,
+            "odds": -110,
         }
         prop["confidence"] = score_prop_confidence(prop)
-        prop["sport"]      = auto_detect_sport_from_market(raw_market) or ""
+        prop["sport"] = auto_detect_sport_from_market(raw_market) or ""
         props.append(prop)
         used.add(idx)
-
     props = dedupe_props(props)
     PARSER_LOGGER.info(f"parse_prizepicks_blocks: extracted {len(props)} props")
     return props
@@ -1575,33 +1604,33 @@ def parse_prop_text(text: str):
     if not text:
         return None
     raw_text = text.strip()
-    t        = clean_ocr_text(raw_text)
+    t = clean_ocr_text(raw_text)
     m = re.search(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+([A-Za-z+]+)\s*([+-]\d+)?$', t, re.IGNORECASE)
     if m:
         market = normalize_market(m.group(4))
-        prop   = {
+        prop = {
             "player": m.group(1).strip(),
-            "pick":   m.group(2).upper(),
-            "line":   float(m.group(3)),
+            "pick": m.group(2).upper(),
+            "line": float(m.group(3)),
             "market": market,
-            "odds":   int(m.group(5)) if m.group(5) else -110,
+            "odds": int(m.group(5)) if m.group(5) else -110,
         }
         prop["confidence"] = score_prop_confidence(prop)
-        prop["sport"]      = auto_detect_sport_from_market(market) or ""
+        prop["sport"] = auto_detect_sport_from_market(market) or ""
         PARSER_LOGGER.info(f"parse_prop_text: matched simple format for {prop['player']}")
         return prop
     m = re.search(r'^(.+?)\s+([A-Za-z+]+)\s+(OVER|UNDER)\s+([\d\.]+)\s*([+-]\d+)?$', t, re.IGNORECASE)
     if m:
         market = normalize_market(m.group(2))
-        prop   = {
+        prop = {
             "player": m.group(1).strip(),
             "market": market,
-            "pick":   m.group(3).upper(),
-            "line":   float(m.group(4)),
-            "odds":   int(m.group(5)) if m.group(5) else -110,
+            "pick": m.group(3).upper(),
+            "line": float(m.group(4)),
+            "odds": int(m.group(5)) if m.group(5) else -110,
         }
         prop["confidence"] = score_prop_confidence(prop)
-        prop["sport"]      = auto_detect_sport_from_market(market) or ""
+        prop["sport"] = auto_detect_sport_from_market(market) or ""
         PARSER_LOGGER.info(f"parse_prop_text: matched alt format for {prop['player']}")
         return prop
     blocks = parse_prizepicks_blocks(raw_text)
@@ -1641,16 +1670,15 @@ def parse_any_input(input_obj) -> List[Dict]:
     return []
 
 # =============================================================================
-# PROPLINE – SMART ALL-SPORTS LIVE ODDS INGESTION + CLARITY ENRICHMENT
+# PROPLINE – SMART ALL‑SPORTS LIVE ODDS INGESTION + CLARITY ENRICHMENT
 # =============================================================================
-
 PROPLINE_BASE = "https://player-props.p.rapidapi.com"
 PROPLINE_HOST = "player-props.p.rapidapi.com"
 
 def _propline_headers():
     return {
         "x-rapidapi-host": PROPLINE_HOST,
-        "x-rapidapi-key":  st.secrets.get("RAPIDAPI_KEY", ""),
+        "x-rapidapi-key": st.secrets.get("RAPIDAPI_KEY", ""),
     }
 
 SMART_SPORTS = {
@@ -1696,45 +1724,45 @@ def propline_get_event_odds(sport_key, event_id):
         return None
 
 def flatten_propline_event(sport_key, event, odds):
-    rows       = []
-    event_id   = event.get("id")
+    rows = []
+    event_id = event.get("id")
     event_name = event.get("name")
-    commence   = event.get("commence_time")
+    commence = event.get("commence_time")
     if not odds or "markets" not in odds:
         return rows
     for market in odds["markets"]:
         market_key = market.get("key")
-        outcomes   = market.get("outcomes", [])
+        outcomes = market.get("outcomes", [])
         for o in outcomes:
             rows.append({
-                "sport":         sport_key,
-                "event_id":      event_id,
-                "event_name":    event_name,
-                "start_time":    commence,
-                "market":        market_key,
-                "outcome_name":  o.get("name"),
-                "description":   o.get("description"),
-                "price_american":o.get("price_american"),
+                "sport": sport_key,
+                "event_id": event_id,
+                "event_name": event_name,
+                "start_time": commence,
+                "market": market_key,
+                "outcome_name": o.get("name"),
+                "description": o.get("description"),
+                "price_american": o.get("price_american"),
                 "price_decimal": o.get("price_decimal"),
-                "point":         o.get("point"),
-                "bookmaker":     o.get("bookmaker", "PropLine"),
+                "point": o.get("point"),
+                "bookmaker": o.get("bookmaker", "PropLine"),
             })
     return rows
 
 MARKET_FRIENDLY_NAMES = {
-    "player_points":                    "Points",
-    "player_rebounds":                  "Rebounds",
-    "player_assists":                   "Assists",
-    "player_threes":                    "3-Pointers",
-    "player_steals":                    "Steals",
-    "player_blocks":                    "Blocks",
-    "player_turnovers":                 "Turnovers",
-    "player_points_assists":            "Points + Assists",
-    "player_points_rebounds":           "Points + Rebounds",
-    "player_points_rebounds_assists":   "PRA",
-    "player_rebounds_assists":          "Rebounds + Assists",
-    "player_double_double":             "Double-Double",
-    "player_triple_double":             "Triple-Double",
+    "player_points": "Points",
+    "player_rebounds": "Rebounds",
+    "player_assists": "Assists",
+    "player_threes": "3-Pointers",
+    "player_steals": "Steals",
+    "player_blocks": "Blocks",
+    "player_turnovers": "Turnovers",
+    "player_points_assists": "Points + Assists",
+    "player_points_rebounds": "Points + Rebounds",
+    "player_points_rebounds_assists": "PRA",
+    "player_rebounds_assists": "Rebounds + Assists",
+    "player_double_double": "Double-Double",
+    "player_triple_double": "Triple-Double",
 }
 
 MARKET_ICONS = {
@@ -1745,13 +1773,13 @@ MARKET_ICONS = {
 
 def _market_family(market_key: str) -> str:
     mk = (market_key or "").lower()
-    if "points"   in mk: return "Points"
+    if "points" in mk: return "Points"
     if "rebounds" in mk: return "Rebounds"
-    if "assists"  in mk: return "Assists"
-    if "shots"    in mk: return "Shots"
-    if "goals"    in mk: return "Goals"
-    if "cards"    in mk: return "Cards"
-    if "corners"  in mk: return "Corners"
+    if "assists" in mk: return "Assists"
+    if "shots" in mk: return "Shots"
+    if "goals" in mk: return "Goals"
+    if "cards" in mk: return "Cards"
+    if "corners" in mk: return "Corners"
     return "Other"
 
 def _difficulty_from_point(point):
@@ -1779,23 +1807,23 @@ def _normalize_player_name(desc: str) -> str:
     return " ".join(part.capitalize() for part in desc.split())
 
 def clarity_enrich_row(row):
-    market_key   = row.get("market", "")
+    market_key = row.get("market", "")
     market_clean = MARKET_FRIENDLY_NAMES.get(market_key, market_key.replace("_", " ").title())
     row["market_clean"] = market_clean
-    name  = row.get("outcome_name", "")
+    name = row.get("outcome_name", "")
     point = row.get("point")
-    row["label"]      = f"{name} {point}" if name in ("Over", "Under") and point is not None else name
-    desc              = row.get("description")
-    entity            = _normalize_player_name(desc) if desc else row.get("event_name")
-    row["entity"]     = entity
-    row["bookmaker"]  = row.get("bookmaker", "PropLine")
-    family            = _market_family(market_key)
-    row["family"]     = family
-    row["family_icon"]= MARKET_ICONS.get(family, "📊")
+    row["label"] = f"{name} {point}" if name in ("Over", "Under") and point is not None else name
+    desc = row.get("description")
+    entity = _normalize_player_name(desc) if desc else row.get("event_name")
+    row["entity"] = entity
+    row["bookmaker"] = row.get("bookmaker", "PropLine")
+    family = _market_family(market_key)
+    row["family"] = family
+    row["family_icon"] = MARKET_ICONS.get(family, "📊")
     row["difficulty"] = _difficulty_from_point(point)
     row["confidence"] = _confidence_from_price(row.get("price_american"))
-    row["team"]       = row.get("event_name", "")
-    row["group_key"]  = f"{row.get('sport')}::{family}"
+    row["team"] = row.get("event_name", "")
+    row["group_key"] = f"{row.get('sport')}::{family}"
     return row
 
 def enrich_clarity(df: pd.DataFrame) -> pd.DataFrame:
@@ -1809,10 +1837,12 @@ def fetch_propline_all_smart():
         st.warning("Missing RAPIDAPI_KEY in secrets.")
         update_health("PropLine (Live Props)", success=False, error_msg="Missing API key", fallback=True)
         return pd.DataFrame()
+
     sports = propline_get_sports()
     if not sports:
         update_health("PropLine (Live Props)", success=False, error_msg="No sports returned", fallback=True)
         return pd.DataFrame()
+
     all_rows = []
     for s in sports:
         sport_key = s.get("key")
@@ -1823,13 +1853,15 @@ def fetch_propline_all_smart():
             continue
         for ev in events:
             ev_id = ev.get("id")
-            odds  = propline_get_event_odds(sport_key, ev_id)
-            rows  = flatten_propline_event(sport_key, ev, odds)
+            odds = propline_get_event_odds(sport_key, ev_id)
+            rows = flatten_propline_event(sport_key, ev, odds)
             all_rows.extend(rows)
             time.sleep(0.15)
+
     if not all_rows:
         update_health("PropLine (Live Props)", success=False, error_msg="No rows extracted", fallback=True)
         return pd.DataFrame()
+
     df = pd.DataFrame(all_rows)
     df = enrich_clarity(df)
     update_health("PropLine (Live Props)", success=True, fallback=False)
@@ -1840,7 +1872,6 @@ def fetch_propline_all_smart():
 # [FIX 7] Now detects OVER/UNDER from actual slip text instead of hardcoding OVER
 # [FIX 8] Bare except: replaced throughout with except Exception as e: + logging
 # =============================================================================
-
 def _detect_pick_from_lines(block_lines: List[str], default: str = "OVER") -> str:
     """
     Scan a list of text lines for pick direction keywords.
@@ -1855,14 +1886,14 @@ def _detect_pick_from_lines(block_lines: List[str], default: str = "OVER") -> st
     return default
 
 def parse_complex_slip(text: str) -> List[Dict]:
-    bets  = []
+    bets = []
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if not lines:
         return bets
 
     i = 0
     while i < len(lines):
-        # ── Duplicate-line player block (PrizePicks / Underdog style) ──
+        # ── Duplicate‑line player block (PrizePicks / Underdog style) ──
         if i + 1 < len(lines) and lines[i] == lines[i + 1]:
             player_name = lines[i]
             block_lines = []
@@ -1874,24 +1905,24 @@ def parse_complex_slip(text: str) -> List[Dict]:
                     break
             if len(block_lines) >= 12:
                 try:
-                    league     = block_lines[3].upper()
-                    team       = block_lines[4]
-                    opponent   = block_lines[6]
-                    line_val   = float(block_lines[9])
+                    league = block_lines[3].upper()
+                    team = block_lines[4]
+                    opponent = block_lines[6]
+                    line_val = float(block_lines[9])
                     market_raw = block_lines[10]
                     actual_val = float(block_lines[11])
 
                     market = "PTS"
-                    if "Pitches" in market_raw:   market = "PITCHES"
+                    if "Pitches" in market_raw: market = "PITCHES"
                     elif "Assists" in market_raw: market = "AST"
-                    elif "Steals"  in market_raw: market = "STL"
+                    elif "Steals" in market_raw: market = "STL"
                     elif "Pts" in market_raw or "Rebs" in market_raw:
                         market = market_raw.replace("+", "").replace(" ", "")
                     else:
                         market = market_raw.upper()
 
                     # [FIX 7] Detect pick from block text
-                    pick   = _detect_pick_from_lines(block_lines)
+                    pick = _detect_pick_from_lines(block_lines)
                     result = _determine_result(pick, actual_val, line_val)
 
                     bets.append({
@@ -1922,14 +1953,16 @@ def parse_complex_slip(text: str) -> List[Dict]:
                         if len(candidate) > 2 and not candidate.isdigit():
                             player_name = candidate
                             break
-                line_val   = float(goblin_match.group(1))
+                line_val = float(goblin_match.group(1))
                 market_raw = goblin_match.group(2)
                 actual_val = float(goblin_match.group(3))
-                market     = {"ASSISTS": "AST", "STEALS": "STL"}.get(market_raw.upper(), market_raw.upper())
+                market = {"ASSISTS": "AST", "STEALS": "STL"}.get(market_raw.upper(), market_raw.upper())
+
                 # [FIX 7] Look for pick context in nearby lines
                 context_lines = lines[max(0, i-5):i+5]
-                pick   = _detect_pick_from_lines(context_lines)
+                pick = _detect_pick_from_lines(context_lines)
                 result = _determine_result(pick, actual_val, line_val)
+
                 bets.append({
                     "type": "PROP", "player": player_name, "sport": "NBA",
                     "team": "", "opponent": "", "market": market,
@@ -1941,28 +1974,28 @@ def parse_complex_slip(text: str) -> List[Dict]:
 
             # ── Parlay ──
             if re.search(r'\d+ Team Parlay', line, re.IGNORECASE):
-                parlay_result  = None
-                parlay_risk    = None
-                parlay_odds    = None
-                parlay_winnings= None
+                parlay_result = None
+                parlay_risk = None
+                parlay_odds = None
+                parlay_winnings = None
                 j = i
                 while j < len(lines) and j < i + 20:
                     l = lines[j]
                     if re.search(r'^(Win|Loss)$', l, re.IGNORECASE):
                         parlay_result = l.upper()
                     risk_m = re.search(r'Risk\s*\$?([\d\.]+)', l, re.IGNORECASE)
-                    if risk_m:  parlay_risk = float(risk_m.group(1))
+                    if risk_m: parlay_risk = float(risk_m.group(1))
                     odds_m = re.search(r'Odds\s*([+-]\d+)', l, re.IGNORECASE)
-                    if odds_m:  parlay_odds = int(odds_m.group(1))
-                    win_m  = re.search(r'Winnings\s*[+\$]?([\d\.]+)', l, re.IGNORECASE)
-                    if win_m:   parlay_winnings = float(win_m.group(1))
+                    if odds_m: parlay_odds = int(odds_m.group(1))
+                    win_m = re.search(r'Winnings\s*[+\$]?([\d\.]+)', l, re.IGNORECASE)
+                    if win_m: parlay_winnings = float(win_m.group(1))
                     j += 1
                 if parlay_result:
                     bets.append({
                         "type": "PARLAY", "result": parlay_result,
                         "raw": "\n".join(lines[i:j]),
-                        "odds":     parlay_odds    or 0,
-                        "risk":     parlay_risk    or 0,
+                        "odds": parlay_odds or 0,
+                        "risk": parlay_risk or 0,
                         "winnings": parlay_winnings or 0,
                     })
                 i = j
@@ -1971,14 +2004,14 @@ def parse_complex_slip(text: str) -> List[Dict]:
             # ── MyBookie / sportsbook team ML ──
             mb_team_match = re.search(r'^([A-Za-z\s\.\-]+?)\s+([+-]\d+)$', line)
             if mb_team_match and i + 1 < len(lines):
-                team       = mb_team_match.group(1).strip()
-                odds_val   = int(mb_team_match.group(2))
-                next_line  = lines[i + 1]
+                team = mb_team_match.group(1).strip()
+                odds_val = int(mb_team_match.group(2))
+                next_line = lines[i + 1]
                 if "Winner" in next_line or "LOSS" in next_line.upper():
-                    result     = "WIN" if "Winner" in next_line else "LOSS"
-                    sport      = "NBA"
-                    opponent   = ""
-                    game_date  = ""
+                    result = "WIN" if "Winner" in next_line else "LOSS"
+                    sport = "NBA"
+                    opponent = ""
+                    game_date = ""
                     for k in range(i + 2, min(i + 10, len(lines))):
                         l = lines[k]
                         for sp in ("NBA","MLB","NHL","NFL"):
@@ -1990,12 +2023,12 @@ def parse_complex_slip(text: str) -> List[Dict]:
                         date_m = re.search(r'Game Date:\s*([A-Za-z]+\s+\d{1,2},\s+\d{4})', l)
                         if date_m:
                             try:
-                                dt        = datetime.strptime(date_m.group(1), "%b %d, %Y")
+                                dt = datetime.strptime(date_m.group(1), "%b %d, %Y")
                                 game_date = dt.strftime("%Y-%m-%d")
                             except Exception as e:
                                 logging.warning(f"Date parse error: {e}")
                                 game_date = date_m.group(1)
-                    risk    = None
+                    risk = None
                     win_amt = None
                     for k in range(i + 2, min(i + 15, len(lines))):
                         l = lines[k]
@@ -2085,19 +2118,18 @@ def _determine_result(pick: str, actual: float, line: float) -> str:
 # =============================================================================
 # WHY ANALYSIS
 # =============================================================================
-
 def generate_why_analysis(bet: Dict) -> str:
     if bet.get('type') == 'PARLAY':
         return f"Parlay: {bet.get('result', 'Unknown')}. Detailed leg analysis not available."
     if bet.get('type') == 'PROP':
-        player   = bet.get('player', 'Unknown')
-        market   = bet.get('market', 'PTS')
-        line     = bet.get('line', 0)
-        pick     = bet.get('pick', 'OVER')
-        result   = bet.get('result')
-        actual   = bet.get('actual', None)
-        sport    = bet.get('sport', 'NBA')
-        game_date= bet.get('game_date', (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
+        player = bet.get('player', 'Unknown')
+        market = bet.get('market', 'PTS')
+        line = bet.get('line', 0)
+        pick = bet.get('pick', 'OVER')
+        result = bet.get('result')
+        actual = bet.get('actual', None)
+        sport = bet.get('sport', 'NBA')
+        game_date = bet.get('game_date', (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
         if actual is None or actual == 0:
             if sport == 'NBA':
                 actual = fetch_single_game_stat(player, market, game_date)
@@ -2115,13 +2147,13 @@ def generate_why_analysis(bet: Dict) -> str:
             else:
                 return f"❌ LOSS – {player} {market} UNDER {line}. Actual: {actual:.1f}. Exceeded by {diff:.1f}."
     elif bet.get('type') == 'GAME' or ('market_type' in bet):
-        team        = bet.get('team', '')
-        opponent    = bet.get('opponent', '')
+        team = bet.get('team', '')
+        opponent = bet.get('opponent', '')
         market_type = bet.get('market_type', 'ML')
-        line        = bet.get('line', 0)
-        result      = bet.get('result')
-        sport       = bet.get('sport', 'NBA')
-        game_date   = bet.get('game_date', (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
+        line = bet.get('line', 0)
+        result = bet.get('result')
+        sport = bet.get('sport', 'NBA')
+        game_date = bet.get('game_date', (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"))
         home_score, away_score = fetch_game_score(team, opponent, sport, game_date)
         if home_score is None or away_score is None:
             return f"⚠️ Could not fetch final score for {team} vs {opponent} on {game_date}."
@@ -2145,10 +2177,9 @@ def generate_why_analysis(bet: Dict) -> str:
     return "Analysis not available."
 
 # =============================================================================
-# SELF-EVALUATION & METRICS
+# SELF‑EVALUATION & METRICS
 # [FIX 1] auto_tune_thresholds reads/writes via get_threshold/set_threshold
 # =============================================================================
-
 def _get_sem_score() -> int:
     conn = sqlite3.connect(DB_PATH)
     try:
@@ -2156,7 +2187,7 @@ def _get_sem_score() -> int:
             c = conn.cursor()
             c.execute("SELECT sem_score FROM sem_log ORDER BY id DESC LIMIT 1")
             row = c.fetchone()
-        return row[0] if row else 100
+            return row[0] if row else 100
     except Exception as e:
         logging.error(f"_get_sem_score error: {e}")
         return 100
@@ -2181,11 +2212,11 @@ def _calibrate_sem():
     if len(df) < 10:
         return
 
-    df['bin']            = pd.cut(df['prob'], bins=np.arange(0, 1.1, 0.1))
-    actual_by_bin        = df.groupby('bin')['result'].apply(lambda x: (x == 'WIN').mean())
-    expected_by_bin      = df.groupby('bin')['prob'].mean()
-    deviation            = np.mean(np.abs(actual_by_bin - expected_by_bin))
-    sem                  = max(0, min(100, int(100 - deviation * 200)))
+    df['bin'] = pd.cut(df['prob'], bins=np.arange(0, 1.1, 0.1))
+    actual_by_bin = df.groupby('bin')['result'].apply(lambda x: (x == 'WIN').mean())
+    expected_by_bin = df.groupby('bin')['prob'].mean()
+    deviation = np.mean(np.abs(actual_by_bin - expected_by_bin))
+    sem = max(0, min(100, int(100 - deviation * 200)))
 
     conn2 = sqlite3.connect(DB_PATH)
     try:
@@ -2202,7 +2233,7 @@ def _calibrate_sem():
 
 def auto_tune_thresholds():
     """
-    [FIX 1] No longer mutates module-level globals.
+    [FIX 1] No longer mutates module‑level globals.
     All threshold reads/writes go through get_threshold() / set_threshold().
     """
     conn = sqlite3.connect(DB_PATH)
@@ -2223,23 +2254,23 @@ def auto_tune_thresholds():
         return
 
     total_profit = df['profit'].sum() if 'profit' in df.columns else 0
-    total_stake  = len(df) * 100
-    roi          = total_profit / total_stake if total_stake > 0 else 0
+    total_stake = len(df) * 100
+    roi = total_profit / total_stake if total_stake > 0 else 0
 
     old_prob = get_prob_bolt()
-    old_dtm  = get_dtm_bolt()
+    old_dtm = get_dtm_bolt()
 
     if roi < -0.05:
         new_prob = min(0.95, old_prob + 0.03)
-        new_dtm  = min(0.30, old_dtm  + 0.02)
+        new_dtm = min(0.30, old_dtm + 0.02)
     elif roi > 0.10:
         new_prob = max(0.70, old_prob - 0.03)
-        new_dtm  = max(0.05, old_dtm  - 0.02)
+        new_dtm = max(0.05, old_dtm - 0.02)
     else:
         return  # no change needed
 
     set_threshold('prob_bolt', new_prob)
-    set_threshold('dtm_bolt',  new_dtm)
+    set_threshold('dtm_bolt', new_dtm)
 
     conn2 = sqlite3.connect(DB_PATH)
     try:
@@ -2269,9 +2300,9 @@ def get_accuracy_dashboard():
         return {'total_bets': 0, 'wins': 0, 'losses': 0, 'win_rate': 0,
                 'roi': 0, 'units_profit': 0, 'by_sport': {}, 'by_tier': {}, 'sem_score': 100}
 
-    wins        = (df['result'] == 'WIN').sum()
-    total       = len(df)
-    win_rate    = wins / total * 100
+    wins = (df['result'] == 'WIN').sum()
+    total = len(df)
+    win_rate = wins / total * 100
     total_stake = total * 100
 
     if 'profit' in df.columns:
@@ -2283,16 +2314,18 @@ def get_accuracy_dashboard():
             for _, r in df.iterrows()
         )
 
-    roi          = (total_profit / total_stake) * 100 if total_stake > 0 else 0
+    roi = (total_profit / total_stake) * 100 if total_stake > 0 else 0
     units_profit = total_profit / 100
-    by_sport     = {}
+
+    by_sport = {}
     for sport in df['sport'].unique():
-        sdf          = df[df['sport'] == sport]
-        sport_wins   = (sdf['result'] == 'WIN').sum()
+        sdf = df[df['sport'] == sport]
+        sport_wins = (sdf['result'] == 'WIN').sum()
         by_sport[sport] = {
-            'bets':     len(sdf),
+            'bets': len(sdf),
             'win_rate': round(sport_wins / len(sdf) * 100, 1) if len(sdf) > 0 else 0,
         }
+
     by_tier = {}
     for _, row in df.iterrows():
         signal = row.get('bolt_signal', 'PASS')
@@ -2308,6 +2341,7 @@ def get_accuracy_dashboard():
         by_tier[tier]['bets'] += 1
         if row['result'] == 'WIN':
             by_tier[tier]['wins'] += 1
+
     for tier in by_tier:
         by_tier[tier]['win_rate'] = round(
             by_tier[tier]['wins'] / by_tier[tier]['bets'] * 100, 1
@@ -2321,23 +2355,24 @@ def get_accuracy_dashboard():
     }
 
 # =============================================================================
-# PARLAY GENERATION (2-6 legs)
+# PARLAY GENERATION (2‑6 legs)
 # =============================================================================
-
 def generate_parlays(approved_bets: List[Dict], max_legs: int = 6, top_n: int = 20) -> List[Dict]:
     if len(approved_bets) < 2:
         return []
+
     unique = {}
     for bet in approved_bets:
         key = bet.get('unique_key', bet.get('description', ''))
         if key not in unique or bet.get('edge', 0) > unique[key].get('edge', 0):
             unique[key] = bet
     unique_bets = list(unique.values())
-    parlays     = []
+
+    parlays = []
     for n in range(2, min(max_legs, len(unique_bets)) + 1):
         for combo in combinations(unique_bets, n):
             game_keys = set()
-            conflict  = False
+            conflict = False
             for b in combo:
                 game_id = f"{b.get('sport','')}_{b.get('team','')}_{b.get('opponent','')}"
                 if game_id in game_keys:
@@ -2346,29 +2381,31 @@ def generate_parlays(approved_bets: List[Dict], max_legs: int = 6, top_n: int = 
                 game_keys.add(game_id)
             if conflict:
                 continue
-            total_edge   = sum(b.get('edge', 0) for b in combo)
-            total_prob   = 1.0
+
+            total_edge = sum(b.get('edge', 0) for b in combo)
+            total_prob = 1.0
             decimal_odds = 1.0
             for b in combo:
                 total_prob *= b.get('prob', 0.5)
                 odds = b.get('odds', -110)
-                dec  = odds / 100 + 1 if odds > 0 else 100 / abs(odds) + 1
+                dec = odds / 100 + 1 if odds > 0 else 100 / abs(odds) + 1
                 decimal_odds *= dec
             estimated_american = round((decimal_odds - 1) * 100)
+
             parlays.append({
-                'legs':           [b.get('description', '') for b in combo],
-                'total_edge':     total_edge,
-                'confidence':     total_prob,
+                'legs': [b.get('description', '') for b in combo],
+                'total_edge': total_edge,
+                'confidence': total_prob,
                 'estimated_odds': estimated_american,
-                'num_legs':       n,
+                'num_legs': n,
             })
+
     parlays.sort(key=lambda x: (-x['total_edge'], -x['confidence']))
     return parlays[:top_n]
 
 # =============================================================================
 # STREAMLIT UI
 # =============================================================================
-
 def main():
     st.set_page_config(page_title=f"CLARITY {VERSION}", layout="wide")
     st.title(f"CLARITY {VERSION}")
@@ -2394,7 +2431,7 @@ def main():
         st.sidebar.warning("⚠️ RAPIDAPI_KEY missing. Live Props, FlashLive, Tennis, & PGA will use fallback averages.")
 
     current_bankroll = get_bankroll()
-    new_bankroll     = st.sidebar.number_input("Your Bankroll ($)", value=current_bankroll, min_value=100.0, step=50.0)
+    new_bankroll = st.sidebar.number_input("Your Bankroll ($)", value=current_bankroll, min_value=100.0, step=50.0)
     if new_bankroll != current_bankroll:
         set_bankroll(new_bankroll)
         st.sidebar.success("Bankroll updated")
@@ -2409,7 +2446,7 @@ def main():
         st.caption("Live props from PropLine Smart Ingestion across all active sports.")
 
         if st.button("📡 Fetch Live Props", type="primary"):
-            with st.spinner("Fetching live props across all active sports…"):
+            with st.spinner("Fetching live props across all active sports..."):
                 df = fetch_propline_all_smart()
             if df.empty:
                 st.warning("No live props returned from PropLine. Try again shortly.")
@@ -2418,13 +2455,14 @@ def main():
                 st.dataframe(df, use_container_width=True)
                 st.session_state['live_props_df'] = df
 
-        sport  = st.selectbox("Sport", list(SPORT_MODELS.keys()), key="pp_sport")
+        sport = st.selectbox("Sport", list(SPORT_MODELS.keys()), key="pp_sport")
+
         player = st.text_input("Player Name", value=st.session_state.pp_player, key="pp_player_input")
         if player != st.session_state.pp_player:
             st.session_state.pp_player = player
 
         market_opts = SPORT_CATEGORIES.get(sport, ["PTS"])
-        market_idx  = market_opts.index(st.session_state.pp_market) if st.session_state.pp_market in market_opts else 0
+        market_idx = market_opts.index(st.session_state.pp_market) if st.session_state.pp_market in market_opts else 0
         market = st.selectbox("Market", market_opts, index=market_idx, key="pp_market_input")
         if market != st.session_state.pp_market:
             st.session_state.pp_market = market
@@ -2447,10 +2485,10 @@ def main():
                                st.session_state.pp_line, st.session_state.pp_pick,
                                sport, st.session_state.pp_odds, new_bankroll)
             col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Win Prob",    f"{res['prob']:.1%}")
-            col2.metric("Edge",        f"{res['edge']:+.1%}")
+            col1.metric("Win Prob", f"{res['prob']:.1%}")
+            col2.metric("Edge", f"{res['edge']:+.1%}")
             col3.metric("Kelly Stake", f"${res['stake']:.2f}")
-            col4.metric("Tier",        res["tier"])
+            col4.metric("Tier", res["tier"])
             if res["bolt_signal"] == "SOVEREIGN BOLT":
                 st.success(f"### ⚡ SOVEREIGN BOLT — {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market}")
             elif res["edge"] > 0.04:
@@ -2472,48 +2510,63 @@ def main():
 
         st.markdown("---")
         with st.expander("📋 Scan a Prop Slip (Text or Screenshot)", expanded=False):
-            st.markdown("Paste a prop line or upload a screenshot – CLARITY will extract and analyze it instantly.")
-            scan_text  = st.text_area("Paste prop text", key="prop_scan_text")
-            scan_image = st.file_uploader("Or upload a screenshot", type=["jpg","jpeg","png","webp"], key="prop_scan_image")
+            st.markdown("Paste a prop line or upload screenshots – CLARITY will extract and analyze the first valid prop from each.")
+            scan_text = st.text_area("Paste prop text", key="prop_scan_text")
+            scan_images = st.file_uploader("Or upload screenshots (multiple)", type=["jpg","jpeg","png","webp"],
+                                           accept_multiple_files=True, key="prop_scan_images")
 
             if st.button("🔍 Extract & Analyze Prop", key="prop_scan_button"):
-                extracted_props = []
-                if scan_image is not None:
-                    img             = Image.open(scan_image)
-                    extracted_props = parse_any_input(img)
-                    if not extracted_props:
-                        st.error("Could not extract any props from the image.")
-                elif scan_text.strip():
-                    extracted_props = parse_any_input(scan_text.strip())
-                    if not extracted_props:
-                        st.error("Could not parse any valid props from the text.")
-                else:
-                    st.warning("Please provide text or upload an image.")
+                all_extracted = []
+                # Process images first
+                if scan_images:
+                    for img_file in scan_images:
+                        img = Image.open(img_file)
+                        props = parse_any_input(img)
+                        if props:
+                            all_extracted.extend(props)
+                # Process text if provided
+                if scan_text.strip():
+                    props = parse_any_input(scan_text.strip())
+                    if props:
+                        all_extracted.extend(props)
 
-                if extracted_props:
-                    if len(extracted_props) == 1:
-                        selected = extracted_props[0]
+                if not all_extracted:
+                    st.error("Could not extract any valid props from the provided text/images.")
+                else:
+                    # Deduplicate across all inputs
+                    seen = set()
+                    unique_props = []
+                    for p in all_extracted:
+                        key = (p.get('player',''), p.get('market',''), p.get('line',0), p.get('pick',''))
+                        if key not in seen:
+                            seen.add(key)
+                            unique_props.append(p)
+
+                    if len(unique_props) == 1:
+                        selected = unique_props[0]
                     else:
-                        options      = [f"{p['player']} {p['pick']} {p['line']} {p['market']}" for p in extracted_props]
+                        options = [f"{p['player']} {p['pick']} {p['line']} {p['market']}" for p in unique_props]
                         selected_idx = st.selectbox("Select a prop to analyze", range(len(options)), format_func=lambda x: options[x])
-                        selected     = extracted_props[selected_idx]
+                        selected = unique_props[selected_idx]
 
                     st.session_state.pp_player = str(selected.get("player","")).strip()
                     st.session_state.pp_market = str(selected.get("market","PTS")).strip().upper()
-                    st.session_state.pp_line   = float(selected.get("line", 0))
-                    st.session_state.pp_pick   = str(selected.get("pick","OVER")).strip().upper()
-                    st.session_state.pp_odds   = int(selected.get("odds", -110))
+                    st.session_state.pp_line = float(selected.get("line", 0))
+                    st.session_state.pp_pick = str(selected.get("pick","OVER")).strip().upper()
+                    st.session_state.pp_odds = int(selected.get("odds", -110))
+
                     st.success(f"Extracted: {st.session_state.pp_player} {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market} ({st.session_state.pp_odds})")
 
                     res = analyze_prop(st.session_state.pp_player, st.session_state.pp_market,
-                                      st.session_state.pp_line, st.session_state.pp_pick,
-                                      sport, st.session_state.pp_odds, new_bankroll)
+                                       st.session_state.pp_line, st.session_state.pp_pick,
+                                       sport, st.session_state.pp_odds, new_bankroll)
+
                     st.markdown("### Analysis Result")
                     col1, col2, col3, col4 = st.columns(4)
-                    col1.metric("Win Prob",    f"{res['prob']:.1%}")
-                    col2.metric("Edge",        f"{res['edge']:+.1%}")
+                    col1.metric("Win Prob", f"{res['prob']:.1%}")
+                    col2.metric("Edge", f"{res['edge']:+.1%}")
                     col3.metric("Kelly Stake", f"${res['stake']:.2f}")
-                    col4.metric("Tier",        res["tier"])
+                    col4.metric("Tier", res["tier"])
                     if res["bolt_signal"] == "SOVEREIGN BOLT":
                         st.success(f"⚡ SOVEREIGN BOLT — {st.session_state.pp_pick} {st.session_state.pp_line} {st.session_state.pp_market}")
                     elif res["edge"] > 0.04:
@@ -2525,9 +2578,8 @@ def main():
     with tabs[1]:
         st.header("Game Analyzer – ML, Spreads, Totals with CLARITY Approval")
         st.caption("Fetches real team stats (NBA) and applies the full WMA / volatility / edge / tier model.")
-
-        sport2      = st.selectbox("Sport", ["NBA","NFL","MLB","NHL"], index=0, key="game_sport")
-        col1, col2  = st.columns([3, 1])
+        sport2 = st.selectbox("Sport", ["NBA","NFL","MLB","NHL"], index=0, key="game_sport")
+        col1, col2 = st.columns([3, 1])
         with col1:
             load_tomorrow = st.checkbox("Load tomorrow's games", value=False, key="load_tomorrow")
         with col2:
@@ -2540,7 +2592,6 @@ def main():
                         st.success(f"Loaded {len(games)} games")
                     else:
                         st.warning("No games found.")
-
         if "auto_games" in st.session_state and st.session_state["auto_games"]:
             for game in st.session_state["auto_games"]:
                 home = game.get('home_team', '')
@@ -2548,6 +2599,7 @@ def main():
                 if not home or not away:
                     continue
                 st.subheader(f"{home} vs {away}")
+
                 if game.get('home_ml') and game.get('away_ml'):
                     ml_res = analyze_moneyline_advanced(home, away, sport2, game['home_ml'], game['away_ml'])
                     col_ml1, col_ml2 = st.columns(2)
@@ -2563,6 +2615,7 @@ def main():
                             st.caption(f"{ml_res['away_bolt']} | Edge: {ml_res['away_edge']:.1%} | Prob: {ml_res['away_prob']:.1%}")
                         else:
                             st.error(f"**{away} ML ({game['away_ml']})** — PASS")
+
                 if game.get('spread') is not None and game.get('spread_odds'):
                     # [FIX 3] Correct arg order: (home, away, sport, spread, spread_odds)
                     spread_res = analyze_spread_advanced(home, away, sport2, game['spread'], game['spread_odds'])
@@ -2579,6 +2632,7 @@ def main():
                             st.caption(f"{spread_res['away_bolt']} | Edge: {spread_res['away_edge']:.1%} | Cover Prob: {spread_res['away_cover_prob']:.1%}")
                         else:
                             st.error(f"**{away} {game['spread']:+.1f} ({game['spread_odds']})** — PASS")
+
                 if game.get('total') is not None and game.get('over_odds') and game.get('under_odds'):
                     total_res = analyze_total_advanced(home, away, sport2, game['total'], game['over_odds'], game['under_odds'])
                     col_tot1, col_tot2 = st.columns(2)
@@ -2598,8 +2652,8 @@ def main():
 
         st.subheader("Manual Entry (fallback)")
         with st.expander("Click to enter a game manually"):
-            home_man   = st.text_input("Home Team", key="game_home")
-            away_man   = st.text_input("Away Team", key="game_away")
+            home_man = st.text_input("Home Team", key="game_home")
+            away_man = st.text_input("Away Team", key="game_away")
             market_man = st.selectbox("Market", ["ML","SPREAD","TOTAL"], key="game_market")
             if market_man == "ML":
                 home_odds = st.number_input("Home Odds", value=-110, key="ml_home")
@@ -2609,8 +2663,8 @@ def main():
                     st.markdown(f"{home_man}: {'✅ '+res['home_tier'] if res['home_tier']!='PASS' else '❌ PASS'} (Edge: {res['home_edge']:.1%})")
                     st.markdown(f"{away_man}: {'✅ '+res['away_tier'] if res['away_tier']!='PASS' else '❌ PASS'} (Edge: {res['away_edge']:.1%})")
             elif market_man == "SPREAD":
-                spread   = st.number_input("Spread (home margin)", value=-5.5, key="spread_line")
-                odds_sp  = st.number_input("Odds", value=-110, key="spread_odds")
+                spread = st.number_input("Spread (home margin)", value=-5.5, key="spread_line")
+                odds_sp = st.number_input("Odds", value=-110, key="spread_odds")
                 if st.button("Analyze Spread (Manual)"):
                     # [FIX 3] Correct arg order
                     res = analyze_spread_advanced(home_man, away_man, sport2, spread, odds_sp)
@@ -2618,8 +2672,8 @@ def main():
                     st.markdown(f"{away_man} {spread:+.1f}: {'✅ '+res['away_tier'] if res['away_tier']!='PASS' else '❌ PASS'} (Edge: {res['away_edge']:.1%})")
             else:
                 total_line = st.number_input("Total Line", value=220.5, key="total_line")
-                over_odds  = st.number_input("Over Odds",  value=-110,  key="over_odds")
-                under_odds = st.number_input("Under Odds", value=-110,  key="under_odds")
+                over_odds = st.number_input("Over Odds", value=-110, key="over_odds")
+                under_odds = st.number_input("Under Odds", value=-110, key="under_odds")
                 if st.button("Analyze Total (Manual)"):
                     res = analyze_total_advanced(home_man, away_man, sport2, total_line, over_odds, under_odds)
                     st.markdown(f"OVER {total_line}: {'✅ '+res['over_tier'] if res['over_tier']!='PASS' else '❌ PASS'} (Edge: {res['over_edge']:.1%})")
@@ -2629,35 +2683,39 @@ def main():
     with tabs[2]:
         st.header("🏆 Best Bets – Parlays (2-6 legs) from Clarity Approved")
         st.markdown("Automatically generated from fetched props (edge > 4%) and loaded game lines (edge > 2%). "
-                    "Minimum 2 legs required. Same-game parlays are filtered to avoid conflicts.")
+                    "Minimum 2 legs required. Same‑game parlays are filtered to avoid conflicts.")
 
         if 'game_sport' not in st.session_state:
             st.session_state.game_sport = "NBA"
+
         if st.button("🔄 Refresh Best Bets"):
             st.session_state['generate_best_bets'] = True
 
-        approved_bets   = []
-        plus_ev_bets    = []
-        sport_for_bets  = st.session_state.get("game_sport", "NBA")
+        approved_bets = []
+        plus_ev_bets = []
+        sport_for_bets = st.session_state.get("game_sport", "NBA")
 
         if 'live_props_df' in st.session_state and not st.session_state['live_props_df'].empty:
             df = st.session_state['live_props_df']
             for _, row in df.iterrows():
                 player = row.get('entity', '')
                 market = row.get('market_clean', '')
-                line   = row.get('point', 0)
+                line = row.get('point', 0)
                 if not player or not market or line is None:
                     continue
                 try:
                     line_val = float(line)
                 except Exception:
                     continue
-                res_over  = analyze_prop(player, market, line_val, "OVER",  sport_for_bets, -110, new_bankroll)
+
+                res_over = analyze_prop(player, market, line_val, "OVER", sport_for_bets, -110, new_bankroll)
                 res_under = analyze_prop(player, market, line_val, "UNDER", sport_for_bets, -110, new_bankroll)
+
                 if res_over['edge'] >= res_under['edge']:
-                    best_edge, best_pick, res = res_over['edge'], "OVER",  res_over
+                    best_edge, best_pick, res = res_over['edge'], "OVER", res_over
                 else:
                     best_edge, best_pick, res = res_under['edge'], "UNDER", res_under
+
                 entry = {
                     "description": f"{player} {market} {best_pick} {line_val}",
                     "edge": best_edge, "prob": res['prob'], "odds": -110,
@@ -2672,8 +2730,8 @@ def main():
         if 'auto_games' in st.session_state and st.session_state['auto_games']:
             for game in st.session_state['auto_games']:
                 sport_g = game.get('sport', sport_for_bets)
-                home    = game.get('home_team', '')
-                away    = game.get('away_team', '')
+                home = game.get('home_team', '')
+                away = game.get('away_team', '')
                 if game.get('home_ml') and game.get('away_ml'):
                     ml_res = analyze_moneyline_advanced(home, away, sport_g, game['home_ml'], game['away_ml'])
                     for side, team, opp, edge, prob, ml in [
@@ -2683,8 +2741,8 @@ def main():
                         entry = {"description": f"{team} ML ({ml})", "edge": edge, "prob": prob,
                                  "odds": ml, "unique_key": f"{team}_ML", "sport": sport_g,
                                  "team": team, "opponent": opp, "market": "ML"}
-                        if edge > 0.02:   approved_bets.append(entry)
-                        elif edge > 0:    plus_ev_bets.append(entry)
+                        if edge > 0.02: approved_bets.append(entry)
+                        elif edge > 0: plus_ev_bets.append(entry)
 
                 # [FIX 3] Correct arg order throughout Best Bets tab
                 if game.get('spread') is not None and game.get('spread_odds'):
@@ -2699,20 +2757,20 @@ def main():
                             "unique_key": f"{team}_spread", "sport": sport_g,
                             "team": team, "opponent": opp, "market": "SPREAD",
                         }
-                        if edge > 0.02:  approved_bets.append(entry)
-                        elif edge > 0:   plus_ev_bets.append(entry)
+                        if edge > 0.02: approved_bets.append(entry)
+                        elif edge > 0: plus_ev_bets.append(entry)
 
                 if game.get('total') is not None and game.get('over_odds') and game.get('under_odds'):
                     total_res = analyze_total_advanced(home, away, sport_g, game['total'], game['over_odds'], game['under_odds'])
                     for label, edge, prob, o_odds, uk in [
-                        (f"OVER {game['total']}",  total_res['over_edge'],  total_res['over_prob'],  game['over_odds'],  f"OVER_{game['total']}"),
+                        (f"OVER {game['total']}", total_res['over_edge'], total_res['over_prob'], game['over_odds'], f"OVER_{game['total']}"),
                         (f"UNDER {game['total']}", total_res['under_edge'], total_res['under_prob'], game['under_odds'], f"UNDER_{game['total']}"),
                     ]:
                         entry = {"description": f"{label} ({o_odds})", "edge": edge, "prob": prob,
                                  "odds": o_odds, "unique_key": uk, "sport": sport_g,
                                  "team": "", "opponent": "", "market": "TOTAL"}
-                        if edge > 0.02:  approved_bets.append(entry)
-                        elif edge > 0:   plus_ev_bets.append(entry)
+                        if edge > 0.02: approved_bets.append(entry)
+                        elif edge > 0: plus_ev_bets.append(entry)
 
         if not approved_bets:
             st.warning("No approved bets (edge > 4% for props, >2% for games). Load games or fetch props first.")
@@ -2722,6 +2780,7 @@ def main():
                 "Bet": b['description'], "Edge": f"{b['edge']:.1%}",
                 "Win Prob": f"{b['prob']:.1%}", "Odds": b['odds'],
             } for b in approved_bets]), use_container_width=True)
+
             parlays = generate_parlays(approved_bets, max_legs=6, top_n=20)
             if parlays:
                 st.subheader(f"🎲 Top Parlays ({len(parlays)} combinations, 2-6 legs)")
@@ -2734,7 +2793,7 @@ def main():
                         st.metric("Total Edge", f"{p['total_edge']:.1%}")
                         st.caption(f"Estimated parlay odds: {p['estimated_odds']:+d}")
             else:
-                st.info("Not enough approved bets to form a 2-leg parlay (need at least 2 unique legs).")
+                st.info("Not enough approved bets to form a 2‑leg parlay (need at least 2 unique legs).")
 
         if plus_ev_bets:
             st.subheader("💰 +EV Suggestions (edge > 0% but below approval threshold)")
@@ -2750,7 +2809,7 @@ def main():
         st.markdown("Paste any slip – Clarity will extract individual bets and explain why you won or lost.")
 
         text_key = "slip_text_input"
-        text     = st.text_area("Paste slip text", height=200, key=text_key)
+        text = st.text_area("Paste slip text", height=200, key=text_key)
         col_clear, col_scan = st.columns([1, 4])
         with col_clear:
             if st.button("🗑️ Clear Text", use_container_width=True):
@@ -2762,10 +2821,11 @@ def main():
 
         st.markdown("---")
         st.subheader("📸 Or upload screenshots (multiple)")
-        uploader_key    = "screenshot_uploader"
+        uploader_key = "screenshot_uploader"
         uploaded_images = st.file_uploader("Choose images (JPG, PNG, WEBP)", type=["jpg","jpeg","png","webp"],
                                            accept_multiple_files=True, key=uploader_key)
         use_for_sem = st.checkbox("Use these external slips for SEM calibration (improves model, does NOT affect your bankroll)", value=True)
+
         col_img_clear, col_img_scan = st.columns([1, 4])
         with col_img_clear:
             if st.button("🗑️ Clear Images", use_container_width=True):
@@ -2781,13 +2841,13 @@ def main():
             if not ocr_api_key:
                 st.error("OCR API key missing. Please add OCR_SPACE_API_KEY to your secrets.")
             else:
-                all_text    = ""
-                progress_bar= st.progress(0)
+                all_text = ""
+                progress_bar = st.progress(0)
                 status_text = st.empty()
                 for i, img_file in enumerate(uploaded_images):
                     status_text.text(f"Processing image {i+1} of {len(uploaded_images)}...")
-                    img_bytes                = img_file.read()
-                    extracted_text, error    = ocr_image(img_bytes, ocr_api_key)
+                    img_bytes = img_file.read()
+                    extracted_text, error = ocr_image(img_bytes, ocr_api_key)
                     if error:
                         st.error(f"OCR failed for {img_file.name}: {error}")
                     else:
@@ -2812,7 +2872,7 @@ def main():
                                 elif bet.get('result') in ['WIN','LOSS']:
                                     st.caption("ℹ️ Not used for SEM calibration (toggle off).")
                                 else:
-                                    st.caption("⚠️ Could not determine result — not used for SEM.")
+                                    st.caption("⚠️ Could not determine result – not used for SEM.")
                 else:
                     st.warning("No text extracted from the uploaded images.")
         elif ocr_clicked and not uploaded_images:
@@ -2831,7 +2891,7 @@ def main():
                         if bet.get('type') == 'PARLAY':
                             with st.expander(f"PARLAY – {bet.get('result','Unknown')}"):
                                 st.markdown(bet.get('raw', ''))
-                                st.info("Parlay legs cannot be auto-analyzed individually.")
+                                st.info("Parlay legs cannot be auto‑analyzed individually.")
                                 profit = 0 if bet.get('result') == 'WIN' else -100
                                 insert_slip({
                                     "type": "PARLAY", "sport": "MULTI", "player": "", "team": "",
@@ -2847,9 +2907,9 @@ def main():
                             explanation = generate_why_analysis(bet)
                             with st.expander(f"{bet.get('sport','UNK')} – {bet.get('team','')} {bet.get('market_type','ML')} at {bet.get('odds','?')}"):
                                 st.markdown(explanation)
-                                odds_v  = bet.get('odds', -110)
-                                profit  = ((odds_v / 100) * 100 if odds_v > 0 else (100 / abs(odds_v)) * 100) \
-                                          if bet.get('result') == 'WIN' else -100
+                                odds_v = bet.get('odds', -110)
+                                profit = ((odds_v / 100) * 100 if odds_v > 0 else (100 / abs(odds_v)) * 100) \
+                                    if bet.get('result') == 'WIN' else -100
                                 insert_slip({
                                     "type": "GAME", "sport": bet.get('sport','NBA'),
                                     "player": "", "team": bet.get('team',''),
@@ -2867,21 +2927,21 @@ def main():
 
     # ─────────────────────── Tab 4: History & Metrics ───────────────────────
     with tabs[4]:
-        st.header("📊 History & Metrics (Self-Evaluation)")
+        st.header("📊 History & Metrics (Self‑Evaluation)")
         st.markdown("CLARITY automatically evaluates its own performance and tunes thresholds.")
-        acc  = get_accuracy_dashboard()
+        acc = get_accuracy_dashboard()
         col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Bets",   acc['total_bets'])
-        col2.metric("Win Rate",     f"{acc['win_rate']}%")
-        col3.metric("ROI",          f"{acc['roi']}%")
+        col1.metric("Total Bets", acc['total_bets'])
+        col2.metric("Win Rate", f"{acc['win_rate']}%")
+        col3.metric("ROI", f"{acc['roi']}%")
         col4.metric("Units Profit", f"{acc['units_profit']}")
         st.subheader("By Sport")
         st.dataframe(pd.DataFrame(acc['by_sport']).T) if acc['by_sport'] else st.info("No settled bets by sport yet.")
         st.subheader("By Tier (Bolt Signal)")
-        st.dataframe(pd.DataFrame(acc['by_tier']).T)  if acc['by_tier']  else st.info("No settled bets by tier yet.")
+        st.dataframe(pd.DataFrame(acc['by_tier']).T) if acc['by_tier'] else st.info("No settled bets by tier yet.")
         st.metric("SEM Score (Calibration)", f"{acc['sem_score']}/100")
         st.caption("SEM score measures how well predicted probabilities match actual outcomes. Higher = better calibrated.")
-        st.subheader("Auto-Tune History")
+        st.subheader("Auto‑Tune History")
         conn_t = sqlite3.connect(DB_PATH)
         try:
             df_tune = pd.read_sql_query("SELECT * FROM tuning_log ORDER BY id DESC", conn_t)
@@ -2908,30 +2968,27 @@ def main():
         for component, info in st.session_state.health_status.items():
             status_icon = "✅" if info["status"] == "ok" else ("⚠️" if info["fallback_active"] else "❌")
             health_data.append({
-                "Component":      component,
-                "Status":         status_icon,
-                "Fallback Active":info["fallback_active"],
-                "Last Error":     info["last_error"][:80] + "..." if len(info["last_error"]) > 80 else info["last_error"],
+                "Component": component,
+                "Status": status_icon,
+                "Fallback Active": info["fallback_active"],
+                "Last Error": info["last_error"][:80] + "..." if len(info["last_error"]) > 80 else info["last_error"],
             })
         st.dataframe(pd.DataFrame(health_data), use_container_width=True)
-
         st.subheader("⚙️ System Information")
         # [FIX 9] Separate key status display
-        st.info(f"curl_cffi (TLS):           {'✅ Available' if CURL_AVAILABLE else '❌ Not installed'}")
-        st.info(f"BallsDontLie (NBA):        {'✅ Set' if st.secrets.get('BALLSDONTLIE_API_KEY') else '❌ Missing'}")
-        st.info(f"The Odds API (GameScanner):{'✅ Set' if st.secrets.get('ODDS_API_KEY') and st.secrets.get('ODDS_API_KEY') != 'your_key_here' else '❌ Missing'}")
-        st.info(f"Odds-API.io (game scores): {'✅ Set' if st.secrets.get('ODDS_API_IO_KEY') else '❌ Missing'}")
+        st.info(f"curl_cffi (TLS): {'✅ Available' if CURL_AVAILABLE else '❌ Not installed'}")
+        st.info(f"BallsDontLie (NBA): {'✅ Set' if st.secrets.get('BALLSDONTLIE_API_KEY') else '❌ Missing'}")
+        st.info(f"The Odds API (GameScanner): {'✅ Set' if st.secrets.get('ODDS_API_KEY') and st.secrets.get('ODDS_API_KEY') != 'your_key_here' else '❌ Missing'}")
+        st.info(f"Odds‑API.io (game scores): {'✅ Set' if st.secrets.get('ODDS_API_IO_KEY') else '❌ Missing'}")
         st.info(f"RapidAPI (PropLine/FlashLive/Tennis/PGA): {'✅ Set' if st.secrets.get('RAPIDAPI_KEY') else '❌ Missing'}")
-        st.info(f"nhl-api-py:                {'✅ Available' if NHL_AVAILABLE else '❌ Not installed'}")
+        st.info(f"nhl‑api‑py: {'✅ Available' if NHL_AVAILABLE else '❌ Not installed'}")
         st.info(f"Current thresholds: PROB_BOLT = {get_prob_bolt():.2f}, DTM_BOLT = {get_dtm_bolt():.3f}")
         st.info(f"Fractional Kelly multiplier: {KELLY_FRACTION:.0%}")
-        st.caption("Self-evaluation runs automatically when you settle bets or paste winning/losing slips.")
-
+        st.caption("Self‑evaluation runs automatically when you settle bets or paste winning/losing slips.")
         if os.path.exists("clarity_debug.log"):
             with open("clarity_debug.log", "r") as f:
                 log_content = f.read()
-            st.download_button("📥 Download Debug Log", data=log_content,
-                               file_name="clarity_debug.log", mime="text/plain")
+            st.download_button("📥 Download Debug Log", data=log_content, file_name="clarity_debug.log", mime="text/plain")
         else:
             st.info("No log file yet.")
 
