@@ -2353,7 +2353,6 @@ def main():
         st.header("Player Props Analyzer")
         sport = st.selectbox("Sport", list(SPORT_MODELS.keys()), key="pp_sport")
         
-        # New Live Prop Engine replaces old sniffer radio
         st.caption("Live props from PropLine → FlashLive → Odds-API.io (fallback).")
         if st.button(f"📡 Fetch Live Props", type="primary"):
             with st.spinner(f"Fetching live props for {sport}..."):
@@ -2369,7 +2368,6 @@ def main():
         if 'live_props' in st.session_state and st.session_state['live_props']:
             st.subheader("Live Props")
             prop_list = st.session_state['live_props']
-            # Create display options
             options = [f"{p.get('player', 'Unknown')} - {p.get('market', '')} {p.get('line', 0)}" for p in prop_list]
             sel = st.selectbox("Select a prop to analyze", options)
             if sel:
