@@ -2602,7 +2602,7 @@ def main():
         st.markdown("---")
         with st.expander("📋 Scan a Prop Slip (Text or Screenshot)", expanded=False):
             st.markdown("Paste a prop line or upload screenshots -- CLARITY will extract and analyze the first valid prop from each.")
-            # FIXED: incomplete line replaced
+            # FIXED: incomplete line replaced with proper text_area
             scan_text = st.text_area("📋 Paste prop slip text", height=200, placeholder="e.g., LeBron James OVER 25.5 PTS")
             if scan_text:
                 props = parse_props_from_text(scan_text)
