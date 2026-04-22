@@ -1,5 +1,5 @@
 # =============================================================================
-# CLARITY PRIME 24.1 — MERGED ELITE SPORTS BETTING ENGINE
+# CLARITY PRIME 24.1 — MERGED ELITE SPORTS BETTING ENGINE (FIXED)
 # =============================================================================
 # Merges:
 #   • CLARITY 23.1   (tier-aware fallback, Monte Carlo in props, full parsers)
@@ -13,6 +13,7 @@
 #   [M-5]  Multi‑sport fallback for PGA, NHL, etc. using 23.1's _FALLBACK_TIERS
 #   [M-6]  All parsers unified (PrizePicks, Bovada, MyBookie, legacy)
 #   [M-7]  Prime's UI + badges + bankroll graph + Slip Lab
+#   [FIX]  AttributeError in Best Bets tab when last_update is None
 # =============================================================================
 
 import os
@@ -1712,6 +1713,8 @@ def analyze_game_bets(games: List[Dict], sport: str, min_edge: float) -> List[Di
 def initialize_best_bets() -> None:
     if st.session_state.get("best_bets_initialized"):
         return
+    # Initialize last_update to None
+    st.session_state["last_update"] = None
     with st.spinner("⚡ CLARITY is scanning today's best bets…"):
         try:
             dk_df = fetch_dk_dataframe()
@@ -1939,6 +1942,7 @@ def _tab_best_bets() -> None:
         max_games     = fc2.slider("Max Game Bets",    3, 15, 6)
         use_kelly     = fc2.checkbox("Kelly Sizing", value=True)
         kelly_cap_pct = fc2.slider("Kelly Cap (% bankroll)", 1, 25, 10) / 100.0 if use_kelly else 1.0
+
     if st.button("🔄 Refresh All Data", type="primary"):
         with st.spinner("Refreshing lines and projections…"):
             try:
@@ -1954,8 +1958,13 @@ def _tab_best_bets() -> None:
                 st.rerun()
             except Exception as e:
                 st.error(f"Refresh error: {e}")
-    if "last_update" in st.session_state:
-        st.caption(f"Last scan: {st.session_state['last_update'].strftime('%H:%M:%S')}")
+
+    last_update = st.session_state.get("last_update")
+    if last_update and isinstance(last_update, datetime):
+        st.caption(f"Last scan: {last_update.strftime('%H:%M:%S')}")
+    else:
+        st.caption("No data loaded yet. Click 'Refresh All Data'.")
+
     df_pb = st.session_state.get("player_bets_df", pd.DataFrame())
     if not df_pb.empty:
         filtered = df_pb[df_pb["edge"] >= min_edge].head(max_props).copy()
