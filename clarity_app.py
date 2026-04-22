@@ -1,7 +1,8 @@
 # =============================================================================
-# CLARITY PRIME 24.4 — FINAL INTEGRATED VERSION
+# CLARITY PRIME 24.4 — PURE MANUAL MODE (NO AUTO-SCAN)
 # =============================================================================
 # All approved recommendations implemented:
+#   • NO auto-scan on app load (pure manual refresh)
 #   • .webp upload support
 #   • Collapsible sections for large dataframes
 #   • Color-coded edges (green/yellow/red)
@@ -12,7 +13,6 @@
 #   • st.toast() feedback for long operations
 #   • Monte Carlo moved to cached function
 #   • Opponent adjustments (defensive ratings)
-#   • Rolling averages with decay (already in _wma)
 # =============================================================================
 
 import os
@@ -1895,34 +1895,23 @@ def analyze_game_bets(games: List[Dict], sport: str, min_edge: float) -> List[Di
     return results
 
 # =============================================================================
-# AUTO-INIT BEST BETS (runs once on app load)
+# INITIALIZE SESSION STATE (NO API CALLS)
 # =============================================================================
-def initialize_best_bets() -> None:
-    if st.session_state.get("best_bets_initialized"):
+def initialize_session_state() -> None:
+    """Initialize session state without any API calls (pure manual mode)."""
+    if st.session_state.get("initialized"):
         return
+    st.session_state["initialized"] = True
     st.session_state["last_update"] = None
-    with st.spinner("⚡ CLARITY is scanning today's best bets…"):
-        try:
-            # Use cached version for initial load
-            dk_df = fetch_dk_dataframe_cached()
-            projs = build_today_projections_auto()
-            priced = evaluate_all_bets(dk_df, projs)
-            # Store only essential data (not full DataFrames)
-            st.session_state["player_bets"] = priced
-            st.session_state["player_bets_df"] = priced_bets_to_dataframe(priced)
-            games = fetch_games_cached("NBA", 0)
-            st.session_state["game_bets"] = analyze_game_bets(games, "NBA", 0.0)
-            st.session_state["fetched_games"] = games
-            st.session_state["best_bets_initialized"] = True
-            st.session_state["last_update"] = datetime.now()
-            st.toast("Best bets loaded successfully!", icon="✅")
-        except Exception as e:
-            logging.error(f"initialize_best_bets: {e}")
-            st.session_state["best_bets_initialized"] = False
-            st.toast(f"Error loading best bets: {e}", icon="❌")
+    st.session_state["player_bets"] = []
+    st.session_state["player_bets_df"] = pd.DataFrame()
+    st.session_state["game_bets"] = []
+    st.session_state["fetched_games"] = []
+    st.session_state["parlays"] = []
+    # NO API CALLS HERE
 
 # =============================================================================
-# STREAMLIT UI — CLARITY PRIME 24.4 (FULLY OPTIMIZED)
+# STREAMLIT UI — CLARITY PRIME 24.4 (PURE MANUAL MODE)
 # =============================================================================
 _BADGE_CSS = {
     "SOVEREIGN BOLT": ("⚡","background:#f59e0b;color:#1a1a2e;font-weight:800;"),
@@ -2049,7 +2038,6 @@ def _tab_props(bankroll: float) -> None:
             st.success(f"{len(df)} outcomes loaded.")
             sport_filt = st.multiselect("Filter sport", df["sport"].unique().tolist() if "sport" in df.columns else [])
             show_df = df[df["sport"].isin(sport_filt)] if sport_filt else df
-            # Use expander for large dataframe
             with st.expander("Show Live Props Data", expanded=False):
                 st.dataframe(show_df, use_container_width=True)
     
@@ -2197,20 +2185,17 @@ def _tab_games(bankroll: float) -> None:
             submitted = st.form_submit_button("Analyze Manual Game")
             if submitted:
                 st.subheader("Manual Game Analysis")
-                # Spread
                 if spread_man != 0.0:
                     res_s = analyze_spread(home_team_man, away_team_man, sport, spread_man, int(spread_odds_man))
                     st.markdown(f"**Spread** – {home_team_man} {spread_man:+.1f}")
                     st.write(f"Cover prob: {res_s['home_cover_prob']:.1%} | Edge: {res_s['home_edge']:+.1%}")
                     st.markdown(_badge(res_s["home_bolt"]), unsafe_allow_html=True)
                     st.write(f"{away_team_man} cover: {res_s['away_cover_prob']:.1%} | Edge: {res_s['away_edge']:+.1%}")
-                # Total
                 if total_man > 0:
                     res_t = analyze_total(home_team_man, away_team_man, sport, total_man, int(over_odds_man), int(under_odds_man))
                     st.markdown(f"**Total** – {total_man}")
                     st.write(f"Over: {res_t['over_prob']:.1%} (Edge {res_t['over_edge']:+.1%})")
                     st.write(f"Under: {res_t['under_prob']:.1%} (Edge {res_t['under_edge']:+.1%})")
-                # Moneyline
                 if home_ml_man != 0 and away_ml_man != 0:
                     res_m = analyze_ml(home_team_man, away_team_man, sport, int(home_ml_man), int(away_ml_man))
                     st.markdown(f"**Moneyline**")
@@ -2220,6 +2205,11 @@ def _tab_games(bankroll: float) -> None:
 def _tab_best_bets() -> None:
     st.header("🏆 Best Bets — Automated Recommendations")
     st.caption("Top player props and game bets ranked by CLARITY edge model")
+    
+    # Show message if no data loaded yet
+    if st.session_state.get("last_update") is None:
+        st.info("👆 No data loaded. Click 'Refresh All Data' below to fetch the latest lines and projections.")
+    
     with st.expander("⚙️ Filter Settings", expanded=False):
         fc1, fc2 = st.columns(2)
         min_edge = fc1.slider("Min Edge (%)", 0.0, 15.0, 2.0, 0.5) / 100.0
@@ -2231,7 +2221,6 @@ def _tab_best_bets() -> None:
     if st.button("🔄 Refresh All Data", type="primary"):
         with st.spinner("Refreshing lines and projections…"):
             try:
-                # Force refresh by using non-cached version
                 dk_df = fetch_dk_dataframe()
                 projs = build_today_projections_auto()
                 priced = evaluate_all_bets(dk_df, projs)
@@ -2249,8 +2238,6 @@ def _tab_best_bets() -> None:
     last_update = st.session_state.get("last_update")
     if last_update and isinstance(last_update, datetime):
         st.caption(f"Last scan: {last_update.strftime('%H:%M:%S')}")
-    else:
-        st.caption("No data loaded yet. Click 'Refresh All Data'.")
     
     # Player Props Section with color coding and expander
     df_pb = st.session_state.get("player_bets_df", pd.DataFrame())
@@ -2273,7 +2260,6 @@ def _tab_best_bets() -> None:
             )
             display_cols = ["player_or_team","market_type","sportsbook_line","fair_line",
                            "prob_over","edge","kelly","Stake $","Tier"]
-            # Apply color coding to edge column
             styled_df = _style_dataframe(filtered[display_cols], "edge")
             st.dataframe(styled_df, use_container_width=True)
             
@@ -2304,8 +2290,10 @@ def _tab_best_bets() -> None:
                 st.rerun()
         else:
             st.info(f"No player props above {min_edge*100:.1f}% edge threshold.")
+    elif st.session_state.get("last_update") is None:
+        st.info("No player prop data yet. Click 'Refresh All Data' to load.")
     else:
-        st.info("No player prop data yet — click Refresh or wait for auto-scan.")
+        st.info("No player prop data available.")
     st.divider()
     
     # Game Bets Section with color coding
@@ -2346,6 +2334,8 @@ def _tab_best_bets() -> None:
             st.success(f"Added {len(sel_g)} game bets.")
             st.toast(f"{len(sel_g)} game bets added", icon="➕")
             st.rerun()
+    elif st.session_state.get("last_update") is None:
+        st.info("No game bet data yet. Click 'Refresh All Data' to load.")
     else:
         st.info(f"No game bets above {min_edge*100:.1f}% edge threshold.")
     st.divider()
@@ -2425,7 +2415,6 @@ def _tab_slip_lab() -> None:
             else:
                 st.info("No props detected. Try a different format.")
     with tab_i:
-        # .webp support added
         files = st.file_uploader("Upload screenshots", type=["png","jpg","jpeg","webp"], accept_multiple_files=True)
         if files:
             for f in files:
@@ -2513,7 +2502,6 @@ def _tab_history() -> None:
     st.markdown("---")
     st.subheader("All Bets")
     if not df.empty:
-        # Use expander for large dataframe
         with st.expander("Show All Bets", expanded=False):
             styled_df = _style_dataframe(df, "edge")
             st.dataframe(styled_df, use_container_width=True)
@@ -2695,7 +2683,7 @@ def main():
     init_db()
     _init_health()
     bankroll = _sidebar()
-    initialize_best_bets()
+    initialize_session_state()  # No API calls - pure manual
     tabs = st.tabs([
         "🎯 Player Props",
         "🏟️ Game Analyzer",
