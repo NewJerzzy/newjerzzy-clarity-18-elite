@@ -1,19 +1,11 @@
 # =============================================================================
-# CLARITY PRIME 24.1 — MERGED ELITE SPORTS BETTING ENGINE (FIXED)
+# CLARITY PRIME 24.2 — FULLY RESTORED (OCR + Manual Game Input)
 # =============================================================================
 # Merges:
-#   • CLARITY 23.1   (tier-aware fallback, Monte Carlo in props, full parsers)
+#   • CLARITY 23.1 (tier-aware fallback, Monte Carlo in props, full parsers)
 #   • CLARITY PRIME 24.0 (clean UI, auto-scan once, bankroll graph, badges)
-#
-# New in PRIME 24.1:
-#   [M-1]  Tier‑aware historical fallback (elite/mid/bench) from 23.1
-#   [M-2]  Monte Carlo toggle integrated directly into Player Props tab
-#   [M-3]  Manual PROB_BOLT / DTM_BOLT override in Tools tab
-#   [M-4]  Separate parser log (clarity_logs/parser.log) from 23.1
-#   [M-5]  Multi‑sport fallback for PGA, NHL, etc. using 23.1's _FALLBACK_TIERS
-#   [M-6]  All parsers unified (PrizePicks, Bovada, MyBookie, legacy)
-#   [M-7]  Prime's UI + badges + bankroll graph + Slip Lab
-#   [FIX]  AttributeError in Best Bets tab when last_update is None
+#   • Restored: Player Props text/image OCR expander
+#   • Restored: Game Analyzer manual input expander
 # =============================================================================
 
 import os
@@ -77,12 +69,12 @@ if not PARSER_LOGGER.handlers:
 # =============================================================================
 # VERSION & PATHS
 # =============================================================================
-VERSION    = "PRIME 24.1"
+VERSION    = "PRIME 24.2"
 BUILD_DATE = "2026-04-21"
 DB_PATH    = "clarity_prime.db"
 
 # =============================================================================
-# SPORT & STAT CONFIGURATION  (from 23.1)
+# SPORT & STAT CONFIGURATION (from 23.1)
 # =============================================================================
 SPORT_MODELS: Dict[str, Dict] = {
     "NBA":     {"variance_factor": 1.18, "avg_total": 228.5, "home_advantage": 3.0},
@@ -141,7 +133,7 @@ _DEFAULT_DTM_BOLT   = 0.15
 KELLY_FRACTION      = 0.25
 
 # =============================================================================
-# TIER‑AWARE HISTORICAL FALLBACK (from 23.1, [FIX-10])
+# TIER‑AWARE HISTORICAL FALLBACK (from 23.1)
 # =============================================================================
 _FALLBACK_TIERS = {
     "elite": {
@@ -177,9 +169,7 @@ _FALLBACK_TIERS = {
 _FB_DEFAULT = [15.0,15.5,14.8,16.2,15.3,15.7,14.5,16.5,15.1,15.9,14.7,16.0]
 
 def historical_fallback(market: str, sport: str = "NBA", tier: str = "mid") -> List[float]:
-    """Tier‑aware fallback stats (elite/mid/bench)."""
     key = (sport.upper(), market.upper())
-    # Try exact tier, then mid, then elite, then bench, then default
     for t in (tier, "mid", "elite", "bench"):
         d = _FALLBACK_TIERS.get(t, {})
         if key in d:
@@ -256,7 +246,6 @@ def init_db() -> None:
                 source    TEXT
             )""")
 
-    # Seed threshold defaults only if absent
     if get_setting("prob_bolt") is None:
         set_setting("prob_bolt", _DEFAULT_PROB_BOLT)
     if get_setting("dtm_bolt") is None:
@@ -921,11 +910,9 @@ def _espn_stats(player_name: str, sport: str, market: str) -> List[float]:
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
 def fetch_stats(player: str, market: str, sport: str = "NBA",
                 game_date: str = None, tier: str = "mid") -> List[float]:
-    """Unified stats fetcher: primary → FlashLive → ESPN → tier‑aware fallback."""
     if sport.upper() == "NBA":
         vals = _nba_stats(player, market, game_date)
     elif sport.upper() == "PGA":
-        # For PGA we don't have a live API in this merge; use fallback
         vals = []
     else:
         vals = _flashlive_stats(player, sport, market)
@@ -968,7 +955,6 @@ def analyze_prop(
     sigma  = max(_wse(stats) * _vol_buf(stats), 0.75)
 
     if use_mc:
-        # Build a minimal projection for Monte Carlo
         proj = PlayerProjection(
             player_name=player, team="", opponent="",
             minutes=28.0, pts=mu, rebs=5.0, asts=4.0,
@@ -1713,7 +1699,6 @@ def analyze_game_bets(games: List[Dict], sport: str, min_edge: float) -> List[Di
 def initialize_best_bets() -> None:
     if st.session_state.get("best_bets_initialized"):
         return
-    # Initialize last_update to None
     st.session_state["last_update"] = None
     with st.spinner("⚡ CLARITY is scanning today's best bets…"):
         try:
@@ -1733,7 +1718,7 @@ def initialize_best_bets() -> None:
             st.session_state["best_bets_initialized"] = False
 
 # =============================================================================
-# STREAMLIT UI — CLARITY PRIME 24.1
+# STREAMLIT UI — CLARITY PRIME 24.2 (RESTORED OCR & MANUAL GAME INPUT)
 # =============================================================================
 _BADGE_CSS = {
     "SOVEREIGN BOLT": ("⚡","background:#f59e0b;color:#1a1a2e;font-weight:800;"),
@@ -1839,6 +1824,28 @@ def _tab_props(bankroll: float) -> None:
             show_df = df[df["sport"].isin(sport_filt)] if sport_filt else df
             st.dataframe(show_df, use_container_width=True)
 
+    # --- RESTORED: OCR & text input expander ---
+    with st.expander("📋 Scan a Prop Slip (Text or Screenshot)", expanded=False):
+        st.markdown("Paste a prop line or upload screenshots -- CLARITY will extract and analyze the first valid prop from each.")
+        scan_text = st.text_area("📋 Paste prop slip text", height=150, placeholder="e.g., LeBron James OVER 25.5 PTS\nor full PrizePicks block")
+        if scan_text:
+            props = parse_slip(scan_text)
+            if props:
+                for prop in props:
+                    st.write(f"**Parsed:** {prop.get('player')} - {prop.get('market')} {prop.get('pick')} {prop.get('line')}")
+            else:
+                st.info("No props detected.")
+        uploaded_files = st.file_uploader("Or upload screenshot(s)", type=["png","jpg","jpeg"], accept_multiple_files=True)
+        if uploaded_files:
+            for img_file in uploaded_files:
+                img = Image.open(img_file)
+                props = parse_image_props(img_file.getvalue())
+                if props:
+                    for prop in props:
+                        st.write(f"**From image:** {prop.get('player')} - {prop.get('market')} {prop.get('pick')} {prop.get('line')}")
+                else:
+                    st.write(f"No props detected in {img_file.name}")
+
 def _tab_games(bankroll: float) -> None:
     st.header("🏟️ Game Analyzer — Spreads, Totals & Moneylines")
     st.caption("Powered by The Odds API • Supports NBA, MLB, NHL, NFL and more")
@@ -1854,83 +1861,122 @@ def _tab_games(bankroll: float) -> None:
     games = st.session_state.get("fetched_games", [])
     if not games:
         st.info("Click 'Fetch Today's Games' to load matchups.")
-        return
-    labels = [f"{g.get('away_team','?')} @ {g.get('home_team','?')}  ({g.get('commence_time','')[:10]})"
-              for g in games]
-    idx = st.selectbox("Select Game", range(len(labels)), format_func=lambda i: labels[i])
-    g   = games[idx]
-    home, away = g.get("home_team",""), g.get("away_team","")
-    st.subheader(f"{away} @ {home}")
-    c1, c2, c3 = st.columns(3)
-    spread = g.get("spread"); spread_odds = g.get("spread_odds")
-    home_ml = g.get("home_ml"); away_ml = g.get("away_ml")
-    total = g.get("total"); over_odds = g.get("over_odds"); under_odds = g.get("under_odds")
-    with c1:
-        st.markdown("**Spread**")
-        st.write(f"Line: {spread:+.1f}" if spread is not None else "—")
-        st.write(f"Odds: {spread_odds}" if spread_odds is not None else "")
-    with c2:
-        st.markdown("**Moneyline**")
-        st.write(f"{home}: {home_ml}" if home_ml is not None else "—")
-        st.write(f"{away}: {away_ml}" if away_ml is not None else "")
-    with c3:
-        st.markdown("**Total**")
-        st.write(f"O/U: {total}" if total is not None else "—")
-        st.write(f"Over {over_odds} / Under {under_odds}" if over_odds else "")
-    st.divider()
-    b1, b2, b3 = st.columns(3)
-    if b1.button("🔍 Analyze Spread", use_container_width=True):
-        if spread is not None and spread_odds is not None:
-            with st.spinner("Analyzing…"):
-                res = analyze_spread(home, away, sport, spread, int(spread_odds))
-            st.subheader("Spread")
-            c1, c2 = st.columns(2)
-            c1.metric(f"{home} Cover", f"{res['home_cover_prob']:.1%}")
-            c1.metric("Edge", f"{res['home_edge']:+.1%}")
-            c1.markdown(_badge(res["home_bolt"]), unsafe_allow_html=True)
-            c2.metric(f"{away} Cover", f"{res['away_cover_prob']:.1%}")
-            c2.metric("Edge", f"{res['away_edge']:+.1%}")
-            c2.markdown(_badge(res["away_bolt"]), unsafe_allow_html=True)
-            st.caption(f"Proj margin: {res['projected_margin']:+.1f}  σ={res['sigma']:.1f}")
-            if res["home_bolt"] == "SOVEREIGN BOLT":
-                st.success(f"⚡ SOVEREIGN BOLT — {home} {spread:+.1f}")
-            if res["away_bolt"] == "SOVEREIGN BOLT":
-                st.success(f"⚡ SOVEREIGN BOLT — {away} {-spread:+.1f}")
-        else:
-            st.error("No spread data for this game.")
-    if b2.button("🔍 Analyze Total", use_container_width=True):
-        if total is not None and over_odds is not None and under_odds is not None:
-            with st.spinner("Analyzing…"):
-                res = analyze_total(home, away, sport, total, int(over_odds), int(under_odds))
-            st.subheader("Total")
-            c1, c2 = st.columns(2)
-            c1.metric("Over Prob",   f"{res['over_prob']:.1%}")
-            c1.metric("Over Edge",   f"{res['over_edge']:+.1%}")
-            c1.markdown(_badge(res["over_bolt"]), unsafe_allow_html=True)
-            c2.metric("Under Prob",  f"{res['under_prob']:.1%}")
-            c2.metric("Under Edge",  f"{res['under_edge']:+.1%}")
-            c2.markdown(_badge(res["under_bolt"]), unsafe_allow_html=True)
-            st.caption(f"Projected total: {res['projection']:.1f}")
-            if res["over_bolt"]  == "SOVEREIGN BOLT": st.success(f"⚡ SOVEREIGN BOLT — OVER {total}")
-            if res["under_bolt"] == "SOVEREIGN BOLT": st.success(f"⚡ SOVEREIGN BOLT — UNDER {total}")
-        else:
-            st.error("No total data for this game.")
-    if b3.button("🔍 Analyze Moneyline", use_container_width=True):
-        if home_ml is not None and away_ml is not None:
-            with st.spinner("Analyzing…"):
-                res = analyze_ml(home, away, sport, int(home_ml), int(away_ml))
-            st.subheader("Moneyline")
-            c1, c2 = st.columns(2)
-            c1.metric(f"{home} Win",  f"{res['home_prob']:.1%}")
-            c1.metric("Edge",         f"{res['home_edge']:+.1%}")
-            c1.markdown(_badge(res["home_bolt"]), unsafe_allow_html=True)
-            c2.metric(f"{away} Win",  f"{res['away_prob']:.1%}")
-            c2.metric("Edge",         f"{res['away_edge']:+.1%}")
-            c2.markdown(_badge(res["away_bolt"]), unsafe_allow_html=True)
-            if res["home_bolt"] == "SOVEREIGN BOLT": st.success(f"⚡ SOVEREIGN BOLT — {home} ML")
-            if res["away_bolt"] == "SOVEREIGN BOLT": st.success(f"⚡ SOVEREIGN BOLT — {away} ML")
-        else:
-            st.error("No moneyline data for this game.")
+    else:
+        labels = [f"{g.get('away_team','?')} @ {g.get('home_team','?')}  ({g.get('commence_time','')[:10]})"
+                  for g in games]
+        idx = st.selectbox("Select Game", range(len(labels)), format_func=lambda i: labels[i])
+        g   = games[idx]
+        home, away = g.get("home_team",""), g.get("away_team","")
+        st.subheader(f"{away} @ {home}")
+        c1, c2, c3 = st.columns(3)
+        spread = g.get("spread"); spread_odds = g.get("spread_odds")
+        home_ml = g.get("home_ml"); away_ml = g.get("away_ml")
+        total = g.get("total"); over_odds = g.get("over_odds"); under_odds = g.get("under_odds")
+        with c1:
+            st.markdown("**Spread**")
+            st.write(f"Line: {spread:+.1f}" if spread is not None else "—")
+            st.write(f"Odds: {spread_odds}" if spread_odds is not None else "")
+        with c2:
+            st.markdown("**Moneyline**")
+            st.write(f"{home}: {home_ml}" if home_ml is not None else "—")
+            st.write(f"{away}: {away_ml}" if away_ml is not None else "")
+        with c3:
+            st.markdown("**Total**")
+            st.write(f"O/U: {total}" if total is not None else "—")
+            st.write(f"Over {over_odds} / Under {under_odds}" if over_odds else "")
+        st.divider()
+        b1, b2, b3 = st.columns(3)
+        if b1.button("🔍 Analyze Spread", use_container_width=True):
+            if spread is not None and spread_odds is not None:
+                with st.spinner("Analyzing…"):
+                    res = analyze_spread(home, away, sport, spread, int(spread_odds))
+                st.subheader("Spread")
+                c1, c2 = st.columns(2)
+                c1.metric(f"{home} Cover", f"{res['home_cover_prob']:.1%}")
+                c1.metric("Edge", f"{res['home_edge']:+.1%}")
+                c1.markdown(_badge(res["home_bolt"]), unsafe_allow_html=True)
+                c2.metric(f"{away} Cover", f"{res['away_cover_prob']:.1%}")
+                c2.metric("Edge", f"{res['away_edge']:+.1%}")
+                c2.markdown(_badge(res["away_bolt"]), unsafe_allow_html=True)
+                st.caption(f"Proj margin: {res['projected_margin']:+.1f}  σ={res['sigma']:.1f}")
+                if res["home_bolt"] == "SOVEREIGN BOLT":
+                    st.success(f"⚡ SOVEREIGN BOLT — {home} {spread:+.1f}")
+                if res["away_bolt"] == "SOVEREIGN BOLT":
+                    st.success(f"⚡ SOVEREIGN BOLT — {away} {-spread:+.1f}")
+            else:
+                st.error("No spread data for this game.")
+        if b2.button("🔍 Analyze Total", use_container_width=True):
+            if total is not None and over_odds is not None and under_odds is not None:
+                with st.spinner("Analyzing…"):
+                    res = analyze_total(home, away, sport, total, int(over_odds), int(under_odds))
+                st.subheader("Total")
+                c1, c2 = st.columns(2)
+                c1.metric("Over Prob",   f"{res['over_prob']:.1%}")
+                c1.metric("Over Edge",   f"{res['over_edge']:+.1%}")
+                c1.markdown(_badge(res["over_bolt"]), unsafe_allow_html=True)
+                c2.metric("Under Prob",  f"{res['under_prob']:.1%}")
+                c2.metric("Under Edge",  f"{res['under_edge']:+.1%}")
+                c2.markdown(_badge(res["under_bolt"]), unsafe_allow_html=True)
+                st.caption(f"Projected total: {res['projection']:.1f}")
+                if res["over_bolt"]  == "SOVEREIGN BOLT": st.success(f"⚡ SOVEREIGN BOLT — OVER {total}")
+                if res["under_bolt"] == "SOVEREIGN BOLT": st.success(f"⚡ SOVEREIGN BOLT — UNDER {total}")
+            else:
+                st.error("No total data for this game.")
+        if b3.button("🔍 Analyze Moneyline", use_container_width=True):
+            if home_ml is not None and away_ml is not None:
+                with st.spinner("Analyzing…"):
+                    res = analyze_ml(home, away, sport, int(home_ml), int(away_ml))
+                st.subheader("Moneyline")
+                c1, c2 = st.columns(2)
+                c1.metric(f"{home} Win",  f"{res['home_prob']:.1%}")
+                c1.metric("Edge",         f"{res['home_edge']:+.1%}")
+                c1.markdown(_badge(res["home_bolt"]), unsafe_allow_html=True)
+                c2.metric(f"{away} Win",  f"{res['away_prob']:.1%}")
+                c2.metric("Edge",         f"{res['away_edge']:+.1%}")
+                c2.markdown(_badge(res["away_bolt"]), unsafe_allow_html=True)
+                if res["home_bolt"] == "SOVEREIGN BOLT": st.success(f"⚡ SOVEREIGN BOLT — {home} ML")
+                if res["away_bolt"] == "SOVEREIGN BOLT": st.success(f"⚡ SOVEREIGN BOLT — {away} ML")
+            else:
+                st.error("No moneyline data for this game.")
+
+    # --- RESTORED: Manual Game Input Expander ---
+    with st.expander("✍️ Manual Game Input", expanded=False):
+        st.markdown("Enter your own game lines for analysis (useful for testing or unsupported sports).")
+        with st.form("manual_game_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                home_team_man = st.text_input("Home Team", "Home")
+                away_team_man = st.text_input("Away Team", "Away")
+                spread_man = st.number_input("Spread (home team)", value=0.0, step=0.5)
+                spread_odds_man = st.number_input("Spread Odds (American)", value=-110)
+            with col2:
+                total_man = st.number_input("Total (O/U)", value=220.0, step=0.5)
+                over_odds_man = st.number_input("Over Odds", value=-110)
+                under_odds_man = st.number_input("Under Odds", value=-110)
+                home_ml_man = st.number_input("Home Moneyline", value=-110)
+                away_ml_man = st.number_input("Away Moneyline", value=-110)
+            submitted = st.form_submit_button("Analyze Manual Game")
+            if submitted:
+                st.subheader("Manual Game Analysis")
+                # Spread
+                if spread_man != 0.0:
+                    res_s = analyze_spread(home_team_man, away_team_man, sport, spread_man, int(spread_odds_man))
+                    st.markdown(f"**Spread** – {home_team_man} {spread_man:+.1f}")
+                    st.write(f"Cover prob: {res_s['home_cover_prob']:.1%} | Edge: {res_s['home_edge']:+.1%}")
+                    st.markdown(_badge(res_s["home_bolt"]), unsafe_allow_html=True)
+                    st.write(f"{away_team_man} cover: {res_s['away_cover_prob']:.1%} | Edge: {res_s['away_edge']:+.1%}")
+                # Total
+                if total_man > 0:
+                    res_t = analyze_total(home_team_man, away_team_man, sport, total_man, int(over_odds_man), int(under_odds_man))
+                    st.markdown(f"**Total** – {total_man}")
+                    st.write(f"Over: {res_t['over_prob']:.1%} (Edge {res_t['over_edge']:+.1%})")
+                    st.write(f"Under: {res_t['under_prob']:.1%} (Edge {res_t['under_edge']:+.1%})")
+                # Moneyline
+                if home_ml_man != 0 and away_ml_man != 0:
+                    res_m = analyze_ml(home_team_man, away_team_man, sport, int(home_ml_man), int(away_ml_man))
+                    st.markdown(f"**Moneyline**")
+                    st.write(f"{home_team_man}: {res_m['home_prob']:.1%} (Edge {res_m['home_edge']:+.1%})")
+                    st.write(f"{away_team_man}: {res_m['away_prob']:.1%} (Edge {res_m['away_edge']:+.1%})")
 
 def _tab_best_bets() -> None:
     st.header("🏆 Best Bets — Automated Recommendations")
