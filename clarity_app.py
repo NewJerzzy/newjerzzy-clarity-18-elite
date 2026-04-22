@@ -1,11 +1,12 @@
 # =============================================================================
-# CLARITY PRIME 24.2 — FULLY RESTORED (OCR + Manual Game Input)
+# CLARITY PRIME 24.3 — FULLY RESTORED + MANUAL BET ENTRY
 # =============================================================================
 # Merges:
 #   • CLARITY 23.1 (tier-aware fallback, Monte Carlo in props, full parsers)
 #   • CLARITY PRIME 24.0 (clean UI, auto-scan once, bankroll graph, badges)
 #   • Restored: Player Props text/image OCR expander
 #   • Restored: Game Analyzer manual input expander
+#   • NEW: Manual bet entry in History tab (for bets placed outside CLARITY)
 # =============================================================================
 
 import os
@@ -69,7 +70,7 @@ if not PARSER_LOGGER.handlers:
 # =============================================================================
 # VERSION & PATHS
 # =============================================================================
-VERSION    = "PRIME 24.2"
+VERSION    = "PRIME 24.3"
 BUILD_DATE = "2026-04-21"
 DB_PATH    = "clarity_prime.db"
 
@@ -1718,7 +1719,7 @@ def initialize_best_bets() -> None:
             st.session_state["best_bets_initialized"] = False
 
 # =============================================================================
-# STREAMLIT UI — CLARITY PRIME 24.2 (RESTORED OCR & MANUAL GAME INPUT)
+# STREAMLIT UI — CLARITY PRIME 24.3 (FULLY RESTORED + MANUAL BET ENTRY)
 # =============================================================================
 _BADGE_CSS = {
     "SOVEREIGN BOLT": ("⚡","background:#f59e0b;color:#1a1a2e;font-weight:800;"),
@@ -2176,6 +2177,53 @@ def _tab_slip_lab() -> None:
 
 def _tab_history() -> None:
     st.header("📊 History & Accuracy Metrics")
+    
+    # --- NEW: Manual bet entry (for bets placed outside CLARITY) ---
+    with st.expander("➕ Manually Record a Bet (already settled)", expanded=False):
+        with st.form("manual_bet_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                player = st.text_input("Player Name", "LeBron James")
+                market = st.selectbox("Market", ["PTS", "REB", "AST", "PRA", "PR", "PA"])
+                line = st.number_input("Line", value=25.5, step=0.5)
+            with col2:
+                pick = st.selectbox("Pick", ["OVER", "UNDER"])
+                odds = st.number_input("American Odds", value=-110)
+                result = st.selectbox("Result", ["WIN", "LOSS", "PUSH"])
+            with col3:
+                actual = st.number_input("Actual Stat", value=0.0, step=0.1)
+                date_settled = st.date_input("Date Settled", value=datetime.now().date())
+            submitted = st.form_submit_button("Record Bet")
+            if submitted:
+                if result == "WIN":
+                    profit = (odds / 100) * 100 if odds > 0 else (100 / abs(odds)) * 100
+                elif result == "LOSS":
+                    profit = -100
+                else:  # PUSH
+                    profit = 0
+                insert_slip({
+                    "type": "PROP",
+                    "sport": "NBA",
+                    "player": player,
+                    "market": market,
+                    "line": line,
+                    "pick": pick,
+                    "odds": int(odds),
+                    "edge": 0.0,
+                    "prob": 0.5,
+                    "kelly": 0.0,
+                    "tier": "MANUAL",
+                    "bolt_signal": "MANUAL",
+                    "result": result,
+                    "actual": actual,
+                    "profit": profit,
+                    "settled_date": date_settled.strftime("%Y-%m-%d"),
+                    "bankroll": get_bankroll(),
+                })
+                st.success(f"Bet recorded: {player} {pick} {line} {market} → {result}")
+                st.rerun()
+    
+    # --- Existing dashboard and slip display ---
     df = get_all_slips(500)
     dash = accuracy_dashboard()
     c1,c2,c3,c4 = st.columns(4)
@@ -2183,6 +2231,7 @@ def _tab_history() -> None:
     c2.metric("ROI",          f"{dash['roi']}%")
     c3.metric("Units Profit", str(dash['units_profit']))
     c4.metric("SEM Score",    str(dash['sem_score']))
+    
     if not df.empty and "profit" in df.columns:
         settled = df[df["result"].isin(["WIN","LOSS"])].copy()
         if not settled.empty:
@@ -2190,10 +2239,12 @@ def _tab_history() -> None:
             settled["cum_profit"] = settled["profit"].cumsum()
             st.subheader("Cumulative P&L Curve")
             st.line_chart(settled[["settled_date","cum_profit"]].set_index("settled_date"))
+    
     st.subheader("By Sport")
     st.json(dash["by_sport"])
     st.subheader("By Tier")
     st.json(dash["by_tier"])
+    
     st.markdown("---")
     st.subheader("All Bets")
     if not df.empty:
@@ -2209,7 +2260,7 @@ def _tab_history() -> None:
                 update_slip_result(slip_id, res_pick, actual, int(sel_row.get("odds",-110)))
                 st.success("Settled!"); st.rerun()
     else:
-        st.info("No bets recorded yet.")
+        st.info("No bets recorded yet. Use the 'Manually Record a Bet' expander above to add your past bets.")
 
 def _tab_model(bankroll: float) -> None:
     st.header("🤖 Model-Priced Bets (DraftKings)")
