@@ -1,18 +1,17 @@
 # =============================================================================
-# CLARITY PRIME 24.4 — PURE MANUAL MODE (NO AUTO-SCAN)
+# CLARITY PRIME 24.5 — BATCH ANALYSIS + ONE-CLICK ADD TO SLIP
 # =============================================================================
-# All approved recommendations implemented:
-#   • NO auto-scan on app load (pure manual refresh)
+# All features:
+#   • Pure manual mode (no auto-scan on app load)
+#   • Batch analysis: "Analyze All Props" button in OCR expander & Slip Lab
+#   • Color-coded results (green = approved, red = pass)
+#   • "Add Approved to Slip" button (batch add all good props)
 #   • .webp upload support
 #   • Collapsible sections for large dataframes
-#   • Color-coded edges (green/yellow/red)
-#   • Fractional Kelly consistency (0.25)
-#   • Parlay generator pruning (filter low-edge props early)
-#   • Session state optimization (store only filtered data)
-#   • API caching (@st.cache_data with TTL)
-#   • st.toast() feedback for long operations
-#   • Monte Carlo moved to cached function
-#   • Opponent adjustments (defensive ratings)
+#   • Color-coded edges in Best Bets
+#   • Fractional Kelly consistency
+#   • Parlay generator pruning
+#   • API caching + st.toast() feedback
 # =============================================================================
 
 import os
@@ -76,7 +75,7 @@ if not PARSER_LOGGER.handlers:
 # =============================================================================
 # VERSION & PATHS
 # =============================================================================
-VERSION    = "PRIME 24.4"
+VERSION    = "PRIME 24.5"
 BUILD_DATE = "2026-04-22"
 DB_PATH    = "clarity_prime.db"
 
@@ -1088,6 +1087,75 @@ def analyze_prop(
     }
 
 # =============================================================================
+# BATCH ANALYSIS FUNCTION (NEW)
+# =============================================================================
+def analyze_props_batch(props: List[Dict], sport: str = "NBA", bankroll: float = None) -> List[Dict]:
+    """Analyze multiple props and return results with color coding."""
+    if bankroll is None:
+        bankroll = get_bankroll()
+    results = []
+    for prop in props:
+        try:
+            res = analyze_prop(
+                player=prop.get("player", ""),
+                market=prop.get("market", "PTS"),
+                line=float(prop.get("line", 0)),
+                pick=prop.get("pick", "OVER"),
+                sport=sport,
+                odds=int(prop.get("odds", -110)),
+                bankroll=bankroll,
+                tier="mid",
+                use_mc=False,
+            )
+            results.append({
+                "prop": prop,
+                "analysis": res,
+                "edge": res["edge"],
+                "tier": res["tier"],
+                "bolt_signal": res["bolt_signal"],
+                "verdict": "APPROVED" if res["edge"] >= 0.04 else "PASS",
+                "color": "green" if res["edge"] >= 0.04 else "red",
+            })
+        except Exception as e:
+            logging.error(f"Batch analysis error for {prop}: {e}")
+            results.append({
+                "prop": prop,
+                "analysis": None,
+                "edge": 0,
+                "tier": "ERROR",
+                "bolt_signal": "ERROR",
+                "verdict": f"Error: {e}",
+                "color": "red",
+            })
+    return results
+
+def display_batch_results(results: List[Dict]) -> Tuple[List[Dict], int]:
+    """Display color-coded batch analysis results and return approved props."""
+    approved_props = []
+    for r in results:
+        edge_pct = r["edge"] * 100
+        if r["verdict"] == "APPROVED":
+            icon = "✅"
+            color = "#10b981"
+            approved_props.append(r["prop"])
+        elif r["edge"] >= 0.15:
+            icon = "⚡"
+            color = "#10b981"
+            approved_props.append(r["prop"])
+        else:
+            icon = "❌"
+            color = "#ef4444"
+        
+        prop = r["prop"]
+        st.markdown(
+            f'<span style="color:{color}; font-weight:500;">{icon} {r["verdict"]} (Edge: {edge_pct:.1f}%) – {prop.get("player","?")} {prop.get("pick","?")} {prop.get("line","?")} {prop.get("market","?")}</span>',
+            unsafe_allow_html=True,
+        )
+        if r.get("analysis") and r["analysis"].get("bolt_signal") == "SOVEREIGN BOLT":
+            st.caption(f"   ⚡ SOVEREIGN BOLT – Kelly stake: ${r['analysis']['stake']:.2f}")
+    return approved_props, len(approved_props)
+
+# =============================================================================
 # GAME ANALYSIS (spread / total / moneyline)
 # =============================================================================
 def analyze_total(home: str, away: str, sport: str,
@@ -1911,7 +1979,7 @@ def initialize_session_state() -> None:
     # NO API CALLS HERE
 
 # =============================================================================
-# STREAMLIT UI — CLARITY PRIME 24.4 (PURE MANUAL MODE)
+# STREAMLIT UI — CLARITY PRIME 24.5 (PURE MANUAL + BATCH ANALYSIS)
 # =============================================================================
 _BADGE_CSS = {
     "SOVEREIGN BOLT": ("⚡","background:#f59e0b;color:#1a1a2e;font-weight:800;"),
@@ -2041,28 +2109,81 @@ def _tab_props(bankroll: float) -> None:
             with st.expander("Show Live Props Data", expanded=False):
                 st.dataframe(show_df, use_container_width=True)
     
-    # OCR expander with .webp support
+    # OCR expander with .webp support and BATCH ANALYSIS
     with st.expander("📋 Scan a Prop Slip (Text or Screenshot)", expanded=False):
         st.markdown("Paste a prop line or upload screenshots -- CLARITY will extract and analyze the first valid prop from each.")
+        
+        # Text input
         scan_text = st.text_area("📋 Paste prop slip text", height=150, placeholder="e.g., LeBron James OVER 25.5 PTS\nor full PrizePicks block")
+        parsed_props = []
         if scan_text:
-            props = parse_slip(scan_text)
-            if props:
-                for prop in props:
+            parsed_props = parse_slip(scan_text)
+            if parsed_props:
+                st.success(f"Found {len(parsed_props)} props.")
+                for prop in parsed_props:
                     st.write(f"**Parsed:** {prop.get('player')} - {prop.get('market')} {prop.get('pick')} {prop.get('line')}")
+                
+                # Batch analysis button
+                if st.button("🔍 Analyze All Props", key="batch_analyze_text"):
+                    with st.spinner(f"Analyzing {len(parsed_props)} props..."):
+                        batch_results = analyze_props_batch(parsed_props, sport, bankroll)
+                        st.subheader("Analysis Results:")
+                        approved, count = display_batch_results(batch_results)
+                        if approved and st.button(f"➕ Add {count} Approved Props to Slip", key="batch_add_text"):
+                            for prop in approved:
+                                res = analyze_prop(prop.get("player",""), prop.get("market","PTS"),
+                                                  float(prop.get("line",0)), prop.get("pick","OVER"),
+                                                  sport, int(prop.get("odds",-110)), bankroll)
+                                insert_slip({
+                                    "type":"PROP","sport":sport,
+                                    "player":prop.get("player",""),"team":"","opponent":"",
+                                    "market":prop.get("market",""),"line":float(prop.get("line",0)),
+                                    "pick":prop.get("pick","OVER"),"odds":int(prop.get("odds",-110)),
+                                    "edge":res["edge"],"prob":res["prob"],"kelly":res["kelly"],
+                                    "tier":res["tier"],"bolt_signal":res["bolt_signal"],"bankroll":bankroll,
+                                })
+                            st.success(f"Added {count} approved props to slip!")
+                            st.toast(f"{count} props added", icon="➕")
+                            st.rerun()
             else:
                 st.info("No props detected.")
-        # .webp support added
+        
+        # Image upload with .webp support
         uploaded_files = st.file_uploader("Or upload screenshot(s)", type=["png","jpg","jpeg","webp"], accept_multiple_files=True)
         if uploaded_files:
+            all_img_props = []
             for img_file in uploaded_files:
                 img = Image.open(img_file)
                 props = parse_image_props(img_file.getvalue())
                 if props:
+                    st.write(f"**{img_file.name}:** {len(props)} props detected")
                     for prop in props:
-                        st.write(f"**From image:** {prop.get('player')} - {prop.get('market')} {prop.get('pick')} {prop.get('line')}")
+                        st.write(f"  • {prop.get('player')} - {prop.get('market')} {prop.get('pick')} {prop.get('line')}")
+                        all_img_props.append(prop)
                 else:
-                    st.write(f"No props detected in {img_file.name}")
+                    st.write(f"**{img_file.name}:** No props detected")
+            
+            if all_img_props and st.button("🔍 Analyze All Props from Images", key="batch_analyze_images"):
+                with st.spinner(f"Analyzing {len(all_img_props)} props..."):
+                    batch_results = analyze_props_batch(all_img_props, sport, bankroll)
+                    st.subheader("Analysis Results:")
+                    approved, count = display_batch_results(batch_results)
+                    if approved and st.button(f"➕ Add {count} Approved Props to Slip", key="batch_add_images"):
+                        for prop in approved:
+                            res = analyze_prop(prop.get("player",""), prop.get("market","PTS"),
+                                              float(prop.get("line",0)), prop.get("pick","OVER"),
+                                              sport, int(prop.get("odds",-110)), bankroll)
+                            insert_slip({
+                                "type":"PROP","sport":sport,
+                                "player":prop.get("player",""),"team":"","opponent":"",
+                                "market":prop.get("market",""),"line":float(prop.get("line",0)),
+                                "pick":prop.get("pick","OVER"),"odds":int(prop.get("odds",-110)),
+                                "edge":res["edge"],"prob":res["prob"],"kelly":res["kelly"],
+                                "tier":res["tier"],"bolt_signal":res["bolt_signal"],"bankroll":bankroll,
+                            })
+                        st.success(f"Added {count} approved props to slip!")
+                        st.toast(f"{count} props added", icon="➕")
+                        st.rerun()
 
 def _tab_games(bankroll: float) -> None:
     st.header("🏟️ Game Analyzer — Spreads, Totals & Moneylines")
@@ -2206,7 +2327,6 @@ def _tab_best_bets() -> None:
     st.header("🏆 Best Bets — Automated Recommendations")
     st.caption("Top player props and game bets ranked by CLARITY edge model")
     
-    # Show message if no data loaded yet
     if st.session_state.get("last_update") is None:
         st.info("👆 No data loaded. Click 'Refresh All Data' below to fetch the latest lines and projections.")
     
@@ -2239,7 +2359,6 @@ def _tab_best_bets() -> None:
     if last_update and isinstance(last_update, datetime):
         st.caption(f"Last scan: {last_update.strftime('%H:%M:%S')}")
     
-    # Player Props Section with color coding and expander
     df_pb = st.session_state.get("player_bets_df", pd.DataFrame())
     if not df_pb.empty:
         filtered = df_pb[df_pb["edge"] >= min_edge].head(max_props).copy()
@@ -2296,7 +2415,6 @@ def _tab_best_bets() -> None:
         st.info("No player prop data available.")
     st.divider()
     
-    # Game Bets Section with color coding
     game_bets = st.session_state.get("game_bets", [])
     filtered_g = sorted([b for b in game_bets if b["edge"] >= min_edge],
                         key=lambda x: x["edge"], reverse=True)[:max_games]
@@ -2340,7 +2458,6 @@ def _tab_best_bets() -> None:
         st.info(f"No game bets above {min_edge*100:.1f}% edge threshold.")
     st.divider()
     
-    # Parlay Generator with pruning
     st.subheader("🎲 Auto Parlay Generator")
     max_legs_par = st.slider("Max legs", 2, 6, 4, key="par_legs")
     min_parlay_edge = st.slider("Min edge per leg (%)", 0.0, 10.0, 2.0, 0.5) / 100.0
@@ -2395,43 +2512,90 @@ def _tab_slip_lab() -> None:
     st.header("📋 Slip Lab")
     st.caption("Paste text or upload screenshots — CLARITY will parse and analyze every prop.")
     tab_t, tab_i = st.tabs(["✍️ Text Input","📷 Image Upload"])
+    
     with tab_t:
         text = st.text_area("Paste slip text", height=250,
                             placeholder="e.g., LeBron James OVER 25.5 PTS  or full PrizePicks block")
         if text:
-            with st.spinner("Parsing..."):
-                props = parse_slip(text)
+            props = parse_slip(text)
             if props:
                 st.success(f"{len(props)} props detected.")
                 for p in props:
-                    c1,c2,c3 = st.columns([3,1,1])
+                    c1, c2, c3 = st.columns([3,1,1])
                     c1.write(f"**{p.get('player','')}** — {p.get('market','')} {p.get('pick','')} {p.get('line','')}")
                     c2.write(p.get("sport",""))
-                    if c3.button("Analyze", key=f"at_{id(p)}"):
+                    if c3.button("Analyze Single", key=f"at_{id(p)}"):
                         res = analyze_prop(p["player"], p["market"], p["line"],
                                            p["pick"], p.get("sport","NBA"))
                         st.markdown(_badge(res["bolt_signal"]), unsafe_allow_html=True)
                         st.write(f"Prob: {res['prob']:.1%}  Edge: {res['edge']:+.2%}  Stake: ${res['stake']:.2f}")
+                
+                # Batch analysis button for text input
+                if st.button("🔍 Analyze All Props", key="slip_lab_batch_text"):
+                    with st.spinner(f"Analyzing {len(props)} props..."):
+                        batch_results = analyze_props_batch(props, "NBA", get_bankroll())
+                        st.subheader("Analysis Results:")
+                        approved, count = display_batch_results(batch_results)
+                        if approved and st.button(f"➕ Add {count} Approved Props to Slip", key="slip_lab_add_text"):
+                            for prop in approved:
+                                res = analyze_prop(prop.get("player",""), prop.get("market","PTS"),
+                                                  float(prop.get("line",0)), prop.get("pick","OVER"),
+                                                  "NBA", int(prop.get("odds",-110)), get_bankroll())
+                                insert_slip({
+                                    "type":"PROP","sport":"NBA",
+                                    "player":prop.get("player",""),"team":"","opponent":"",
+                                    "market":prop.get("market",""),"line":float(prop.get("line",0)),
+                                    "pick":prop.get("pick","OVER"),"odds":int(prop.get("odds",-110)),
+                                    "edge":res["edge"],"prob":res["prob"],"kelly":res["kelly"],
+                                    "tier":res["tier"],"bolt_signal":res["bolt_signal"],"bankroll":get_bankroll(),
+                                })
+                            st.success(f"Added {count} approved props to slip!")
+                            st.toast(f"{count} props added", icon="➕")
+                            st.rerun()
             else:
                 st.info("No props detected. Try a different format.")
+    
     with tab_i:
         files = st.file_uploader("Upload screenshots", type=["png","jpg","jpeg","webp"], accept_multiple_files=True)
         if files:
+            all_props = []
             for f in files:
                 st.write(f"**{f.name}**")
                 with st.spinner(f"OCR {f.name}..."):
                     props = parse_image_props(f.getvalue())
                 if props:
+                    st.write(f"  Found {len(props)} props:")
                     for p in props:
-                        st.write(f"  • {p.get('player','')} {p.get('pick','')} "
-                                 f"{p.get('line','')} {p.get('market','')}")
+                        st.write(f"    • {p.get('player','')} {p.get('pick','')} {p.get('line','')} {p.get('market','')}")
+                        all_props.append(p)
                 else:
-                    st.caption("No props extracted — check OCR_SPACE_API_KEY.")
+                    st.caption("  No props extracted — check OCR_SPACE_API_KEY.")
+            
+            if all_props and st.button("🔍 Analyze All Props from Images", key="slip_lab_batch_images"):
+                with st.spinner(f"Analyzing {len(all_props)} props..."):
+                    batch_results = analyze_props_batch(all_props, "NBA", get_bankroll())
+                    st.subheader("Analysis Results:")
+                    approved, count = display_batch_results(batch_results)
+                    if approved and st.button(f"➕ Add {count} Approved Props to Slip", key="slip_lab_add_images"):
+                        for prop in approved:
+                            res = analyze_prop(prop.get("player",""), prop.get("market","PTS"),
+                                              float(prop.get("line",0)), prop.get("pick","OVER"),
+                                              "NBA", int(prop.get("odds",-110)), get_bankroll())
+                            insert_slip({
+                                "type":"PROP","sport":"NBA",
+                                "player":prop.get("player",""),"team":"","opponent":"",
+                                "market":prop.get("market",""),"line":float(prop.get("line",0)),
+                                "pick":prop.get("pick","OVER"),"odds":int(prop.get("odds",-110)),
+                                "edge":res["edge"],"prob":res["prob"],"kelly":res["kelly"],
+                                "tier":res["tier"],"bolt_signal":res["bolt_signal"],"bankroll":get_bankroll(),
+                            })
+                        st.success(f"Added {count} approved props to slip!")
+                        st.toast(f"{count} props added", icon="➕")
+                        st.rerun()
 
 def _tab_history() -> None:
     st.header("📊 History & Accuracy Metrics")
     
-    # Manual bet entry expander
     with st.expander("➕ Manually Record a Bet (already settled)", expanded=False):
         with st.form("manual_bet_form"):
             col1, col2, col3 = st.columns(3)
@@ -2477,7 +2641,6 @@ def _tab_history() -> None:
                 st.toast("Bet recorded", icon="📝")
                 st.rerun()
     
-    # Dashboard metrics
     df = get_all_slips(500)
     dash = accuracy_dashboard()
     c1, c2, c3, c4 = st.columns(4)
@@ -2683,7 +2846,7 @@ def main():
     init_db()
     _init_health()
     bankroll = _sidebar()
-    initialize_session_state()  # No API calls - pure manual
+    initialize_session_state()
     tabs = st.tabs([
         "🎯 Player Props",
         "🏟️ Game Analyzer",
