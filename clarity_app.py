@@ -1,7 +1,8 @@
 # =============================================================================
-# CLARITY PRIME 24.7 — FINAL ROBUST PARSER + BATCH SETTLE
+# CLARITY PRIME 24.7 — FULLY FUNCTIONAL WITH BATCH SETTLE
 # =============================================================================
-# Handles MyBookie totals, Bovada parlays, PrizePicks props, and generic lines.
+# All original features work. Added robust parsers for MyBookie totals,
+# Bovada parlays, PrizePicks props, plus a one‑click batch settle tool.
 # =============================================================================
 
 import os
@@ -68,7 +69,7 @@ BUILD_DATE = "2026-04-22"
 DB_PATH    = "clarity_prime.db"
 
 # =============================================================================
-# SPORT & STAT CONFIGURATION (unchanged)
+# SPORT & STAT CONFIGURATION
 # =============================================================================
 SPORT_MODELS: Dict[str, Dict] = {
     "NBA":     {"variance_factor": 1.18, "avg_total": 228.5, "home_advantage": 3.0},
@@ -170,7 +171,7 @@ def historical_fallback(market: str, sport: str = "NBA", tier: str = "mid") -> L
     return _FB_DEFAULT
 
 # =============================================================================
-# DATABASE (unchanged)
+# DATABASE
 # =============================================================================
 def _conn() -> sqlite3.Connection:
     return sqlite3.connect(DB_PATH)
@@ -339,7 +340,7 @@ def clear_pending_slips() -> None:
         logging.error(f"clear_pending_slips: {e}")
 
 # =============================================================================
-# API HEALTH TRACKER (unchanged)
+# API HEALTH TRACKER
 # =============================================================================
 _SERVICES = [
     "BallsDontLie (NBA)", "Odds-API.io (scores)", "The Odds API (scanner)",
@@ -361,7 +362,7 @@ def _health(service: str, ok: bool, err: str = "", fallback: bool = False) -> No
     st.session_state.health[service] = {"ok": ok, "err": err[:200], "fallback": fallback}
 
 # =============================================================================
-# HTTP SESSION FACTORY (unchanged)
+# HTTP SESSION FACTORY
 # =============================================================================
 def make_session(headers: dict = None) -> requests.Session:
     h = headers or {}
@@ -385,7 +386,7 @@ def make_session(headers: dict = None) -> requests.Session:
     return s
 
 # =============================================================================
-# CACHED API FUNCTIONS (unchanged)
+# CACHED API FUNCTIONS
 # =============================================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_dk_dataframe_cached() -> pd.DataFrame:
@@ -404,7 +405,7 @@ def fetch_games_cached(sport: str, days: int = 0) -> List[Dict]:
     return game_scanner.fetch([sport], days=days)
 
 # =============================================================================
-# DRAFTKINGS LINE FETCHER (unchanged)
+# DRAFTKINGS LINE FETCHER
 # =============================================================================
 DK_EVENT_LIST_URL = "https://sportsbook.draftkings.com//sites/US-SB/api/v5/eventgroups/4"
 
@@ -497,7 +498,7 @@ def fetch_dk_dataframe() -> pd.DataFrame:
     return df
 
 # =============================================================================
-# PLAYER PROJECTIONS ENGINE (unchanged)
+# PLAYER PROJECTIONS ENGINE
 # =============================================================================
 @dataclass
 class PlayerProjection:
@@ -552,7 +553,7 @@ def build_projection(
     )
 
 # =============================================================================
-# ANALYTICAL DISTRIBUTION ENGINE (unchanged)
+# ANALYTICAL DISTRIBUTION ENGINE
 # =============================================================================
 def _erf(x: float) -> float:
     t   = 1.0 / (1.0 + 0.5 * abs(x))
@@ -583,7 +584,7 @@ class StatDist:
         return cls(mean, var)
 
 # =============================================================================
-# MONTE CARLO SIMULATION (unchanged)
+# MONTE CARLO SIMULATION
 # =============================================================================
 _NBA_CORR = np.array([
     [1.00, 0.25, 0.35, 0.10, 0.05, 0.20],
@@ -669,7 +670,7 @@ def mc_price_market(proj: PlayerProjection, market: str, sb_line: float, n: int 
             "edge": edge, "kelly": kelly_val}
 
 # =============================================================================
-# UNIFIED KELLY FUNCTION (unchanged)
+# UNIFIED KELLY FUNCTION
 # =============================================================================
 def calculate_kelly_stake(bankroll: float, prob: float, odds: int, fraction: float = KELLY_FRACTION) -> float:
     if odds == 0:
@@ -680,7 +681,7 @@ def calculate_kelly_stake(bankroll: float, prob: float, odds: int, fraction: flo
     return bankroll * k * fraction
 
 # =============================================================================
-# ANALYTICAL PRICING (unchanged)
+# ANALYTICAL PRICING
 # =============================================================================
 def american_to_prob(odds: int) -> float:
     o = float(odds)
@@ -721,7 +722,7 @@ def price_prop_bet(
     }
 
 # =============================================================================
-# NBA STATS API (unchanged)
+# NBA STATS API (BallsDontLie)
 # =============================================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def _nba_stats(player_name: str, market: str, game_date: str = None) -> List[float]:
@@ -762,7 +763,7 @@ def _nba_stats(player_name: str, market: str, game_date: str = None) -> List[flo
         return []
 
 # =============================================================================
-# NBA TEAM STATS (unchanged)
+# NBA TEAM STATS
 # =============================================================================
 NBA_TEAM_IDS: Dict[str, int] = {
     "ATLANTA HAWKS":1,"BOSTON CELTICS":2,"BROOKLYN NETS":3,"CHARLOTTE HORNETS":4,
@@ -839,7 +840,7 @@ def fetch_team_margins(team: str, window: int = 8) -> List[float]:
         return [0.0]*8
 
 # =============================================================================
-# FLASHLIVE & ESPN FALLBACK (unchanged)
+# FLASHLIVE & ESPN FALLBACK
 # =============================================================================
 _FL_HOST = "flashlive-sports.p.rapidapi.com"
 _FL_MAP = {"NBA":1,"NFL":2,"MLB":3,"NHL":4,"SOCCER":5,"TENNIS":6,
@@ -989,7 +990,7 @@ def analyze_prop_legacy(
     }
 
 # =============================================================================
-# GAME ANALYSIS (unchanged)
+# GAME ANALYSIS
 # =============================================================================
 def analyze_total(home: str, away: str, sport: str,
                   line: float, over_odds: int, under_odds: int) -> Dict:
@@ -1070,7 +1071,7 @@ def analyze_ml(home: str, away: str, sport: str, home_odds: int, away_odds: int)
     }
 
 # =============================================================================
-# GAME SCORES (unchanged)
+# GAME SCORES
 # =============================================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_score(team: str, opp: str, sport: str, date: str) -> Tuple[Optional[float], Optional[float]]:
@@ -1163,15 +1164,8 @@ def _dedupe(props: List[Dict]) -> List[Dict]:
             seen[k] = p
     return list(seen.values())
 
-# ---------- NEW ROBUST PARSER FOR MYBOOKIE TOTALS ----------
+# ---------- NEW PARSER FOR MYBOOKIE TOTALS ----------
 def _parse_mybookie_totals(lines: List[str]) -> List[Dict]:
-    """Parse MyBookie multi-game totals format:
-       Under 218.5
-       -110
-       Total (incl. overtime)
-       NBA | Basketball Orlando Magic vs. Detroit Pistons
-       ...
-    """
     bets = []
     i = 0
     n = len(lines)
@@ -1180,7 +1174,6 @@ def _parse_mybookie_totals(lines: List[str]) -> List[Dict]:
         if not re.match(r'^(Over|Under)\s+[\d\.]+', line, re.IGNORECASE):
             i += 1
             continue
-        # Extract pick and line
         m = re.match(r'^(Over|Under)\s+([\d\.]+)', line, re.IGNORECASE)
         if not m:
             i += 1
@@ -1195,27 +1188,17 @@ def _parse_mybookie_totals(lines: List[str]) -> List[Dict]:
             i += 1
             continue
         odds = int(odds_line)
-        # Next lines contain description and sport
         if i+2 >= n:
             break
-        desc_line = lines[i+2].strip()  # e.g., "Total (incl. overtime)"
+        desc_line = lines[i+2].strip()
         sport_line = lines[i+3].strip() if i+3 < n else ""
-        # Determine sport from sport_line
-        sport = "NBA"  # default
+        sport = "NBA"
         if "NBA" in sport_line:
             sport = "NBA"
         elif "NHL" in sport_line:
             sport = "NHL"
         elif "MLB" in sport_line:
             sport = "MLB"
-        # Extract teams from sport_line (e.g., "NBA | Basketball Orlando Magic vs. Detroit Pistons")
-        teams = ""
-        if "|" in sport_line:
-            teams_part = sport_line.split("|")[-1].strip()
-            # Remove "Basketball" etc.
-            teams_part = re.sub(r'\b(Basketball|Ice Hockey|Baseball)\b', '', teams_part, flags=re.IGNORECASE).strip()
-            teams = teams_part
-        # Build bet
         bet = {
             "type": "GAME",
             "sport": sport,
@@ -1230,28 +1213,13 @@ def _parse_mybookie_totals(lines: List[str]) -> List[Dict]:
             "result": "PENDING"
         }
         bets.append(bet)
-        # Skip to next bet: after sport_line, there is a date line, then next bet starts.
-        # In the example, after sport_line comes "Game Date: ..." then blank line then next "Under ..."
-        i += 5  # approximate jump; but we'll rely on loop to find next match
+        i += 5
     return bets
 
-# ---------- NEW PARSER FOR BOVADA PARLAYS ----------
+# ---------- NEW PARSER FOR BOVADA PARLAY ----------
 def _parse_bovada_parlay(lines: List[str]) -> List[Dict]:
-    """Parse Bovada parlay format:
-       2 Team Parlay
-       Win
-       Los Angeles Kings @ Colorado Avalanche
-       4/19/26 12:13 PM
-       Colorado Avalanche (-275)
-       (Game) Moneyline
-       ...
-    """
-    bets = []
-    # Look for "Parlay" in first few lines
     for idx, ln in enumerate(lines):
         if "Parlay" in ln:
-            # This is a parlay slip. We'll treat as a single bet.
-            # Find overall result: look for "Win" or "Loss" near the top
             result = None
             for rline in lines[:5]:
                 if "Win" in rline:
@@ -1262,7 +1230,6 @@ def _parse_bovada_parlay(lines: List[str]) -> List[Dict]:
                     break
             if not result:
                 result = "PENDING"
-            # Extract odds: look for "+" or "-" followed by number
             odds = None
             for ln2 in lines:
                 if re.search(r'[+-]\d+', ln2) and "Risk" not in ln2 and "Winnings" not in ln2:
@@ -1272,10 +1239,9 @@ def _parse_bovada_parlay(lines: List[str]) -> List[Dict]:
                         break
             if odds is None:
                 odds = -110
-            # Build a single parlay bet
             bet = {
                 "type": "PARLAY",
-                "sport": "NBA",  # default, could be detected
+                "sport": "NBA",
                 "player": "",
                 "team": "",
                 "opponent": "",
@@ -1286,32 +1252,25 @@ def _parse_bovada_parlay(lines: List[str]) -> List[Dict]:
                 "actual": None,
                 "result": result
             }
-            bets.append(bet)
-            break
-    return bets
+            return [bet]
+    return []
 
 # ---------- NEW PARSER FOR PRIZEPICKS PROPS ----------
 def _parse_prizepicks_props(lines: List[str]) -> List[Dict]:
-    """Parse PrizePicks props like:
-       Paolo Banchero UNDER 33.5 PRA
-       (actual stats may appear later)
-    """
     bets = []
     for line in lines:
         line = line.strip()
-        # Look for pattern: Player Name OVER/UNDER number MARKET
         m = re.match(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+([A-Z]+)$', line, re.IGNORECASE)
         if m:
             player = m.group(1).strip()
             pick = m.group(2).upper()
             line_val = float(m.group(3))
             market = m.group(4).upper()
-            # Detect sport from market
             sport = "NBA"
             if market in ["KS", "SOG", "SAVES", "GOALS", "ASSISTS", "HITS"]:
                 if market == "KS":
                     sport = "MLB"
-                elif market in ["SOG", "SAVES", "GOALS", "ASSISTS", "HITS"]:
+                else:
                     sport = "NHL"
             bet = {
                 "type": "PROP",
@@ -1322,43 +1281,168 @@ def _parse_prizepicks_props(lines: List[str]) -> List[Dict]:
                 "market": market,
                 "line": line_val,
                 "pick": pick,
-                "odds": -110,  # PrizePicks odds are not listed; default
+                "odds": -110,
                 "actual": None,
                 "result": "PENDING"
             }
             bets.append(bet)
     return bets
 
-# ---------- MAIN parse_slip (calls all sub-parsers) ----------
+# ---------- ORIGINAL PARSERS (keep as they were) ----------
+def _parse_pp_blocks(lines: List[str]) -> List[Dict]:
+    bets = []
+    i = 0
+    n = len(lines)
+    while i < n:
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        if i+5 >= n:
+            i += 1
+            continue
+        team_pos = lines[i+1].strip() if i+1<n else ""
+        matchup = lines[i+3].strip() if i+3<n else ""
+        line_str = lines[i+4].strip() if i+4<n else ""
+        market_r = lines[i+5].strip() if i+5<n else ""
+        try:
+            line_val = float(line_str)
+        except Exception:
+            i += 1
+            continue
+        if line_val <= 0 or line_val > 200:
+            i += 1
+            continue
+        market = _norm_market(market_r)
+        if len(market) < 2:
+            i += 1
+            continue
+        window = lines[i:i+10]
+        pick = _detect_pick(window) or "MORE"
+        try:
+            team_abbr = team_pos.split("-")[0].strip().upper()
+        except Exception:
+            team_abbr = ""
+        opp_m = re.search(r'(vs|@)\s+([A-Z]{2,3})\b', matchup)
+        opp = opp_m.group(2).upper() if opp_m else ""
+        tag = ""
+        if "goblin" in line.lower():
+            tag = "GOBLIN"
+        elif "demon" in line.lower():
+            tag = "DEMON"
+        player = re.sub(r'(Goblin|Demon)', '', line, flags=re.IGNORECASE).strip()
+        bets.append({
+            "type":"PROP","player":player,"sport":"NBA","team":team_abbr,
+            "opponent":opp,"market":market,"line":line_val,"pick":pick,
+            "result":"PENDING","actual":0.0,"odds":-110,"tag":tag,
+        })
+        i += 8
+    return bets
+
+def _parse_bovada(lines: List[str]) -> List[Dict]:
+    bets = []
+    i = 0
+    n = len(lines)
+    while i+10 < n:
+        if not re.match(r'\d{1,2}/\d{1,2}/\d{2}', lines[i]):
+            i += 1
+            continue
+        away = lines[i+2]
+        home = lines[i+3]
+        def _sp(l):
+            m = re.search(r'([+-]\d+\.?\d*)\s*\(([+-]?\d+)\)', l)
+            return (float(m.group(1)), int(m.group(2))) if m else None
+        def _tot(l):
+            m = re.search(r'([OU])(\d+\.?\d*)\s*\(([+-]?\d+)\)', l, re.IGNORECASE)
+            return ("OVER" if m.group(1).upper()=="O" else "UNDER", float(m.group(2)), int(m.group(3))) if m else None
+        def _ml(l):
+            m = re.match(r'^([+-]\d+)$', l.strip())
+            return int(m.group(1)) if m else None
+        for side,team,opp,sl in [(away,away,home,lines[i+5]),(home,home,away,lines[i+6])]:
+            sp = _sp(sl)
+            if sp:
+                bets.append({"type":"GAME","sport":"NBA","team":team,"opponent":opp,
+                             "market":"SPREAD","line":sp[0],"pick":team,"odds":sp[1],"is_alt":False})
+        for ml_line,team,opp in [(lines[i+7],away,home),(lines[i+8],home,away)]:
+            ml = _ml(ml_line)
+            if ml:
+                bets.append({"type":"GAME","sport":"NBA","team":team,"opponent":opp,
+                             "market":"ML","line":0.0,"pick":team,"odds":ml,"is_alt":False})
+        for tl in (lines[i+9], lines[i+10]):
+            tot = _tot(tl)
+            if tot:
+                pick,lv,ov = tot
+                bets.append({"type":"GAME","sport":"NBA","team":home,"opponent":away,
+                             "market":"TOTAL","line":lv,"pick":pick,"odds":ov,"is_alt":False})
+        i += 11
+    return bets
+
+def _parse_mybookie(lines: List[str]) -> List[Dict]:
+    bets = []
+    i = 0
+    n = len(lines)
+    while i+8 < n:
+        dl = lines[i+2] if i+2<n else ""
+        if not re.search(r'\b[A-Za-z]{3}\s+\d{1,2}\s+\d{1,2}:\d{2}\s+[AP]M\b', dl):
+            i += 1
+            continue
+        away = lines[i].split("-")[0].strip()
+        home = lines[i+1].split("-")[0].strip()
+        block = lines[i+4:i+13]
+        j = 0
+        while j < len(block)-1:
+            l = block[j].strip()
+            nxt = block[j+1].strip()
+            if re.match(r'^[+-]\d+(\.\d+)?$', l) and re.match(r'^[+-]\d+$', nxt):
+                side = "AWAY" if not any(b.get("market")=="SPREAD" and b.get("team")==home for b in bets) else "HOME"
+                t,o = (away,home) if side=="AWAY" else (home,away)
+                bets.append({"type":"GAME","sport":"MLB","team":t,"opponent":o,
+                             "market":"SPREAD","line":float(l),"pick":t,"odds":int(nxt),"is_alt":False})
+                j += 2
+                continue
+            m = re.match(r'^([OU])\s+(\d+(\.\d+)?)$', l, re.IGNORECASE)
+            if m and re.match(r'^[+-]\d+$', nxt):
+                ou = "OVER" if m.group(1).upper()=="O" else "UNDER"
+                bets.append({"type":"GAME","sport":"MLB","team":home,"opponent":away,
+                             "market":"TOTAL","line":float(m.group(2)),"pick":ou,"odds":int(nxt),"is_alt":False})
+                j += 2
+                continue
+            if re.match(r'^[+-]\d+$', l):
+                side = "AWAY" if not any(b.get("market")=="ML" and b.get("team")==home for b in bets) else "HOME"
+                t,o = (away,home) if side=="AWAY" else (home,away)
+                bets.append({"type":"GAME","sport":"MLB","team":t,"opponent":o,
+                             "market":"ML","line":0.0,"pick":t,"odds":int(l),"is_alt":False})
+                j += 1
+                continue
+            j += 1
+        i += 10
+    return bets
+
+# ---------- MAIN parse_slip ----------
 def parse_slip(text: str) -> List[Dict]:
     bets = []
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not lines:
         return bets
     
-    # Try MyBookie totals format first
-    mybookie_bets = _parse_mybookie_totals(lines)
-    if mybookie_bets:
-        bets.extend(mybookie_bets)
+    # Try new specific parsers
+    mybookie_totals = _parse_mybookie_totals(lines)
+    if mybookie_totals:
+        bets.extend(mybookie_totals)
     
-    # Try Bovada parlay format
-    bovada_bets = _parse_bovada_parlay(lines)
-    if bovada_bets:
-        bets.extend(bovada_bets)
+    bovada_parlay = _parse_bovada_parlay(lines)
+    if bovada_parlay:
+        bets.extend(bovada_parlay)
     
-    # Try PrizePicks props
-    prizepicks_bets = _parse_prizepicks_props(lines)
-    if prizepicks_bets:
-        bets.extend(prizepicks_bets)
+    prizepicks = _parse_prizepicks_props(lines)
+    if prizepicks:
+        bets.extend(prizepicks)
     
-    # Fallback to existing generic parsers (original _parse_pp_blocks, _parse_bovada, _parse_mybookie)
-    # but only if no bets found yet
+    # Fallback to original parsers if nothing found yet
     if not bets:
-        # Original parsers (keep them as they were)
         bets += _parse_pp_blocks(lines)
         bets += _parse_bovada(lines)
         bets += _parse_mybookie(lines)
-        # Generic line parser
         for line in lines:
             m = re.match(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)$', line, re.IGNORECASE)
             if m:
@@ -1366,18 +1450,55 @@ def parse_slip(text: str) -> List[Dict]:
                              "pick":m.group(2).upper(),"line":float(m.group(3)),
                              "market":m.group(4).upper(),"sport":"NBA","odds":-110})
     
-    # Deduplicate
     bets = _dedupe(bets)
     PARSER_LOGGER.info(f"parse_slip: extracted {len(bets)} bets")
     return bets
 
-# Keep the original _parse_pp_blocks, _parse_bovada, _parse_mybookie functions from your previous code
-# (They are unchanged; I'll include them here as placeholders. In your actual file, they remain as is.)
-# To save space, I'm not repeating them, but they must be present in your file. 
-# In the full code I'm providing, I'll include them exactly as you had in your original.
+def parse_prop_line(text: str) -> Optional[Dict]:
+    t = _clean(text)
+    for pat in [
+        r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+([A-Za-z+]+)\s*([+-]?\d+)?$',
+        r'^(.+?)\s+([A-Za-z+]+)\s+(OVER|UNDER)\s+([\d\.]+)\s*([+-]?\d+)?$',
+    ]:
+        m = re.search(pat, t, re.IGNORECASE)
+        if m:
+            g = m.groups()
+            player,pick,line,market = (g[0].strip(), g[1].upper() if len(g)<5 else g[2].upper(),
+                                       float(g[2] if len(g)<5 else g[3]),
+                                       _norm_market(g[3] if len(g)<5 else g[1]))
+            odds = int(g[4]) if (g[4] if len(g)>4 else None) else -110
+            prop = {"player":player,"pick":pick,"line":line,"market":market,"odds":odds}
+            prop["confidence"] = _score_confidence(prop)
+            prop["sport"] = _auto_sport(market) or ""
+            return prop
+    blocks = parse_slip(t)
+    return blocks[0] if blocks else None
+
+def parse_image_props(image_bytes: bytes) -> List[Dict]:
+    key = st.secrets.get("OCR_SPACE_API_KEY","")
+    if not key:
+        return []
+    text, err = ocr_image(image_bytes, key)
+    if err or not text:
+        return []
+    return parse_slip(text)
+
+def ocr_image(image_bytes: bytes, api_key: str) -> Tuple[Optional[str], Optional[str]]:
+    try:
+        enc = base64.b64encode(image_bytes).decode()
+        resp = requests.post("https://api.ocr.space/parse/image", data={
+            "base64Image": f"data:image/png;base64,{enc}",
+            "apikey": api_key, "language": "eng", "OCREngine": 2,
+        }, timeout=30)
+        res = resp.json()
+        if res.get("IsErroredOnProcessing"):
+            return None, res.get("ErrorMessage",["OCR error"])[0]
+        return res["ParsedResults"][0]["ParsedText"], None
+    except Exception as e:
+        return None, str(e)
 
 # =============================================================================
-# PROPLINE SMART INGESTION (unchanged)
+# PROPLINE SMART INGESTION
 # =============================================================================
 _PL_BASE = "https://player-props.p.rapidapi.com"
 _PL_HOST = "player-props.p.rapidapi.com"
@@ -1456,7 +1577,7 @@ def fetch_propline_all_smart() -> pd.DataFrame:
     return fetch_propline()
 
 # =============================================================================
-# SEM & AUTO-TUNE (unchanged)
+# SEM & AUTO-TUNE
 # =============================================================================
 def _calibrate_sem() -> None:
     try:
@@ -1521,7 +1642,7 @@ def get_sem_score() -> int:
         return 100
 
 # =============================================================================
-# PARLAY GENERATOR (unchanged)
+# PARLAY GENERATOR
 # =============================================================================
 def generate_parlays(bets: List[Dict], max_legs: int = 6, top_n: int = 20, min_edge: float = 0.03) -> List[Dict]:
     if len(bets) < 2:
@@ -1570,7 +1691,7 @@ def generate_parlays(bets: List[Dict], max_legs: int = 6, top_n: int = 20, min_e
     return parlays[:top_n]
 
 # =============================================================================
-# BEST BETS REFRESH FUNCTION (unchanged)
+# BEST BETS REFRESH FUNCTION
 # =============================================================================
 def refresh_all_best_bets():
     dk_df = fetch_dk_dataframe()
@@ -1593,7 +1714,7 @@ def evaluate_all_bets(dk_df: pd.DataFrame, projections: Dict[str, PlayerProjecti
     return []
 
 # =============================================================================
-# GAME SCANNER (unchanged)
+# GAME SCANNER
 # =============================================================================
 class GameScanner:
     def __init__(self):
@@ -1657,7 +1778,7 @@ class GameScanner:
 game_scanner = GameScanner()
 
 # =============================================================================
-# SCHEDULE & AUTO-PROJECTION LOADERS (unchanged)
+# SCHEDULE & AUTO-PROJECTION LOADERS
 # =============================================================================
 _STAR_PLAYERS: Dict[str, List[str]] = {
     "Lakers": ["LeBron James", "Anthony Davis"],
@@ -1792,7 +1913,7 @@ def analyze_game_bets(games: List[Dict], sport: str, min_edge: float) -> List[Di
     return results
 
 # =============================================================================
-# BATCH ANALYSIS FUNCTION (unchanged)
+# BATCH ANALYSIS FUNCTION
 # =============================================================================
 def analyze_props_batch(props: List[Dict], sport: str = "NBA", bankroll: float = None) -> List[Dict]:
     if bankroll is None:
@@ -1859,7 +1980,7 @@ def display_batch_results(results: List[Dict]) -> Tuple[List[Dict], int]:
     return approved_props, len(approved_props)
 
 # =============================================================================
-# +EV SCANNER (unchanged)
+# +EV SCANNER
 # =============================================================================
 SPORTS = {
     "NBA": "basketball_nba",
@@ -2051,7 +2172,7 @@ def analyze_ev_props(games: List[Dict], sport_key: str, sport_name: str, max_gam
     return unique
 
 # =============================================================================
-# ACCURACY DASHBOARD (unchanged)
+# ACCURACY DASHBOARD
 # =============================================================================
 def accuracy_dashboard() -> dict:
     df = get_all_slips(500)
@@ -2092,7 +2213,7 @@ def accuracy_dashboard() -> dict:
     }
 
 # =============================================================================
-# INITIALIZE SESSION STATE (unchanged)
+# INITIALIZE SESSION STATE
 # =============================================================================
 def initialize_session_state() -> None:
     if st.session_state.get("initialized"):
@@ -2109,7 +2230,7 @@ def initialize_session_state() -> None:
     st.session_state["ev_last_update"] = None
 
 # =============================================================================
-# STREAMLIT UI (unchanged except Slip Lab with Batch Settle)
+# STREAMLIT UI
 # =============================================================================
 _BADGE_CSS = {
     "SOVEREIGN BOLT": ("⚡","background:#f59e0b;color:#1a1a2e;font-weight:800;"),
@@ -2167,27 +2288,405 @@ def _sidebar() -> float:
     return new_br
 
 # =============================================================================
-# TAB 0: Player Props (unchanged from original)
+# TAB 0: Player Props
 # =============================================================================
 def _tab_props(bankroll: float) -> None:
-    # ... (keep your original _tab_props exactly as it was; no changes needed)
-    # To save space I'm not copying it here, but in the final file you must keep it.
-    # I'll include a placeholder comment. In your actual code, paste the original function.
-    pass
+    st.header("🎯 Player Props")
+    for k,v in [("p_sport","NBA"),("p_player","LeBron James"),("p_market","PTS"),
+                ("p_line",25.5),("p_pick","OVER"),("p_odds",-110),("p_tier","mid")]:
+        if k not in st.session_state:
+            st.session_state[k] = v
+    
+    sport = st.selectbox("Sport", list(SPORT_MODELS.keys()), index=0, key="p_sport")
+    player = st.text_input("Player", value=st.session_state.p_player)
+    if player != st.session_state.p_player:
+        st.session_state.p_player = player
+    mkts = SPORT_CATEGORIES.get(sport,["PTS"])
+    midx = mkts.index(st.session_state.p_market) if st.session_state.p_market in mkts else 0
+    market = st.selectbox("Market", mkts, index=midx)
+    if market != st.session_state.p_market:
+        st.session_state.p_market = market
+    line = st.number_input("Line", value=st.session_state.p_line, step=0.5)
+    if line != st.session_state.p_line:
+        st.session_state.p_line = line
+    c1,c2,c3 = st.columns(3)
+    pick = c1.radio("Pick", ["OVER","UNDER"], horizontal=True,
+                    index=0 if st.session_state.p_pick=="OVER" else 1)
+    if pick != st.session_state.p_pick:
+        st.session_state.p_pick = pick
+    odds = c2.number_input("Odds", value=st.session_state.p_odds)
+    if odds != st.session_state.p_odds:
+        st.session_state.p_odds = odds
+    tier = c3.selectbox("Player Tier", ["elite","mid","bench"], index=1)
+    use_mc = st.checkbox("Use Monte Carlo (10,000 sims)", value=False)
+    
+    if st.button("🚀 Analyze Prop", type="primary"):
+        with st.spinner("Running model..."):
+            res = analyze_prop_legacy(player, market, line, pick, sport, int(odds), bankroll, tier, use_mc)
+        c1,c2,c3,c4 = st.columns(4)
+        _metric_row([c1,c2,c3,c4],[
+            ("Win Prob", f"{res['prob']:.1%}"),
+            ("Edge", f"{res['edge']:+.1%}"),
+            ("Kelly ($)", f"${res['stake']:.2f}"),
+            ("Fair Line", f"{res['fair_line']:.1f}"),
+        ])
+        st.markdown(_badge(res["bolt_signal"]), unsafe_allow_html=True)
+        if res["bolt_signal"] in ("SOVEREIGN BOLT","ELITE LOCK","APPROVED"):
+            st.success(f"{res['bolt_signal']}  —  {pick} {line} {market}  @  {odds}")
+        else:
+            st.error("PASS — Insufficient edge for this bet.")
+        st.line_chart(pd.DataFrame({"Game":range(1,len(res["stats"])+1),
+                                    market: res["stats"]}).set_index("Game"))
+        if st.button("➕ Add to Slip Tracker"):
+            insert_slip({
+                "type":"PROP","sport":sport,"player":player,"team":"","opponent":"",
+                "market":market,"line":line,"pick":pick,"odds":int(odds),
+                "edge":res["edge"],"prob":res["prob"],"kelly":res["kelly"],
+                "tier":res["tier"],"bolt_signal":res["bolt_signal"],"bankroll":bankroll,
+            })
+            st.success("Added!")
+            st.toast("Slip logged", icon="➕")
+    
+    st.markdown("---")
+    st.subheader("📡 Live Props (PropLine)")
+    if st.button("Fetch Live Props"):
+        with st.spinner("Fetching from PropLine..."):
+            df = fetch_propline()
+        if df.empty:
+            st.warning("No live props returned. Check RAPIDAPI_KEY.")
+        else:
+            st.success(f"{len(df)} outcomes loaded.")
+            sport_filt = st.multiselect("Filter sport", df["sport"].unique().tolist() if "sport" in df.columns else [])
+            show_df = df[df["sport"].isin(sport_filt)] if sport_filt else df
+            with st.expander("Show Live Props Data", expanded=False):
+                st.dataframe(show_df, use_container_width=True)
+    
+    with st.expander("📋 Scan a Prop Slip (Text or Screenshot)", expanded=False):
+        st.markdown("Paste a prop line or upload screenshots -- CLARITY will extract and analyze the first valid prop from each.")
+        scan_text = st.text_area("📋 Paste prop slip text", height=150, placeholder="e.g., LeBron James OVER 25.5 PTS\nor full PrizePicks block")
+        parsed_props = []
+        if scan_text:
+            parsed_props = parse_slip(scan_text)
+            if parsed_props:
+                st.success(f"Found {len(parsed_props)} props.")
+                for prop in parsed_props:
+                    st.write(f"**Parsed:** {prop.get('player')} - {prop.get('market')} {prop.get('pick')} {prop.get('line')}")
+                if st.button("🔍 Analyze All Props", key="batch_analyze_text"):
+                    with st.spinner(f"Analyzing {len(parsed_props)} props..."):
+                        batch_results = analyze_props_batch(parsed_props, sport, bankroll)
+                        st.subheader("Analysis Results:")
+                        approved, count = display_batch_results(batch_results)
+                        if approved and st.button(f"➕ Add {count} Approved Props to Slip", key="batch_add_text"):
+                            for prop in approved:
+                                res = analyze_prop_legacy(prop.get("player",""), prop.get("market","PTS"),
+                                                          float(prop.get("line",0)), prop.get("pick","OVER"),
+                                                          sport, int(prop.get("odds",-110)), bankroll)
+                                insert_slip({
+                                    "type":"PROP","sport":sport,
+                                    "player":prop.get("player",""),"team":"","opponent":"",
+                                    "market":prop.get("market",""),"line":float(prop.get("line",0)),
+                                    "pick":prop.get("pick","OVER"),"odds":int(prop.get("odds",-110)),
+                                    "edge":res["edge"],"prob":res["prob"],"kelly":res["kelly"],
+                                    "tier":res["tier"],"bolt_signal":res["bolt_signal"],"bankroll":bankroll,
+                                })
+                            st.success(f"Added {count} approved props to slip!")
+                            st.toast(f"{count} props added", icon="➕")
+                            st.rerun()
+            else:
+                st.info("No props detected.")
+        
+        uploaded_files = st.file_uploader("Or upload screenshot(s)", type=["png","jpg","jpeg","webp"], accept_multiple_files=True)
+        if uploaded_files:
+            all_img_props = []
+            for img_file in uploaded_files:
+                props = parse_image_props(img_file.getvalue())
+                if props:
+                    st.write(f"**{img_file.name}:** {len(props)} props detected")
+                    for prop in props:
+                        st.write(f"  • {prop.get('player')} - {prop.get('market')} {prop.get('pick')} {prop.get('line')}")
+                        all_img_props.append(prop)
+                else:
+                    st.write(f"**{img_file.name}:** No props detected")
+            if all_img_props and st.button("🔍 Analyze All Props from Images", key="batch_analyze_images"):
+                with st.spinner(f"Analyzing {len(all_img_props)} props..."):
+                    batch_results = analyze_props_batch(all_img_props, sport, bankroll)
+                    st.subheader("Analysis Results:")
+                    approved, count = display_batch_results(batch_results)
+                    if approved and st.button(f"➕ Add {count} Approved Props to Slip", key="batch_add_images"):
+                        for prop in approved:
+                            res = analyze_prop_legacy(prop.get("player",""), prop.get("market","PTS"),
+                                                      float(prop.get("line",0)), prop.get("pick","OVER"),
+                                                      sport, int(prop.get("odds",-110)), bankroll)
+                            insert_slip({
+                                "type":"PROP","sport":sport,
+                                "player":prop.get("player",""),"team":"","opponent":"",
+                                "market":prop.get("market",""),"line":float(prop.get("line",0)),
+                                "pick":prop.get("pick","OVER"),"odds":int(prop.get("odds",-110)),
+                                "edge":res["edge"],"prob":res["prob"],"kelly":res["kelly"],
+                                "tier":res["tier"],"bolt_signal":res["bolt_signal"],"bankroll":bankroll,
+                            })
+                        st.success(f"Added {count} approved props to slip!")
+                        st.toast(f"{count} props added", icon="➕")
+                        st.rerun()
 
 # =============================================================================
-# TAB 1: Game Analyzer (unchanged)
+# TAB 1: Game Analyzer
 # =============================================================================
 def _tab_games(bankroll: float) -> None:
-    # ... (keep your original)
-    pass
+    st.header("🏟️ Game Analyzer — Spreads, Totals & Moneylines")
+    st.caption("Powered by The Odds API • Supports NBA, MLB, NHL, NFL and more")
+    sport = st.selectbox("Sport", list(SPORT_MODELS.keys()), key="ga_sport")
+    if st.button("📡 Fetch Today's Games", type="primary"):
+        with st.spinner(f"Fetching {sport} games…"):
+            games = game_scanner.fetch([sport], days=0)
+            if games:
+                st.session_state["fetched_games"] = games
+                st.success(f"Found {len(games)} games")
+                st.toast(f"Loaded {len(games)} games", icon="🎮")
+            else:
+                st.warning(f"No games found for {sport}. Check ODDS_API_KEY.")
+    games = st.session_state.get("fetched_games", [])
+    if not games:
+        st.info("Click 'Fetch Today's Games' to load matchups.")
+    else:
+        labels = [f"{g.get('away_team','?')} @ {g.get('home_team','?')}  ({g.get('commence_time','')[:10]})"
+                  for g in games]
+        idx = st.selectbox("Select Game", range(len(labels)), format_func=lambda i: labels[i])
+        g = games[idx]
+        home, away = g.get("home_team",""), g.get("away_team","")
+        st.subheader(f"{away} @ {home}")
+        c1, c2, c3 = st.columns(3)
+        spread = g.get("spread")
+        spread_odds = g.get("spread_odds")
+        home_ml = g.get("home_ml")
+        away_ml = g.get("away_ml")
+        total = g.get("total")
+        over_odds = g.get("over_odds")
+        under_odds = g.get("under_odds")
+        with c1:
+            st.markdown("**Spread**")
+            st.write(f"Line: {spread:+.1f}" if spread is not None else "—")
+            st.write(f"Odds: {spread_odds}" if spread_odds is not None else "")
+        with c2:
+            st.markdown("**Moneyline**")
+            st.write(f"{home}: {home_ml}" if home_ml is not None else "—")
+            st.write(f"{away}: {away_ml}" if away_ml is not None else "")
+        with c3:
+            st.markdown("**Total**")
+            st.write(f"O/U: {total}" if total is not None else "—")
+            st.write(f"Over {over_odds} / Under {under_odds}" if over_odds else "")
+        st.divider()
+        b1, b2, b3 = st.columns(3)
+        if b1.button("🔍 Analyze Spread", use_container_width=True):
+            if spread is not None and spread_odds is not None:
+                with st.spinner("Analyzing…"):
+                    res = analyze_spread(home, away, sport, spread, int(spread_odds))
+                st.subheader("Spread")
+                c1, c2 = st.columns(2)
+                c1.metric(f"{home} Cover", f"{res['home_cover_prob']:.1%}")
+                c1.metric("Edge", f"{res['home_edge']:+.1%}")
+                c1.markdown(_badge(res["home_bolt"]), unsafe_allow_html=True)
+                c2.metric(f"{away} Cover", f"{res['away_cover_prob']:.1%}")
+                c2.metric("Edge", f"{res['away_edge']:+.1%}")
+                c2.markdown(_badge(res["away_bolt"]), unsafe_allow_html=True)
+                st.caption(f"Proj margin: {res['projected_margin']:+.1f}  σ={res['sigma']:.1f}")
+                if res["home_bolt"] == "SOVEREIGN BOLT":
+                    st.success(f"⚡ SOVEREIGN BOLT — {home} {spread:+.1f}")
+                if res["away_bolt"] == "SOVEREIGN BOLT":
+                    st.success(f"⚡ SOVEREIGN BOLT — {away} {-spread:+.1f}")
+            else:
+                st.error("No spread data for this game.")
+        if b2.button("🔍 Analyze Total", use_container_width=True):
+            if total is not None and over_odds is not None and under_odds is not None:
+                with st.spinner("Analyzing…"):
+                    res = analyze_total(home, away, sport, total, int(over_odds), int(under_odds))
+                st.subheader("Total")
+                c1, c2 = st.columns(2)
+                c1.metric("Over Prob", f"{res['over_prob']:.1%}")
+                c1.metric("Over Edge", f"{res['over_edge']:+.1%}")
+                c1.markdown(_badge(res["over_bolt"]), unsafe_allow_html=True)
+                c2.metric("Under Prob", f"{res['under_prob']:.1%}")
+                c2.metric("Under Edge", f"{res['under_edge']:+.1%}")
+                c2.markdown(_badge(res["under_bolt"]), unsafe_allow_html=True)
+                st.caption(f"Projected total: {res['projection']:.1f}")
+                if res["over_bolt"] == "SOVEREIGN BOLT":
+                    st.success(f"⚡ SOVEREIGN BOLT — OVER {total}")
+                if res["under_bolt"] == "SOVEREIGN BOLT":
+                    st.success(f"⚡ SOVEREIGN BOLT — UNDER {total}")
+            else:
+                st.error("No total data for this game.")
+        if b3.button("🔍 Analyze Moneyline", use_container_width=True):
+            if home_ml is not None and away_ml is not None:
+                with st.spinner("Analyzing…"):
+                    res = analyze_ml(home, away, sport, int(home_ml), int(away_ml))
+                st.subheader("Moneyline")
+                c1, c2 = st.columns(2)
+                c1.metric(f"{home} Win", f"{res['home_prob']:.1%}")
+                c1.metric("Edge", f"{res['home_edge']:+.1%}")
+                c1.markdown(_badge(res["home_bolt"]), unsafe_allow_html=True)
+                c2.metric(f"{away} Win", f"{res['away_prob']:.1%}")
+                c2.metric("Edge", f"{res['away_edge']:+.1%}")
+                c2.markdown(_badge(res["away_bolt"]), unsafe_allow_html=True)
+                if res["home_bolt"] == "SOVEREIGN BOLT":
+                    st.success(f"⚡ SOVEREIGN BOLT — {home} ML")
+                if res["away_bolt"] == "SOVEREIGN BOLT":
+                    st.success(f"⚡ SOVEREIGN BOLT — {away} ML")
+            else:
+                st.error("No moneyline data for this game.")
+    
+    with st.expander("✍️ Manual Game Input", expanded=False):
+        st.markdown("Enter your own game lines for analysis (useful for testing or unsupported sports).")
+        with st.form("manual_game_form"):
+            col1, col2 = st.columns(2)
+            with col1:
+                home_team_man = st.text_input("Home Team", "Home")
+                away_team_man = st.text_input("Away Team", "Away")
+                spread_man = st.number_input("Spread (home team)", value=0.0, step=0.5)
+                spread_odds_man = st.number_input("Spread Odds (American)", value=-110)
+            with col2:
+                total_man = st.number_input("Total (O/U)", value=220.0, step=0.5)
+                over_odds_man = st.number_input("Over Odds", value=-110)
+                under_odds_man = st.number_input("Under Odds", value=-110)
+                home_ml_man = st.number_input("Home Moneyline", value=-110)
+                away_ml_man = st.number_input("Away Moneyline", value=-110)
+            submitted = st.form_submit_button("Analyze Manual Game")
+            if submitted:
+                st.subheader("Manual Game Analysis")
+                if spread_man != 0.0:
+                    res_s = analyze_spread(home_team_man, away_team_man, sport, spread_man, int(spread_odds_man))
+                    st.markdown(f"**Spread** – {home_team_man} {spread_man:+.1f}")
+                    st.write(f"Cover prob: {res_s['home_cover_prob']:.1%} | Edge: {res_s['home_edge']:+.1%}")
+                    st.markdown(_badge(res_s["home_bolt"]), unsafe_allow_html=True)
+                    st.write(f"{away_team_man} cover: {res_s['away_cover_prob']:.1%} | Edge: {res_s['away_edge']:+.1%}")
+                if total_man > 0:
+                    res_t = analyze_total(home_team_man, away_team_man, sport, total_man, int(over_odds_man), int(under_odds_man))
+                    st.markdown(f"**Total** – {total_man}")
+                    st.write(f"Over: {res_t['over_prob']:.1%} (Edge {res_t['over_edge']:+.1%})")
+                    st.write(f"Under: {res_t['under_prob']:.1%} (Edge {res_t['under_edge']:+.1%})")
+                if home_ml_man != 0 and away_ml_man != 0:
+                    res_m = analyze_ml(home_team_man, away_team_man, sport, int(home_ml_man), int(away_ml_man))
+                    st.markdown(f"**Moneyline**")
+                    st.write(f"{home_team_man}: {res_m['home_prob']:.1%} (Edge {res_m['home_edge']:+.1%})")
+                    st.write(f"{away_team_man}: {res_m['away_prob']:.1%} (Edge {res_m['away_edge']:+.1%})")
 
 # =============================================================================
-# TAB 2: Best Bets (unchanged)
+# TAB 2: Best Bets
 # =============================================================================
 def _tab_best_bets() -> None:
-    # ... (keep your original)
-    pass
+    st.header("🏆 Best Bets — Automated Recommendations")
+    st.caption("Top player props and game bets ranked by CLARITY edge model")
+    
+    if st.session_state.get("last_update") is None:
+        st.info("👆 No data loaded. Click 'Refresh All Data' below to fetch the latest lines and projections.")
+    
+    with st.expander("⚙️ Filter Settings", expanded=False):
+        fc1, fc2 = st.columns(2)
+        min_edge = fc1.slider("Min Edge (%)", 0.0, 15.0, 2.0, 0.5) / 100.0
+        max_props = fc1.slider("Max Player Props", 3, 15, 6)
+        max_games = fc2.slider("Max Game Bets", 3, 15, 6)
+        use_kelly = fc2.checkbox("Kelly Sizing", value=True)
+        kelly_cap_pct = fc2.slider("Kelly Cap (% bankroll)", 1, 25, 10) / 100.0 if use_kelly else 1.0
+    
+    if st.button("🔄 Refresh All Data", type="primary"):
+        with st.spinner("Refreshing lines and projections…"):
+            try:
+                dk_df = fetch_dk_dataframe()
+                projs = build_today_projections_auto()
+                games = game_scanner.fetch(["NBA"], days=0)
+                st.session_state["game_bets"] = analyze_game_bets(games, "NBA", 0.0)
+                st.session_state["last_update"] = datetime.now()
+                st.success("Data refreshed ✅")
+                st.toast("Best bets refreshed", icon="🔄")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Refresh error: {e}")
+    
+    last_update = st.session_state.get("last_update")
+    if last_update and isinstance(last_update, datetime):
+        st.caption(f"Last scan: {last_update.strftime('%H:%M:%S')}")
+    
+    game_bets = st.session_state.get("game_bets", [])
+    if game_bets:
+        filtered_g = sorted([b for b in game_bets if b["edge"] >= min_edge],
+                            key=lambda x: x["edge"], reverse=True)[:max_games]
+        if filtered_g:
+            st.subheader(f"🏟️ Top {len(filtered_g)} Game Bets (Spread / Total / ML)")
+            df_g = pd.DataFrame(filtered_g)
+            br = get_bankroll()
+            df_g["Stake $"] = df_g["edge"].apply(
+                lambda e: f"${min(e*0.25*br, br*kelly_cap_pct):.0f}" if use_kelly else "$100"
+            )
+            display_cols = ["type","team","opponent","line","odds","edge","prob",
+                           "fair_line","pick","Stake $"]
+            styled_df = _style_dataframe(df_g[display_cols], "edge")
+            st.dataframe(styled_df, use_container_width=True)
+            
+            sel_g = st.multiselect(
+                "Select game bets to add", df_g.index,
+                format_func=lambda i: (
+                    f"{df_g.loc[i,'team']}  {df_g.loc[i,'type']}  "
+                    f"{df_g.loc[i,'pick']}  {df_g.loc[i,'line']}  "
+                    f"(edge {df_g.loc[i,'edge']:.1%})"
+                )
+            )
+            if st.button("➕ Add Selected Game Bets"):
+                for i in sel_g:
+                    row = df_g.loc[i]
+                    insert_slip({
+                        "type":"GAME","sport":"NBA",
+                        "team":row["team"],"opponent":row["opponent"],
+                        "market":row["type"],"line":row["line"],"pick":row["pick"],
+                        "odds":int(row["odds"]),"edge":row["edge"],"prob":row["prob"],
+                        "kelly":row["edge"]*0.25,"tier":"BEST BET",
+                        "bolt_signal":row.get("bolt",""),"bankroll":get_bankroll(),
+                    })
+                st.success(f"Added {len(sel_g)} game bets.")
+                st.toast(f"{len(sel_g)} game bets added", icon="➕")
+                st.rerun()
+        else:
+            st.info(f"No game bets above {min_edge*100:.1f}% edge threshold.")
+    elif st.session_state.get("last_update") is None:
+        st.info("No game bet data yet. Click 'Refresh All Data' to load.")
+    else:
+        st.info("No game bets available.")
+    st.divider()
+    
+    st.subheader("🎲 Auto Parlay Generator")
+    max_legs_par = st.slider("Max legs", 2, 6, 4, key="par_legs")
+    min_parlay_edge = st.slider("Min edge per leg (%)", 0.0, 10.0, 2.0, 0.5) / 100.0
+    if st.button("⚡ Generate Parlays from Top Props"):
+        raw_bets = st.session_state.get("player_bets", [])
+        if raw_bets:
+            parlays = generate_parlays(raw_bets, max_legs=max_legs_par, top_n=5, min_edge=min_parlay_edge)
+            if parlays:
+                st.session_state["parlays"] = parlays
+                st.success(f"Generated {len(parlays)} parlays.")
+                st.toast(f"{len(parlays)} parlays generated", icon="🎲")
+            else:
+                st.warning("Not enough qualifying bets for parlays. Lower edge threshold or refresh data.")
+        else:
+            st.warning("No player bets available. Refresh data first.")
+    
+    for i, p in enumerate(st.session_state.get("parlays",[])):
+        with st.expander(
+            f"Parlay #{i+1} — {p['num_legs']} legs | "
+            f"Edge: {p['total_edge']:.2%} | "
+            f"Confidence: {p['confidence']:.1%} | "
+            f"Est. odds: +{p['estimated_odds']}"
+        ):
+            for leg in p["legs"]:
+                st.markdown(f"• {leg}")
+            if st.button(f"➕ Add Parlay #{i+1} to Slip", key=f"padd_{i}"):
+                insert_slip({
+                    "type":"PARLAY","sport":"NBA",
+                    "edge":p["total_edge"],"prob":p["confidence"],
+                    "odds":p["estimated_odds"],"tier":"PARLAY",
+                    "bolt_signal":"PARLAY","bankroll":get_bankroll(),
+                    "notes":"\n".join(p["legs"]),
+                })
+                st.success(f"Parlay #{i+1} logged.")
+                st.toast(f"Parlay #{i+1} added", icon="🎲")
+                st.rerun()
 
 # =============================================================================
 # TAB 3: Slip Lab (includes Batch Settle)
@@ -2197,9 +2696,86 @@ def _tab_slip_lab() -> None:
     st.caption("Paste text or upload screenshots — CLARITY will parse and analyze every prop.")
     tab_t, tab_i = st.tabs(["✍️ Text Input","📷 Image Upload"])
     
-    # ... (keep your original analysis and OCR parts as they are)
-    # Then add the Batch Settle expander as shown below.
+    with tab_t:
+        text = st.text_area("Paste slip text", height=250,
+                            placeholder="e.g., LeBron James OVER 25.5 PTS  or full PrizePicks block")
+        if text:
+            props = parse_slip(text)
+            if props:
+                st.success(f"{len(props)} props detected.")
+                for p in props:
+                    c1, c2, c3 = st.columns([3,1,1])
+                    c1.write(f"**{p.get('player','')}** — {p.get('market','')} {p.get('pick','')} {p.get('line','')}")
+                    c2.write(p.get("sport",""))
+                    if c3.button("Analyze Single", key=f"at_{id(p)}"):
+                        res = analyze_prop_legacy(p["player"], p["market"], p["line"],
+                                                  p["pick"], p.get("sport","NBA"))
+                        st.markdown(_badge(res["bolt_signal"]), unsafe_allow_html=True)
+                        st.write(f"Prob: {res['prob']:.1%}  Edge: {res['edge']:+.2%}  Stake: ${res['stake']:.2f}")
+                
+                if st.button("🔍 Analyze All Props", key="slip_lab_batch_text"):
+                    with st.spinner(f"Analyzing {len(props)} props..."):
+                        batch_results = analyze_props_batch(props, "NBA", get_bankroll())
+                        st.subheader("Analysis Results:")
+                        approved, count = display_batch_results(batch_results)
+                        if approved and st.button(f"➕ Add {count} Approved Props to Slip", key="slip_lab_add_text"):
+                            for prop in approved:
+                                res = analyze_prop_legacy(prop.get("player",""), prop.get("market","PTS"),
+                                                          float(prop.get("line",0)), prop.get("pick","OVER"),
+                                                          "NBA", int(prop.get("odds",-110)), get_bankroll())
+                                insert_slip({
+                                    "type":"PROP","sport":"NBA",
+                                    "player":prop.get("player",""),"team":"","opponent":"",
+                                    "market":prop.get("market",""),"line":float(prop.get("line",0)),
+                                    "pick":prop.get("pick","OVER"),"odds":int(prop.get("odds",-110)),
+                                    "edge":res["edge"],"prob":res["prob"],"kelly":res["kelly"],
+                                    "tier":res["tier"],"bolt_signal":res["bolt_signal"],"bankroll":get_bankroll(),
+                                })
+                            st.success(f"Added {count} approved props to slip!")
+                            st.toast(f"{count} props added", icon="➕")
+                            st.rerun()
+            else:
+                st.info("No props detected. Try a different format.")
     
+    with tab_i:
+        files = st.file_uploader("Upload screenshots", type=["png","jpg","jpeg","webp"], accept_multiple_files=True)
+        if files:
+            all_props = []
+            for f in files:
+                st.write(f"**{f.name}**")
+                with st.spinner(f"OCR {f.name}..."):
+                    props = parse_image_props(f.getvalue())
+                if props:
+                    st.write(f"  Found {len(props)} props:")
+                    for p in props:
+                        st.write(f"    • {p.get('player','')} {p.get('pick','')} {p.get('line','')} {p.get('market','')}")
+                        all_props.append(p)
+                else:
+                    st.caption("  No props extracted — check OCR_SPACE_API_KEY.")
+            
+            if all_props and st.button("🔍 Analyze All Props from Images", key="slip_lab_batch_images"):
+                with st.spinner(f"Analyzing {len(all_props)} props..."):
+                    batch_results = analyze_props_batch(all_props, "NBA", get_bankroll())
+                    st.subheader("Analysis Results:")
+                    approved, count = display_batch_results(batch_results)
+                    if approved and st.button(f"➕ Add {count} Approved Props to Slip", key="slip_lab_add_images"):
+                        for prop in approved:
+                            res = analyze_prop_legacy(prop.get("player",""), prop.get("market","PTS"),
+                                                      float(prop.get("line",0)), prop.get("pick","OVER"),
+                                                      "NBA", int(prop.get("odds",-110)), get_bankroll())
+                            insert_slip({
+                                "type":"PROP","sport":"NBA",
+                                "player":prop.get("player",""),"team":"","opponent":"",
+                                "market":prop.get("market",""),"line":float(prop.get("line",0)),
+                                "pick":prop.get("pick","OVER"),"odds":int(prop.get("odds",-110)),
+                                "edge":res["edge"],"prob":res["prob"],"kelly":res["kelly"],
+                                "tier":res["tier"],"bolt_signal":res["bolt_signal"],"bankroll":get_bankroll(),
+                            })
+                        st.success(f"Added {count} approved props to slip!")
+                        st.toast(f"{count} props added", icon="➕")
+                        st.rerun()
+    
+    # ========== BATCH SETTLE & RECORD (NEW) ==========
     with st.expander("✅ Batch Settle & Record (Paste settled slips)", expanded=False):
         st.markdown("Paste any slip text (MyBookie totals, Bovada parlay, PrizePicks props).")
         settle_text = st.text_area("Paste slip text here", height=250, key="settle_batch_text")
@@ -2238,7 +2814,6 @@ def _tab_slip_lab() -> None:
                         if not pick or pick not in ["OVER", "UNDER"]:
                             pick = manual_pick
                         odds = bet.get("odds", -110)
-                        # Ask for actual stat
                         actual = st.number_input(
                             f"Actual stat for {bet.get('player', bet.get('market','?'))} (line {line_val})",
                             value=line_val, step=0.5, key=f"actual_{settled_count}"
@@ -2283,32 +2858,306 @@ def _tab_slip_lab() -> None:
                     st.rerun()
 
 # =============================================================================
-# TAB 4: History (unchanged)
+# TAB 4: History
 # =============================================================================
 def _tab_history() -> None:
-    # ... (keep your original)
-    pass
+    st.header("📊 History & Accuracy Metrics")
+    
+    with st.expander("➕ Manually Record a Bet (already settled)", expanded=False):
+        with st.form("manual_bet_form"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                player = st.text_input("Player Name", "LeBron James")
+                market = st.selectbox("Market", ["PTS", "REB", "AST", "PRA", "PR", "PA"])
+                line = st.number_input("Line", value=25.5, step=0.5)
+            with col2:
+                pick = st.selectbox("Pick", ["OVER", "UNDER"])
+                odds = st.number_input("American Odds", value=-110)
+                result = st.selectbox("Result", ["WIN", "LOSS", "PUSH"])
+            with col3:
+                actual = st.number_input("Actual Stat", value=0.0, step=0.1)
+                date_settled = st.date_input("Date Settled", value=datetime.now().date())
+            submitted = st.form_submit_button("Record Bet")
+            if submitted:
+                if result == "WIN":
+                    profit = (odds / 100) * 100 if odds > 0 else (100 / abs(odds)) * 100
+                elif result == "LOSS":
+                    profit = -100
+                else:
+                    profit = 0
+                insert_slip({
+                    "type": "PROP",
+                    "sport": "NBA",
+                    "player": player,
+                    "market": market,
+                    "line": line,
+                    "pick": pick,
+                    "odds": int(odds),
+                    "edge": 0.0,
+                    "prob": 0.5,
+                    "kelly": 0.0,
+                    "tier": "MANUAL",
+                    "bolt_signal": "MANUAL",
+                    "result": result,
+                    "actual": actual,
+                    "profit": profit,
+                    "settled_date": date_settled.strftime("%Y-%m-%d"),
+                    "bankroll": get_bankroll(),
+                })
+                st.success(f"Bet recorded: {player} {pick} {line} {market} → {result}")
+                st.toast("Bet recorded", icon="📝")
+                st.rerun()
+    
+    df = get_all_slips(500)
+    dash = accuracy_dashboard()
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Win Rate", f"{dash['win_rate']}%")
+    c2.metric("ROI", f"{dash['roi']}%")
+    c3.metric("Units Profit", str(dash['units_profit']))
+    c4.metric("SEM Score", str(dash['sem_score']))
+    
+    if not df.empty and "profit" in df.columns:
+        settled = df[df["result"].isin(["WIN","LOSS"])].copy()
+        if not settled.empty:
+            settled = settled.sort_values("settled_date")
+            settled["cum_profit"] = settled["profit"].cumsum()
+            st.subheader("Cumulative P&L Curve")
+            st.line_chart(settled[["settled_date","cum_profit"]].set_index("settled_date"))
+    
+    st.subheader("By Sport")
+    st.json(dash["by_sport"])
+    st.subheader("By Tier")
+    st.json(dash["by_tier"])
+    
+    st.markdown("---")
+    st.subheader("All Bets")
+    if not df.empty:
+        with st.expander("Show All Bets", expanded=False):
+            styled_df = _style_dataframe(df, "edge")
+            st.dataframe(styled_df, use_container_width=True)
+        
+        pending = df[df["result"]=="PENDING"]
+        if not pending.empty:
+            st.subheader("Settle Pending Bets")
+            slip_id = st.selectbox("Slip ID", pending["id"].tolist())
+            sel_row = pending[pending["id"]==slip_id].iloc[0]
+            actual = st.number_input("Actual Result", value=0.0, step=0.1)
+            res_pick = st.radio("Outcome", ["WIN","LOSS","PUSH"], horizontal=True)
+            if st.button("Settle Bet"):
+                update_slip_result(slip_id, res_pick, actual, int(sel_row.get("odds",-110)))
+                st.success("Settled!")
+                st.toast("Bet settled", icon="✅")
+                st.rerun()
+    else:
+        st.info("No bets recorded yet. Use the 'Manually Record a Bet' expander above to add your past bets.")
 
 # =============================================================================
-# TAB 5: Model Bets (unchanged)
+# TAB 5: Model Bets
 # =============================================================================
 def _tab_model(bankroll: float) -> None:
-    # ... (keep your original)
-    pass
+    st.header("🤖 Model-Priced Bets (DraftKings)")
+    use_mc = st.toggle("Monte Carlo mode (10,000 sims/player)", value=False)
+    if st.button("Fetch DraftKings Lines", type="primary"):
+        with st.spinner("Fetching DK lines..."):
+            dk_df = fetch_dk_dataframe()
+        if dk_df.empty:
+            st.warning("No DraftKings lines fetched.")
+            return
+        st.success(f"{len(dk_df)} lines fetched.")
+        with st.expander("Show DraftKings Lines", expanded=False):
+            st.dataframe(dk_df.head(20), use_container_width=True)
+        
+        player_cols = dk_df[dk_df["market_type"].str.startswith("player")]
+        players = player_cols["team_or_player"].unique().tolist() if not player_cols.empty else []
+        if players:
+            st.subheader("Priced Bets")
+            results = []
+            with st.spinner(f"Pricing {len(players)} players..."):
+                for _, row in player_cols.iterrows():
+                    pname = row.get("team_or_player","")
+                    mtype = row.get("market_type","")
+                    sb_line = float(row.get("line",0))
+                    if not pname or not mtype or sb_line <= 0:
+                        continue
+                    proj = PlayerProjection(
+                        player_name=pname, team="", opponent="",
+                        minutes=28.0, pts=sb_line*1.02, rebs=5.0, asts=4.0,
+                        usage=0.22, pace_adj=98.0,
+                        raw_payload={"rates":{"stl":0.08,"blk":0.05,"to":0.12}},
+                    )
+                    mkt_key = mtype.replace("player_","")
+                    if use_mc:
+                        r = mc_price_market(proj, mkt_key, sb_line)
+                    else:
+                        dist = StatDist.from_projection(sb_line*1.02, 28.0, 0.22, 98.0)
+                        p_over = dist.prob_over(sb_line)
+                        imp = american_to_prob(int(row.get("price",-110)))
+                        edge = (p_over - imp)
+                        k = calculate_kelly_stake(bankroll, p_over, int(row.get("price",-110))) / bankroll if bankroll > 0 else 0
+                        r = {"fair_line": sb_line*1.02, "prob_over": p_over, "edge": edge, "kelly": k}
+                    results.append({
+                        "Player": pname,
+                        "Market": mtype,
+                        "Line": sb_line,
+                        "Fair Line": round(r.get("fair_line",0),2),
+                        "P(over)": round(r.get("prob_over",0),3),
+                        "Edge": round(r.get("edge",0),3),
+                        "Kelly": round(r.get("kelly",0),3),
+                        "Tier": classify_tier(r.get("edge",0)),
+                    })
+            if results:
+                rdf = pd.DataFrame(results).sort_values("Edge", ascending=False)
+                styled_df = _style_dataframe(rdf, "Edge")
+                st.dataframe(styled_df, use_container_width=True)
+                good = rdf[rdf["Tier"].isin(["SOVEREIGN BOLT","ELITE LOCK","APPROVED"])]
+                if not good.empty:
+                    st.success(f"{len(good)} edges found worth watching.")
+            else:
+                st.info("No priceable bets in the current DK data.")
+        else:
+            st.info("No player prop lines found in the DK feed. Check DK endpoint or try later.")
 
 # =============================================================================
-# TAB 6: Tools (unchanged)
+# TAB 6: Tools
 # =============================================================================
 def _tab_tools() -> None:
-    # ... (keep your original)
-    pass
+    st.header("⚙️ Tools & Diagnostics")
+    
+    st.subheader("🔌 API Health Detail")
+    _init_health()
+    cols = st.columns(2)
+    for i, (svc, info) in enumerate(st.session_state.health.items()):
+        ok = info.get("ok")
+        ico = "🟢" if ok else "🔴" if ok is False else "⚪"
+        msg = f"{ico} **{svc}**"
+        if info.get("fallback"):
+            msg += " (fallback)"
+        if info.get("err"):
+            msg += f"\n   ⚠️ {info['err'][:80]}"
+        cols[i%2].markdown(msg)
+    
+    st.subheader("🔍 On-Demand Tests")
+    c1, c2, c3 = st.columns(3)
+    if c1.button("Test NBA API"):
+        with st.spinner("Testing NBA API..."):
+            vals = _nba_stats("LeBron James","PTS")
+        if vals:
+            st.success(f"NBA OK: {vals[:3]}")
+            st.toast("NBA API is working", icon="✅")
+        else:
+            st.error("NBA failed.")
+            st.toast("NBA API failed", icon="❌")
+    if c2.button("Test PropLine"):
+        with st.spinner("Testing PropLine..."):
+            sports = propline_get_sports()
+        if sports:
+            st.success(f"PropLine OK: {len(sports)} sports")
+            st.toast("PropLine is working", icon="✅")
+        else:
+            st.error("PropLine failed.")
+            st.toast("PropLine failed", icon="❌")
+    if c3.button("Test DraftKings"):
+        with st.spinner("Testing DraftKings..."):
+            df = fetch_dk_dataframe()
+        if not df.empty:
+            st.success(f"DK OK: {len(df)} lines")
+            st.toast("DraftKings is working", icon="✅")
+        else:
+            st.error("DK fetch failed.")
+            st.toast("DraftKings failed", icon="❌")
+    
+    st.subheader("📜 Recent Error Log")
+    try:
+        if os.path.exists("clarity_debug.log"):
+            with open("clarity_debug.log") as f:
+                errs = [l for l in f.readlines() if "ERROR" in l][-5:]
+            if errs:
+                for e in errs:
+                    st.code(e.strip())
+            else:
+                st.success("No errors in log.")
+        else:
+            st.info("Log not found yet.")
+    except Exception as e:
+        st.warning(f"Could not read log: {e}")
+    
+    st.subheader("🧹 Maintenance")
+    c1, c2, c3 = st.columns(3)
+    if c1.button("Clear Pending Slips"):
+        clear_pending_slips()
+        st.success("Cleared.")
+        st.toast("Pending slips cleared", icon="🧹")
+    if c2.button("Force SEM Recalibration"):
+        with st.spinner("Recalibrating SEM..."):
+            _calibrate_sem()
+        st.success("SEM recalibrated.")
+        st.toast("SEM recalibrated", icon="📊")
+    if c3.button("Force Threshold Tune"):
+        with st.spinner("Tuning thresholds..."):
+            _auto_tune()
+        st.success(f"Thresholds: PROB={get_prob_bolt():.2f} DTM={get_dtm_bolt():.2f}")
+        st.toast("Thresholds updated", icon="⚙️")
+    
+    st.subheader("⚖️ Current Thresholds")
+    st.metric("PROB_BOLT", f"{get_prob_bolt():.3f}")
+    st.metric("DTM_BOLT", f"{get_dtm_bolt():.3f}")
+    with st.expander("Override thresholds manually"):
+        np_ = st.number_input("PROB_BOLT", value=get_prob_bolt(), step=0.01, min_value=0.5, max_value=1.0)
+        nd = st.number_input("DTM_BOLT", value=get_dtm_bolt(), step=0.01, min_value=0.0, max_value=0.5)
+        if st.button("Apply"):
+            set_setting("prob_bolt", np_)
+            set_setting("dtm_bolt", nd)
+            st.success("Thresholds updated.")
+            st.toast("New thresholds applied", icon="⚙️")
+            st.rerun()
 
 # =============================================================================
-# TAB 7: EV Scanner (unchanged)
+# TAB 7: EV Scanner
 # =============================================================================
 def _tab_ev_scanner() -> None:
-    # ... (keep your original)
-    pass
+    st.header("🎲 +EV Scanner (Market-Based)")
+    st.caption("Finds +EV opportunities by devigging sharp books (Pinnacle → DK → FD) and comparing to soft books or PrizePicks break‑even.")
+    
+    if st.button("🔄 Scan for +EV Opportunities", type="primary"):
+        with st.spinner("Scanning game lines and props..."):
+            all_game_lines = []
+            all_props = []
+            for sport_name, sport_key in SPORTS.items():
+                games_data = fetch_ev_game_lines(sport_key)
+                if not games_data:
+                    continue
+                ev_games = analyze_ev_game_lines(games_data, sport_name)
+                all_game_lines.extend(ev_games)
+                if sport_key in ["basketball_nba", "americanfootball_nfl", "baseball_mlb", "icehockey_nhl"]:
+                    ev_props = analyze_ev_props(games_data, sport_key, sport_name, max_games=5)
+                    all_props.extend(ev_props)
+            st.session_state["ev_game_lines"] = sorted(all_game_lines, key=lambda x: x["_ev"], reverse=True)
+            st.session_state["ev_props"] = sorted(all_props, key=lambda x: x["_edge"], reverse=True)
+            st.session_state["ev_last_update"] = datetime.now()
+            st.success(f"Found {len(st.session_state['ev_game_lines'])} +EV game lines and {len(st.session_state['ev_props'])} +EV props.")
+            st.toast("EV scan completed", icon="🎲")
+    
+    if st.session_state.get("ev_last_update"):
+        st.caption(f"Last scan: {st.session_state['ev_last_update'].strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    ev_games = st.session_state.get("ev_game_lines", [])
+    if ev_games:
+        st.subheader(f"📈 +EV Game Lines ({len(ev_games)} found)")
+        df_games = pd.DataFrame([{k:v for k,v in g.items() if not k.startswith("_")} for g in ev_games[:20]])
+        st.dataframe(df_games, use_container_width=True)
+    else:
+        st.info("No +EV game lines found. Click the scan button above.")
+    
+    st.divider()
+    
+    ev_props = st.session_state.get("ev_props", [])
+    if ev_props:
+        st.subheader(f"🎯 +EV PrizePicks Props ({len(ev_props)} found)")
+        df_props = pd.DataFrame([{k:v for k,v in p.items() if not k.startswith("_")} for p in ev_props[:25]])
+        st.dataframe(df_props, use_container_width=True)
+        st.caption("Look up these props manually on PrizePicks. The 'Best Slip' column suggests the optimal parlay size.")
+    else:
+        st.info("No +EV props found. Click the scan button above.")
 
 # =============================================================================
 # MAIN
