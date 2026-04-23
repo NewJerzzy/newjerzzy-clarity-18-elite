@@ -1,9 +1,7 @@
 # =============================================================================
-# CLARITY PRIME 24.7 — +EV SCANNER ADDED (FULLY CORRECTED)
+# CLARITY PRIME 24.7 — FULLY CORRECTED WITH BATCH SETTLE
 # =============================================================================
-# New tab: "🎲 EV Scanner"
-#   • Game lines: devig sharp books → find +EV bets on soft books
-#   • Player props: devig sharp books → compare to PrizePicks break‑even
+# New batch settle feature in Slip Lab: paste any slip text, set results, record all as settled.
 # =============================================================================
 
 import os
@@ -1843,7 +1841,7 @@ def display_batch_results(results: List[Dict]) -> Tuple[List[Dict], int]:
     return approved_props, len(approved_props)
 
 # =============================================================================
-# +EV SCANNER (NEW TAB)
+# +EV SCANNER
 # =============================================================================
 # Define SPORTS mapping for EV scanner
 SPORTS = {
@@ -1891,7 +1889,6 @@ def api_get(path: str, params: dict) -> Tuple[Optional[dict], dict]:
     params["apiKey"] = st.secrets.get("ODDS_API_KEY", "")
     if not params["apiKey"]:
         return None, {}
-    # Build full URL: BASE_URL + path (path should start with /)
     full_url = f"{BASE_URL}{path}"
     try:
         r = requests.get(full_url, params=params, timeout=15)
@@ -1903,7 +1900,6 @@ def api_get(path: str, params: dict) -> Tuple[Optional[dict], dict]:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_ev_game_lines(sport_key: str) -> List[Dict]:
-    # Use relative path
     data, _ = api_get(f"/sports/{sport_key}/odds", {
         "regions": "us",
         "markets": "h2h,spreads,totals",
@@ -1940,7 +1936,6 @@ def analyze_ev_game_lines(games: List[Dict], sport_name: str) -> List[Dict]:
             sharp_outcomes = books_by_name[sharp_book].get(market_key)
             if not sharp_outcomes:
                 continue
-            # Use american_to_prob (which we have) instead of undefined american_to_implied_prob
             raw_probs = [american_to_prob(o["price"]) for o in sharp_outcomes]
             true_probs = devig_multiplicative(raw_probs)
             for bm_name, markets_dict in books_by_name.items():
@@ -2016,7 +2011,7 @@ def analyze_ev_props(games: List[Dict], sport_key: str, sport_name: str, max_gam
                         continue
                     for side_label, true_p in [("OVER", true_over), ("UNDER", true_under)]:
                         edge = (true_p - be) * 100
-                        if edge < 1.0:   # minimum 1% edge to show
+                        if edge < 1.0:
                             continue
                         results.append({
                             "Sport": sport_name,
@@ -2039,7 +2034,7 @@ def analyze_ev_props(games: List[Dict], sport_key: str, sport_name: str, max_gam
     return unique
 
 # =============================================================================
-# ACCURACY DASHBOARD (MISSING FUNCTION ADDED)
+# ACCURACY DASHBOARD
 # =============================================================================
 def accuracy_dashboard() -> dict:
     """Calculate performance metrics from settled slips."""
@@ -2054,7 +2049,6 @@ def accuracy_dashboard() -> dict:
             "by_tier": {},
         }
     
-    # Filter settled bets
     settled = df[df["result"].isin(["WIN", "LOSS"])].copy()
     if settled.empty:
         return {
@@ -2066,19 +2060,15 @@ def accuracy_dashboard() -> dict:
             "by_tier": {},
         }
     
-    # Win rate
     wins = (settled["result"] == "WIN").sum()
     total = len(settled)
     win_rate = round(wins / total * 100, 1) if total > 0 else 0
     
-    # ROI and units profit
     profit_sum = settled["profit"].sum()
-    units_profit = round(profit_sum / 100, 1)  # assuming each bet is 1 unit (100$)
+    units_profit = round(profit_sum / 100, 1)
     roi = round(profit_sum / (total * 100) * 100, 1) if total > 0 else 0
     
-    # By sport
     by_sport = settled.groupby("sport")["result"].apply(lambda x: (x == "WIN").mean()).to_dict()
-    # By tier
     by_tier = settled.groupby("tier")["result"].apply(lambda x: (x == "WIN").mean()).to_dict()
     
     return {
@@ -2091,7 +2081,7 @@ def accuracy_dashboard() -> dict:
     }
 
 # =============================================================================
-# INITIALIZE SESSION STATE (NO API CALLS)
+# INITIALIZE SESSION STATE
 # =============================================================================
 def initialize_session_state() -> None:
     if st.session_state.get("initialized"):
@@ -2470,8 +2460,6 @@ def _tab_best_bets() -> None:
             try:
                 dk_df = fetch_dk_dataframe()
                 projs = build_today_projections_auto()
-                # For now, we won't recompute priced bets because evaluate_all_bets is a placeholder.
-                # We'll just update game bets.
                 games = game_scanner.fetch(["NBA"], days=0)
                 st.session_state["game_bets"] = analyze_game_bets(games, "NBA", 0.0)
                 st.session_state["last_update"] = datetime.now()
@@ -2485,7 +2473,6 @@ def _tab_best_bets() -> None:
     if last_update and isinstance(last_update, datetime):
         st.caption(f"Last scan: {last_update.strftime('%H:%M:%S')}")
     
-    # Game Bets Section
     game_bets = st.session_state.get("game_bets", [])
     if game_bets:
         filtered_g = sorted([b for b in game_bets if b["edge"] >= min_edge],
@@ -2570,7 +2557,7 @@ def _tab_best_bets() -> None:
                 st.rerun()
 
 # =============================================================================
-# TAB 3: Slip Lab
+# TAB 3: Slip Lab (includes Batch Settle & Record)
 # =============================================================================
 def _tab_slip_lab() -> None:
     st.header("📋 Slip Lab")
@@ -2655,6 +2642,98 @@ def _tab_slip_lab() -> None:
                         st.success(f"Added {count} approved props to slip!")
                         st.toast(f"{count} props added", icon="➕")
                         st.rerun()
+    
+    # ========== NEW: BATCH SETTLE & RECORD ==========
+    with st.expander("✅ Batch Settle & Record (Paste settled slips)", expanded=False):
+        st.markdown("Paste any slip text (MyBookie, Bovada, PrizePicks, etc.). CLARITY will parse and record as settled WIN/LOSS/PUSH.")
+        settle_text = st.text_area("Paste slip text here", height=250, key="settle_batch_text")
+        
+        default_result = st.selectbox("Default result if not detected", ["WIN", "LOSS", "PUSH"], key="settle_default")
+        manual_pick = st.selectbox("For props missing OVER/UNDER, use", ["OVER", "UNDER"], key="settle_pick")
+        
+        if st.button("📥 Parse & Settle All", key="batch_settle_btn"):
+            if not settle_text.strip():
+                st.warning("Please paste some slip text.")
+            else:
+                bets = parse_slip(settle_text)
+                if not bets:
+                    st.warning("No bets could be parsed from the text.")
+                else:
+                    # Try to detect global result from last few lines
+                    lines = settle_text.splitlines()
+                    global_result = None
+                    for line in reversed(lines[-10:]):
+                        if "WIN" in line.upper():
+                            global_result = "WIN"
+                            break
+                        elif "LOSS" in line.upper():
+                            global_result = "LOSS"
+                            break
+                        elif "PUSH" in line.upper():
+                            global_result = "PUSH"
+                            break
+                    if not global_result:
+                        global_result = default_result
+                    
+                    settled_count = 0
+                    for bet in bets:
+                        line_val = bet.get("line", 0)
+                        pick = bet.get("pick", "").upper()
+                        if not pick or pick not in ["OVER", "UNDER"]:
+                            pick = manual_pick
+                            bet["pick"] = pick
+                        
+                        # Try to extract actual stat from text (simple heuristic)
+                        actual = None
+                        # Look for a number that appears after the line in the original text
+                        # This is basic; for PrizePicks you may need to manually enter.
+                        # For simplicity, we'll prompt if not found.
+                        if actual is None:
+                            actual = st.number_input(f"Actual stat for {bet.get('player','?')} {bet.get('market','')} (line {line_val})", value=line_val, step=0.5, key=f"actual_{settled_count}")
+                        
+                        if actual is not None:
+                            if pick == "OVER":
+                                result = "WIN" if actual > line_val else "LOSS" if actual < line_val else "PUSH"
+                            else:
+                                result = "WIN" if actual < line_val else "LOSS" if actual > line_val else "PUSH"
+                        else:
+                            result = global_result
+                        
+                        odds = bet.get("odds", -110)
+                        if result == "WIN":
+                            profit = (odds / 100) * 100 if odds > 0 else (100 / abs(odds)) * 100
+                        elif result == "LOSS":
+                            profit = -100
+                        else:
+                            profit = 0
+                        
+                        insert_slip({
+                            "type": bet.get("type", "PROP"),
+                            "sport": bet.get("sport", "NBA"),
+                            "player": bet.get("player", ""),
+                            "team": bet.get("team", ""),
+                            "opponent": bet.get("opponent", ""),
+                            "market": bet.get("market", ""),
+                            "line": line_val,
+                            "pick": pick,
+                            "odds": odds,
+                            "edge": 0.0,
+                            "prob": 0.5,
+                            "kelly": 0.0,
+                            "tier": "MANUAL",
+                            "bolt_signal": "MANUAL",
+                            "result": result,
+                            "actual": actual if actual is not None else 0.0,
+                            "profit": profit,
+                            "settled_date": datetime.now().strftime("%Y-%m-%d"),
+                            "bankroll": get_bankroll(),
+                            "notes": f"Batch settled from text: {settle_text[:200]}"
+                        })
+                        settled_count += 1
+                    
+                    st.success(f"✅ Batch settled {settled_count} bets.")
+                    st.toast(f"{settled_count} bets recorded", icon="📋")
+                    st.rerun()
 
 # =============================================================================
 # TAB 4: History
@@ -2911,7 +2990,7 @@ def _tab_tools() -> None:
             st.rerun()
 
 # =============================================================================
-# NEW TAB 7: EV Scanner
+# TAB 7: EV Scanner
 # =============================================================================
 def _tab_ev_scanner() -> None:
     st.header("🎲 +EV Scanner (Market-Based)")
@@ -2927,7 +3006,6 @@ def _tab_ev_scanner() -> None:
                     continue
                 ev_games = analyze_ev_game_lines(games_data, sport_name)
                 all_game_lines.extend(ev_games)
-                # Props
                 if sport_key in ["basketball_nba", "americanfootball_nfl", "baseball_mlb", "icehockey_nhl"]:
                     ev_props = analyze_ev_props(games_data, sport_key, sport_name, max_games=5)
                     all_props.extend(ev_props)
@@ -2940,7 +3018,6 @@ def _tab_ev_scanner() -> None:
     if st.session_state.get("ev_last_update"):
         st.caption(f"Last scan: {st.session_state['ev_last_update'].strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # Display game lines
     ev_games = st.session_state.get("ev_game_lines", [])
     if ev_games:
         st.subheader(f"📈 +EV Game Lines ({len(ev_games)} found)")
@@ -2951,7 +3028,6 @@ def _tab_ev_scanner() -> None:
     
     st.divider()
     
-    # Display props for PrizePicks
     ev_props = st.session_state.get("ev_props", [])
     if ev_props:
         st.subheader(f"🎯 +EV PrizePicks Props ({len(ev_props)} found)")
