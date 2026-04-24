@@ -1,12 +1,7 @@
 # =============================================================================
-# CLARITY PRIME 24.7 — ELITE EDITION (FULLY INTEGRATED)
+# CLARITY PRIME 24.7 — ELITE EDITION (FULLY CORRECTED)
 # =============================================================================
-# All fixes and improvements included:
-# - Tab reorganization (pre‑bet analysis only in Player Props)
-# - Model confidence score (1‑10)
-# - EV scanner with min EV slider & sport filter
-# - Batch settle with auto‑fetch for game totals (ESPN)
-# - Improved sigma in Model Priced Bets
+# All fixes integrated, no syntax errors.
 # =============================================================================
 
 import os
@@ -996,7 +991,6 @@ def analyze_prop_legacy(
     bolt = ("SOVEREIGN BOLT" if prob >= get_prob_bolt() and
             abs(mu - line) / max(line, 1e-9) >= get_dtm_bolt()
             else tier_l)
-    # Confidence score based on number of stats used
     conf = confidence_score(len(stats))
     return {
         "prob": prob, "edge": edge, "mu": mu, "sigma": sigma, "wma": mu,
@@ -1092,8 +1086,7 @@ def analyze_ml(home: str, away: str, sport: str, home_odds: int, away_odds: int)
 # =============================================================================
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_final_score_espn(home_team: str, away_team: str, date: str = None) -> Tuple[Optional[int], Optional[int]]:
-    """Use ESPN free scoreboard to get final scores for a game."""
-    sport_slug = "basketball/nba"  # extend later if needed
+    sport_slug = "basketball/nba"
     url = f"https://site.api.espn.com/apis/site/v2/sports/{sport_slug}/scoreboard"
     params = {}
     if date:
@@ -1303,7 +1296,6 @@ def _parse_prizepicks_props(lines: List[str]) -> List[Dict]:
             bets.append(bet)
     return bets
 
-# Legacy parsers (unchanged)
 def _parse_pp_blocks(lines: List[str]) -> List[Dict]:
     bets = []
     i = 0
@@ -1440,7 +1432,6 @@ def parse_slip(text: str) -> List[Dict]:
     if not lines:
         return bets
 
-    # Run all parsers
     bets.extend(_parse_mybookie_totals(lines))
     bets.extend(_parse_bovada_parlay(lines))
     bets.extend(_parse_prizepicks_props(lines))
@@ -1448,7 +1439,6 @@ def parse_slip(text: str) -> List[Dict]:
     bets.extend(_parse_bovada(lines))
     bets.extend(_parse_mybookie(lines))
 
-    # Generic fallback
     for line in lines:
         m = re.match(r'^(.+?)\s+(OVER|UNDER)\s+([\d\.]+)\s+(\w+)$', line, re.IGNORECASE)
         if m:
@@ -1719,7 +1709,6 @@ def priced_bets_to_dataframe(priced: List) -> pd.DataFrame:
     return df
 
 def evaluate_all_bets(dk_df: pd.DataFrame, projections: Dict[str, PlayerProjection]) -> List:
-    """Non‑stub implementation using projections and proper sigma."""
     results = []
     if dk_df.empty or not projections:
         return results
@@ -1743,7 +1732,6 @@ def evaluate_all_bets(dk_df: pd.DataFrame, projections: Dict[str, PlayerProjecti
             mu = proj.asts
         else:
             continue
-        # Fetch stats to compute realistic sigma
         stats = fetch_stats(pname, market, tier="mid")
         sigma = max(_wse(stats) * _vol_buf(stats), 0.75) if len(stats) >= 4 else max(1.5, mu * 0.25)
         p_over = 1 - norm.cdf(line, mu, sigma)
@@ -1811,7 +1799,7 @@ class GameScanner:
             oi = odds_by_id.get(ev.get("id"),{})
             bms = oi.get("bookmakers",[])
             if bms:
-                bm = bms[0]  # take the first bookmaker (often DraftKings or FanDuel)
+                bm = bms[0]
                 for m in bm.get("markets",[]):
                     oc = m["outcomes"]
                     if m["key"] == "h2h":
@@ -2465,7 +2453,7 @@ def _tab_props(bankroll: float) -> None:
             with st.expander("Show Live Props Data", expanded=False):
                 st.dataframe(show_df, use_container_width=True)
     
-    # Scan a Prop Slip (pre‑bet only) – this is the only place for pending slip analysis
+    # Scan a Prop Slip (pre‑bet only)
     with st.expander("📋 Scan a Prop Slip (Text or Screenshot) – Pre‑bet Analysis", expanded=False):
         st.markdown("Paste a prop line or upload screenshots -- CLARITY will extract and analyze pending props.")
         scan_text = st.text_area("📋 Paste prop slip text", height=150, placeholder="e.g., LeBron James OVER 25.5 PTS\nor full PrizePicks block")
@@ -2864,7 +2852,6 @@ def _tab_slip_lab() -> None:
                 if not bets:
                     st.warning("No bets could be parsed from the text.")
                 else:
-                    # Detect global result from last few lines
                     lines = settle_text.splitlines()
                     global_result = None
                     for line in reversed(lines[-10:]):
@@ -2881,7 +2868,6 @@ def _tab_slip_lab() -> None:
                         global_result = default_result
                     
                     settled_count = 0
-                    # For each bet, allow auto‑fetch for game totals (ESPN)
                     for bet_idx, bet in enumerate(bets):
                         line_val = bet.get("line", 0)
                         pick = bet.get("pick", "").upper()
@@ -2889,14 +2875,11 @@ def _tab_slip_lab() -> None:
                             pick = manual_pick
                         odds = bet.get("odds", -110)
                         
-                        # Try to auto‑fetch actual stat for game totals if possible
                         actual = None
                         if bet.get("type") == "GAME" and bet.get("market") == "TOTAL":
-                            # Extract teams from the bet (may be stored in team/opponent)
                             home_team = bet.get("team", "")
                             away_team = bet.get("opponent", "")
                             if home_team and away_team:
-                                # Try to fetch from ESPN
                                 hs, as_ = fetch_final_score_espn(home_team, away_team)
                                 if hs is not None and as_ is not None:
                                     total = hs + as_
@@ -2946,7 +2929,7 @@ def _tab_slip_lab() -> None:
                     st.toast(f"{settled_count} bets recorded", icon="📋")
                     st.rerun()
     
-    # Manual single bet entry (moved from History)
+    # Manual single bet entry
     with st.expander("➕ Manually Record a Single Bet (already settled)", expanded=False):
         with st.form("manual_bet_form"):
             col1, col2, col3 = st.columns(3)
@@ -3042,7 +3025,7 @@ def _tab_history() -> None:
         st.info("No bets recorded yet. Use the 'Manually Record a Single Bet' expander in Slip Lab to add your past bets.")
 
 # =============================================================================
-# TAB 5: Model Bets (unchanged)
+# TAB 5: Model Bets (improved sigma)
 # =============================================================================
 def _tab_model(bankroll: float) -> None:
     st.header("🤖 Model-Priced Bets (DraftKings)")
@@ -3069,7 +3052,6 @@ def _tab_model(bankroll: float) -> None:
                     sb_line = float(row.get("line",0))
                     if not pname or not mtype or sb_line <= 0:
                         continue
-                    # Use actual stats to compute sigma
                     market = mtype.replace("player_", "").upper()
                     stats = fetch_stats(pname, market, tier="mid")
                     mu = _wma(stats) if stats else sb_line * 1.02
@@ -3102,7 +3084,7 @@ def _tab_model(bankroll: float) -> None:
             st.info("No player prop lines found in the DK feed. Check DK endpoint or try later.")
 
 # =============================================================================
-# TAB 6: Tools (unchanged)
+# TAB 6: Tools (fully corrected)
 # =============================================================================
 def _tab_tools() -> None:
     st.header("⚙️ Tools & Diagnostics")
@@ -3159,4 +3141,134 @@ def _tab_tools() -> None:
                 for e in errs:
                     st.code(e.strip())
             else:
-               pass
+                st.success("No errors in log.")
+        else:
+            st.info("Log not found yet.")
+    except Exception as e:
+        st.warning(f"Could not read log: {e}")
+    
+    st.subheader("🧹 Maintenance")
+    c1, c2, c3 = st.columns(3)
+    if c1.button("Clear Pending Slips"):
+        clear_pending_slips()
+        st.success("Cleared.")
+        st.toast("Pending slips cleared", icon="🧹")
+    if c2.button("Force SEM Recalibration"):
+        with st.spinner("Recalibrating SEM..."):
+            _calibrate_sem()
+        st.success("SEM recalibrated.")
+        st.toast("SEM recalibrated", icon="📊")
+    if c3.button("Force Threshold Tune"):
+        with st.spinner("Tuning thresholds..."):
+            _auto_tune()
+        st.success(f"Thresholds: PROB={get_prob_bolt():.2f} DTM={get_dtm_bolt():.2f}")
+        st.toast("Thresholds updated", icon="⚙️")
+    
+    st.subheader("⚖️ Current Thresholds")
+    st.metric("PROB_BOLT", f"{get_prob_bolt():.3f}")
+    st.metric("DTM_BOLT", f"{get_dtm_bolt():.3f}")
+    with st.expander("Override thresholds manually"):
+        np_ = st.number_input("PROB_BOLT", value=get_prob_bolt(), step=0.01, min_value=0.5, max_value=1.0)
+        nd = st.number_input("DTM_BOLT", value=get_dtm_bolt(), step=0.01, min_value=0.0, max_value=0.5)
+        if st.button("Apply"):
+            set_setting("prob_bolt", np_)
+            set_setting("dtm_bolt", nd)
+            st.success("Thresholds updated.")
+            st.toast("New thresholds applied", icon="⚙️")
+            st.rerun()
+
+# =============================================================================
+# TAB 7: EV Scanner (with min EV slider & sport filter)
+# =============================================================================
+def _tab_ev_scanner() -> None:
+    st.header("🎲 +EV Scanner (Market-Based)")
+    st.caption("Finds +EV opportunities by devigging sharp books (Pinnacle → DK → FD) and comparing to soft books or PrizePicks break‑even.")
+    
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        min_ev_percent = st.slider("Minimum EV %", 0.0, 20.0, 1.0, 0.5) / 100.0
+    with col2:
+        selected_sport = st.selectbox("Sport", list(SPORTS.keys()), index=0)
+    with col3:
+        scan_props = st.checkbox("Include Props", value=True)
+    
+    if st.button("🔄 Scan for +EV Opportunities", type="primary"):
+        with st.spinner(f"Scanning {selected_sport} lines and props..."):
+            sport_key = SPORTS[selected_sport]
+            games_data = fetch_ev_game_lines(sport_key)
+            if not games_data:
+                st.warning(f"No games data for {selected_sport}. Check ODDS_API_KEY.")
+            else:
+                ev_games = analyze_ev_game_lines(games_data, selected_sport, min_ev=min_ev_percent)
+                st.session_state["ev_game_lines"] = ev_games
+                
+                if scan_props:
+                    ev_props = analyze_ev_props(games_data, sport_key, selected_sport, max_games=5, min_ev=min_ev_percent)
+                    st.session_state["ev_props"] = ev_props
+                else:
+                    st.session_state["ev_props"] = []
+                
+                st.session_state["ev_last_update"] = datetime.now()
+                st.success(f"Found {len(ev_games)} +EV game lines and {len(st.session_state['ev_props'])} +EV props.")
+                st.toast("EV scan completed", icon="🎲")
+    
+    if st.session_state.get("ev_last_update"):
+        st.caption(f"Last scan: {st.session_state['ev_last_update'].strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    ev_games = st.session_state.get("ev_game_lines", [])
+    if ev_games:
+        st.subheader(f"📈 +EV Game Lines ({len(ev_games)} found)")
+        df_games = pd.DataFrame([{k:v for k,v in g.items() if not k.startswith("_")} for g in ev_games[:20]])
+        st.dataframe(df_games, use_container_width=True)
+    else:
+        st.info("No +EV game lines found. Click the scan button above.")
+    
+    st.divider()
+    
+    ev_props = st.session_state.get("ev_props", [])
+    if ev_props:
+        st.subheader(f"🎯 +EV PrizePicks Props ({len(ev_props)} found)")
+        df_props = pd.DataFrame([{k:v for k,v in p.items() if not k.startswith("_")} for p in ev_props[:25]])
+        st.dataframe(df_props, use_container_width=True)
+        st.caption("Look up these props manually on PrizePicks. The 'Best Slip' column suggests the optimal parlay size.")
+    else:
+        st.info("No +EV props found. Click the scan button above.")
+
+# =============================================================================
+# MAIN
+# =============================================================================
+def main():
+    st.set_page_config(page_title=f"CLARITY {VERSION}", page_icon="⚡", layout="wide")
+    init_db()
+    _init_health()
+    bankroll = _sidebar()
+    initialize_session_state()
+    tabs = st.tabs([
+        "🎯 Player Props",
+        "🏟️ Game Analyzer",
+        "🏆 Best Bets",
+        "📋 Slip Lab",
+        "📊 History",
+        "🤖 Model Bets",
+        "🎲 EV Scanner",
+        "⚙️ Tools",
+    ])
+    with tabs[0]:
+        _tab_props(bankroll)
+    with tabs[1]:
+        _tab_games(bankroll)
+    with tabs[2]:
+        _tab_best_bets()
+    with tabs[3]:
+        _tab_slip_lab()
+    with tabs[4]:
+        _tab_history()
+    with tabs[5]:
+        _tab_model(bankroll)
+    with tabs[6]:
+        _tab_ev_scanner()
+    with tabs[7]:
+        _tab_tools()
+
+if __name__ == "__main__":
+    main()
