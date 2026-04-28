@@ -1,15 +1,13 @@
 # =============================================================================
-# CLARITY PRIME 24.7 ELITE — FULLY UPGRADED (FATIGUE, EWMA, ON/OFF, POISSON, ETC.)
+# CLARITY PRIME 24.7 ELITE — FULL PRODUCTION (with Game Analyzer fix & all upgrades)
 # =============================================================================
-# - Fatigue modifier (B2B penalty)
-# - EWMA for minutes & usage
-# - Top-2 usage on/off rule (placeholder, ready for data)
-# - Poisson for low totals (≤4.5)
-# - Sport-specific correlation matrices
-# - Sanity check for edge >20%
-# - Matchup-specific pace resistance
-# - All previous high-priority fixes retained
-# - Complete UI tabs (Player Props, Game Analyzer, Best Bets, Slip Lab, History, Model Bets, EV Scanner, Tools)
+# - GameScanner._enrich now iterates over bookmakers to find odds
+# - CV edge reduction (CV > 0.18 → edge × 0.80)
+# - Playoff edge floor (9% for APPROVED)
+# - Emergency floor (12% if hit rate <45% over 20 settled bets)
+# - Auto-pass on raw edge >20% (stale line / injury alert)
+# - Session tracking for emergency floor
+# - All previous: fatigue, EWMA, Poisson, Bayesian fallback, etc.
 # =============================================================================
 
 import os
@@ -66,21 +64,21 @@ logger = logging.getLogger("clarity")
 # VERSION & PATHS
 # =============================================================================
 VERSION    = "PRIME 24.7 ELITE"
-BUILD_DATE = "2026-04-27"
+BUILD_DATE = "2026-04-28"
 DB_PATH    = "clarity_prime.db"
 
 # =============================================================================
 # GLOBAL CONFIGURATION (dynamic)
 # =============================================================================
-LEAGUE_PACE = 98.0          # Default NBA pace; can be updated via settings
-PLAYOFF_MODE = False        # Set to True for playoffs
-PLAYOFF_PACE_FACTOR = 0.92  # Apply when PLAYOFF_MODE = True
+LEAGUE_PACE = 98.0
+PLAYOFF_MODE = False
+PLAYOFF_PACE_FACTOR = 0.92
 
 # Fatigue penalties (days of rest -> multiplier)
 FATIGUE_MAP = {0: 0.94, 1: 0.98, 2: 1.0, 3: 1.02}
 DEFAULT_FATIGUE = 1.0
 
-# On/Off rule: top 2 usage players missing -> boost for others (placeholder)
+# On/Off rule (placeholder)
 ONOFF_BOOST = 1.15
 ONOFF_AST_BOOST = 1.2
 
@@ -322,6 +320,7 @@ def insert_slip(entry: dict) -> None:
         logger.error(f"insert_slip: {e}")
     if entry.get("result") in ("WIN","LOSS"):
         set_bankroll(get_bankroll() + entry.get("profit", 0.0))
+        update_session_results(entry.get("result"))
         _calibrate_sem()
         _auto_tune()
 
@@ -337,6 +336,7 @@ def update_slip_result(slip_id: str, result: str, actual: float, odds: int) -> N
     except Exception as e:
         logger.error(f"update_slip_result: {e}")
     set_bankroll(get_bankroll() + profit)
+    update_session_results(result)
     _calibrate_sem()
     _auto_tune()
 
@@ -364,6 +364,28 @@ def clear_pending_slips() -> None:
             c.execute("DELETE FROM slips WHERE result='PENDING'")
     except Exception as e:
         logger.error(f"clear_pending_slips: {e}")
+
+# =============================================================================
+# SESSION TRACKING (for emergency floor)
+# =============================================================================
+def init_session_state() -> None:
+    if "settled_results" not in st.session_state:
+        st.session_state.settled_results = []
+        st.session_state.emergency_floor_active = False
+
+def update_session_results(result: str) -> None:
+    """Call after each settled bet (WIN/LOSS)."""
+    if result not in ("WIN","LOSS"):
+        return
+    st.session_state.settled_results.append(True if result == "WIN" else False)
+    # Keep only last 20
+    if len(st.session_state.settled_results) > 20:
+        st.session_state.settled_results.pop(0)
+    if len(st.session_state.settled_results) == 20:
+        win_rate = sum(st.session_state.settled_results) / 20
+        st.session_state.emergency_floor_active = (win_rate < 0.45)
+    else:
+        st.session_state.emergency_floor_active = False
 
 # =============================================================================
 # API HEALTH TRACKER (simplified)
@@ -530,7 +552,6 @@ def fatigue_multiplier(days_rest: int) -> float:
     return FATIGUE_MAP.get(days_rest, DEFAULT_FATIGUE)
 
 def apply_on_off_boost(proj: 'PlayerProjection', team: str, missing_players: List[str]) -> 'PlayerProjection':
-    # Placeholder – extend with actual top‑2 usage data
     if missing_players and len(missing_players) > 0:
         proj.usage *= ONOFF_BOOST
         proj.asts *= ONOFF_AST_BOOST
@@ -670,7 +691,7 @@ class StatDist:
         return cls(mean, var)
 
 # =============================================================================
-# SPORT-SPECIFIC CORRELATION MATRICES
+# SPORT-SPECIFIC CORRELATION MATRICES (for Monte Carlo)
 # =============================================================================
 NBA_CORR = np.array([
     [1.00,0.25,0.35,0.10,0.05,0.20],
@@ -810,7 +831,7 @@ def tier_mult(stat: str) -> float:
 
 def classify_tier(edge: float) -> str:
     if edge >= 0.15: return "SOVEREIGN BOLT"
-    if edge >= 0.08: return "ELITE LOCK"
+    if edge >= 0.10: return "ELITE LOCK"
     if edge >= 0.04: return "APPROVED"
     if edge < 0: return "PASS"
     return "NEUTRAL"
@@ -1107,8 +1128,10 @@ def analyze_prop_legacy(
     stats = fetch_stats(player, market, sport, tier=tier)
     mu = _wma(stats)
     sigma = max(_wse(stats) * _vol_buf(stats), 0.75)
-    if get_playoff_mode() and sport.upper() == "NBA":
+    playoff_mode = get_playoff_mode()
+    if playoff_mode and sport.upper() == "NBA":
         sigma += 3.5
+        mu *= 0.92   # playoff pace factor
 
     fatigue = fatigue_multiplier(days_rest)
     mu = mu * fatigue
@@ -1129,19 +1152,54 @@ def analyze_prop_legacy(
     imp = american_to_prob(odds)
     raw_edge = prob - imp
     edge = raw_edge * tier_mult(market)
-    kelly_val = calculate_kelly_stake(bankroll, prob, odds) / bankroll if bankroll > 0 else 0
-    tier_l = classify_tier(edge)
-    bolt = ("SOVEREIGN BOLT" if prob >= get_prob_bolt() and
-            abs(mu - line) / max(line, 1e-9) >= get_dtm_bolt()
-            else tier_l)
-    conf = confidence_score(len(stats))
+
+    # CV edge reduction
+    cv = sigma / mu if mu > 0 else 0.0
+    if cv > 0.18:
+        edge = edge * 0.80
+        st.warning(f"⚠️ HIGH CV ({cv:.2f}) — Edge reduced by 20%")
+
+    # Auto-pass on raw edge >20% (stale line / injury)
     if raw_edge > 0.20:
-        st.warning(f"⚠️ CRITICAL: Raw edge >20% for {player} {market} – check injury reports!")
+        st.error(f"❌ STALE LINE / INJURY ALERT: Raw edge {raw_edge:.1%} >20% → AUTO-PASS")
+        return {
+            "prob": prob, "edge": edge, "mu": mu, "sigma": sigma,
+            "tier": "PASS", "kelly": 0, "stake": 0,
+            "bolt_signal": "STALE LINE", "stats": stats, "fair_line": mu,
+            "confidence": confidence_score(len(stats)),
+            "num_games": len(stats),
+        }
+
+    # Determine edge floor
+    edge_floor = 0.04
+    if playoff_mode:
+        edge_floor = 0.09
+    if st.session_state.get("emergency_floor_active", False):
+        edge_floor = 0.12
+        st.warning("⚠️ EMERGENCY FLOOR ACTIVE (12% min edge)")
+
+    if edge >= 0.15:
+        tier_l = "SOVEREIGN BOLT"
+    elif edge >= 0.10:
+        tier_l = "ELITE LOCK"
+    elif edge >= edge_floor:
+        tier_l = "APPROVED"
+    else:
+        tier_l = "PASS"
+
+    kelly_val = calculate_kelly_stake(bankroll, prob, odds) / bankroll if bankroll > 0 else 0
+    bolt = ("SOVEREIGN BOLT" if prob >= get_prob_bolt() and
+            abs(mu - line) / max(line, 1e-9) >= get_dtm_bolt() and edge >= 0.15
+            else tier_l)
+
+    conf = confidence_score(len(stats))
     return {
         "prob": prob, "edge": edge, "mu": mu, "sigma": sigma, "wma": mu,
         "tier": tier_l, "kelly": kelly_val, "stake": bankroll * kelly_val,
         "bolt_signal": bolt, "stats": stats, "fair_line": mu,
         "confidence": conf, "num_games": len(stats),
+        "cv": cv, "cv_reduction": cv > 0.18,
+        "emergency_floor": st.session_state.get("emergency_floor_active", False)
     }
 
 # =============================================================================
@@ -1259,7 +1317,7 @@ def fetch_final_score_espn(home_team: str, away_team: str, date: str = None) -> 
         return None, None
 
 # =============================================================================
-# OCR & PARSER UTILITIES (unchanged from working version)
+# OCR & PARSER UTILITIES (unchanged)
 # =============================================================================
 def _clean(text: str) -> str:
     t = re.sub(r'[^\x00-\x7F]+',' ', text or "")
@@ -1901,15 +1959,17 @@ def evaluate_all_bets(dk_df: pd.DataFrame, projections: Dict[str, PlayerProjecti
     return results
 
 # =============================================================================
-# GAME SCANNER
+# GAME SCANNER (FIXED – now iterates over bookmakers)
 # =============================================================================
 class GameScanner:
     def __init__(self):
-        self.key = st.secrets.get("ODDS_API_KEY","")
+        self.key = st.secrets.get("ODDS_API_KEY", "")
         self.base = "https://api.the-odds-api.com/v4"
         self._sport_keys = {
-            "NBA":"basketball_nba","NFL":"americanfootball_nfl",
-            "MLB":"baseball_mlb","NHL":"icehockey_nhl",
+            "NBA": "basketball_nba",
+            "NFL": "americanfootball_nfl",
+            "MLB": "baseball_mlb",
+            "NHL": "icehockey_nhl",
         }
 
     def fetch(self, sports: List[str], days: int = 0) -> List[Dict]:
@@ -1924,51 +1984,99 @@ class GameScanner:
         return games
 
     def _enrich(self, sport: str, sk: str, days: int) -> List[Dict]:
+        # Fetch events (game metadata)
         try:
             ev_r = requests.get(f"{self.base}/sports/{sk}/events",
-                                params={"apiKey":self.key,"days":days+1}, timeout=10)
+                                params={"apiKey": self.key, "days": days + 1},
+                                timeout=10)
             ev_r.raise_for_status()
             events = ev_r.json()
         except Exception as e:
             _health("The Odds API (scanner)", False, str(e), True)
             return []
+
+        # Fetch odds
         try:
             od_r = requests.get(f"{self.base}/sports/{sk}/odds",
-                                params={"apiKey":self.key,"regions":"us",
-                                        "markets":"h2h,spreads,totals",
-                                        "oddsFormat":"american","days":days+1}, timeout=10)
-            odds_data = od_r.json() if od_r.status_code==200 else []
-        except Exception:
-            odds_data = []
+                                params={"apiKey": self.key,
+                                        "regions": "us",
+                                        "markets": "h2h,spreads,totals",
+                                        "oddsFormat": "american",
+                                        "days": days + 1},
+                                timeout=10)
+            if od_r.status_code != 200:
+                _health("The Odds API (scanner)", False, f"Odds HTTP {od_r.status_code}", True)
+                return []
+            odds_data = od_r.json()
+        except Exception as e:
+            _health("The Odds API (scanner)", False, str(e), True)
+            return []
 
-        odds_by_id = {o.get("id"):o for o in odds_data if o.get("id")}
+        odds_by_id = {o.get("id"): o for o in odds_data if o.get("id")}
+
+        enriched = []
         for ev in events:
             ev["sport"] = sport
-            oi = odds_by_id.get(ev.get("id"),{})
-            bms = oi.get("bookmakers",[])
-            if bms:
-                bm = bms[0]
-                for m in bm.get("markets",[]):
-                    oc = m["outcomes"]
-                    if m["key"] == "h2h":
-                        ev["home_ml"] = next((o["price"] for o in oc if o["name"]==ev.get("home_team")), None)
-                        ev["away_ml"] = next((o["price"] for o in oc if o["name"]==ev.get("away_team")), None)
-                    elif m["key"] == "spreads":
-                        home_out = next((o for o in oc if o["name"]==ev.get("home_team")), None)
-                        away_out = next((o for o in oc if o["name"]==ev.get("away_team")), None)
+            # default empty
+            ev["home_ml"] = None
+            ev["away_ml"] = None
+            ev["spread"] = None
+            ev["home_spread_odds"] = None
+            ev["away_spread_odds"] = None
+            ev["total"] = None
+            ev["over_odds"] = None
+            ev["under_odds"] = None
+
+            ev_id = ev.get("id")
+            if ev_id not in odds_by_id:
+                enriched.append(ev)
+                continue
+
+            odds_event = odds_by_id[ev_id]
+            bookmakers = odds_event.get("bookmakers", [])
+            if not bookmakers:
+                enriched.append(ev)
+                continue
+
+            # Iterate over bookmakers until we get a market
+            for bm in bookmakers:
+                markets = bm.get("markets", [])
+                for market in markets:
+                    if market["key"] == "h2h":
+                        outcomes = market["outcomes"]
+                        home_out = next((o for o in outcomes if o["name"] == ev.get("home_team")), None)
+                        away_out = next((o for o in outcomes if o["name"] == ev.get("away_team")), None)
+                        if home_out:
+                            ev["home_ml"] = home_out.get("price")
+                        if away_out:
+                            ev["away_ml"] = away_out.get("price")
+                    elif market["key"] == "spreads":
+                        outcomes = market["outcomes"]
+                        home_out = next((o for o in outcomes if o["name"] == ev.get("home_team")), None)
+                        away_out = next((o for o in outcomes if o["name"] == ev.get("away_team")), None)
                         if home_out:
                             ev["spread"] = home_out.get("point")
                             ev["home_spread_odds"] = home_out.get("price")
                         if away_out:
+                            if ev["spread"] is None and away_out.get("point") is not None:
+                                ev["spread"] = -away_out["point"]
                             ev["away_spread_odds"] = away_out.get("price")
-                    elif m["key"] == "totals":
-                        over_out = next((o for o in oc if o["name"]=="Over"), None)
-                        under_out = next((o for o in oc if o["name"]=="Under"), None)
-                        if over_out or under_out:
-                            ev["total"] = (over_out or under_out).get("point")
-                            ev["over_odds"] = over_out.get("price") if over_out else None
-                            ev["under_odds"] = under_out.get("price") if under_out else None
-        return events
+                    elif market["key"] == "totals":
+                        outcomes = market["outcomes"]
+                        over_out = next((o for o in outcomes if o["name"] == "Over"), None)
+                        under_out = next((o for o in outcomes if o["name"] == "Under"), None)
+                        if over_out:
+                            ev["total"] = over_out.get("point")
+                            ev["over_odds"] = over_out.get("price")
+                        if under_out:
+                            if ev["total"] is None:
+                                ev["total"] = under_out.get("point")
+                            ev["under_odds"] = under_out.get("price")
+                # If we got at least one market, break out of bookmaker loop
+                if ev["home_ml"] or ev["spread"] or ev["total"]:
+                    break
+            enriched.append(ev)
+        return enriched
 
 game_scanner = GameScanner()
 
@@ -2517,6 +2625,9 @@ def _sidebar() -> float:
         set_playoff_mode(playoff)
         st.sidebar.success("Updated")
         st.rerun()
+    st.sidebar.markdown("---")
+    if st.session_state.get("emergency_floor_active", False):
+        st.sidebar.error("🚨 EMERGENCY FLOOR ACTIVE (12% min edge)")
     st.sidebar.markdown("---")
     st.sidebar.markdown("**API Status**")
     _init_health()
@@ -3392,6 +3503,7 @@ def main():
     st.set_page_config(page_title=f"CLARITY {VERSION}", page_icon="⚡", layout="wide")
     init_db()
     _init_health()
+    init_session_state()
     bankroll = _sidebar()
     initialize_session_state()
     tabs = st.tabs([
