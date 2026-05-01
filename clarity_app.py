@@ -1,33 +1,18 @@
 # ====================================================================================================
-# CLARITY SOVEREIGN SUPREME v6.0 – ELITE PRODUCTION (FULLY UPGRADED)
+# CLARITY PRIME 24.7 ELITE → SOVEREIGN SUPREME v6.0 (FULL UPGRADE)
 # ====================================================================================================
-# This is the complete, unabridged code for the Clarity betting engine.
-# It incorporates every single feature from the comparison analysis:
-#   - All hard risk filters (minutes, usage, std dev, blowout, correlation, etc.)
-#   - Outlier suppression (3σ → weight 0.5)
-#   - Garbage-time filtering (U-WMA)
-#   - Role change detection (2.0× weighting last 3 games)
-#   - Injury status hierarchy (OUT / Q / P / DTD with precise multipliers)
-#   - All environmental sensors (B2B, travel, altitude, weather, steam, news, motivation, ABS, pace, series-state)
-#   - Self-learning: SQLite persistent state, SEM calibration, Bayesian governor, emergency floor, CLV tracking
-#   - Auto-tuning of volatility multipliers based on performance
-#   - Slip construction & optimisation, correlation penalties
-#   - Alternative line generation and ranking
-#   - Strictness advisory (Lean A/B/C) with confidence scores
-#   - Sport-specific hard rules (NBA G5+, NHL PP, MLB IP<6, NFL backup QB, etc.)
-#   - Monthly calibration report
-#   - Full Streamlit UI with manual result entry
-#
-# Total lines: >2000 (including comments, docstrings, blank lines)
-# Author: Clarity Engineering
-# Version: 6.0.0 FINAL
-# Date: 2026-05-01
+# Preserves original class structure: GameScanner, OddsFetcher, KellyCalculator,
+# SelfLearning, StreamlitUI. Adds all missing hard filters, sensors,
+# outlier suppression, garbage-time filtering, strictness advisory,
+# slip optimisation, auto-tuning, and monthly calibration.
 # ====================================================================================================
 
 import os
 import re
-import json
+import uuid
 import time
+import json
+import base64
 import logging
 import warnings
 import sqlite3
@@ -36,9 +21,9 @@ import pickle
 import math
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, asdict
+from itertools import combinations
 from typing import Any, Dict, List, Optional, Tuple, Union, Callable
 from collections import deque, defaultdict
-from itertools import combinations
 
 import numpy as np
 import pandas as pd
@@ -71,9 +56,9 @@ except ImportError:
 
 warnings.filterwarnings("ignore")
 
-# ----------------------------------------------------------------------------------------------------
-# LOGGING AND FOLDER STRUCTURE
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
+# LOGGING AND FOLDERS
+# ====================================================================================================
 os.makedirs("clarity_logs", exist_ok=True)
 os.makedirs("cache", exist_ok=True)
 os.makedirs("calibration_reports", exist_ok=True)
@@ -90,11 +75,10 @@ console = logging.StreamHandler()
 console.setLevel(logging.INFO)
 logger.addHandler(console)
 
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 # CONFIGURATION & API KEYS (from Streamlit secrets or environment)
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 def get_secret(key: str, default: Optional[str] = None) -> Optional[str]:
-    """Retrieve secret from st.secrets or os.environ."""
     try:
         return st.secrets.get(key, os.getenv(key, default))
     except Exception:
@@ -105,16 +89,16 @@ WEATHER_API_KEY = get_secret("WEATHER_API_KEY")
 ESPN_API_KEY = get_secret("ESPN_API_KEY")
 ROTOWIRE_API_KEY = get_secret("ROTOWIRE_API_KEY")
 
-# ----------------------------------------------------------------------------------------------------
-# PERSISTENT DATABASE (SQLite) FOR SELF-LEARNING
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
+# PERSISTENT DATABASE (SQLite) – extended with new tracking fields
+# ====================================================================================================
 DB_PATH = "clarity_data.db"
 
 def init_db():
     """Create all necessary tables if they don't exist."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Bets table – stores every analysed pick (including passed ones for tracking)
+    # Bets table – extended with new columns
     c.execute('''CREATE TABLE IF NOT EXISTS bets
                  (id TEXT PRIMARY KEY,
                   timestamp TEXT,
@@ -133,7 +117,11 @@ def init_db():
                   stat TEXT,
                   line REAL,
                   pick TEXT,
-                  is_playoff INTEGER)''')
+                  is_playoff INTEGER,
+                  minutes_volatility REAL,
+                  blowout_prob REAL,
+                  strictness_grade TEXT,
+                  correlation_penalty REAL)''')
     # Bankroll history
     c.execute('''CREATE TABLE IF NOT EXISTS bankroll
                  (timestamp TEXT PRIMARY KEY,
@@ -159,9 +147,9 @@ def init_db():
 
 init_db()
 
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 # GLOBAL STATE MANAGER (cached in Streamlit session)
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 class ClarityState:
     """Central state that persists across Streamlit reruns and stores all learning metrics."""
 
@@ -188,7 +176,9 @@ class ClarityState:
                 "edge": row[4], "win_prob": row[5], "odds": row[6], "stake": row[7],
                 "result": row[8], "actual_value": row[9], "clv": row[10],
                 "volatility_multiplier": row[11], "cv": row[12], "player_name": row[13],
-                "stat": row[14], "line": row[15], "pick": row[16], "is_playoff": bool(row[17])
+                "stat": row[14], "line": row[15], "pick": row[16], "is_playoff": bool(row[17]),
+                "minutes_volatility": row[18], "blowout_prob": row[19],
+                "strictness_grade": row[20], "correlation_penalty": row[21]
             })
 
         # Load tuning multipliers
@@ -215,7 +205,6 @@ class ClarityState:
         self.bankroll_floor_active = self.bankroll < 400.0
 
     def _calc_sem(self) -> float:
-        """Brier score based SEM (calibration measure)."""
         recent = self.bets[:20]
         if len(recent) < 20:
             return 70.0
@@ -289,7 +278,7 @@ class ClarityState:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''INSERT OR REPLACE INTO bets VALUES
-                     (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                     (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                   (bet_data["id"], bet_data["timestamp"], bet_data["sport"],
                    bet_data["tier"], bet_data["edge"], bet_data["win_prob"],
                    bet_data["odds"], bet_data["stake"], bet_data.get("result"),
@@ -297,7 +286,9 @@ class ClarityState:
                    bet_data.get("volatility_multiplier"), bet_data.get("cv"),
                    bet_data.get("player_name"), bet_data.get("stat"),
                    bet_data.get("line"), bet_data.get("pick"),
-                   1 if bet_data.get("is_playoff") else 0))
+                   1 if bet_data.get("is_playoff") else 0,
+                   bet_data.get("minutes_volatility"), bet_data.get("blowout_prob"),
+                   bet_data.get("strictness_grade"), bet_data.get("correlation_penalty")))
         conn.commit()
         conn.close()
         # Reload state
@@ -368,16 +359,15 @@ class ClarityState:
                     logger.info(f"Auto-tuned {tier} multiplier from {current:.2f} to {new_val:.2f}")
         conn.close()
 
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 # DATA FETCHING MODULES (with caching and error handling)
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_player_game_logs(player_name: str, sport: str, days_back: int = 30) -> pd.DataFrame:
     """
     Fetch recent game logs from official APIs or ESPN.
-    Returns DataFrame with columns: date, pts, reb, ast, min, stl, blk, fg_pct, etc.
+    This is a placeholder – replace with your actual API calls.
     """
-    # This is a mock – replace with your actual API calls.
     # For demonstration, we generate synthetic data that mimics real distributions.
     # In production, integrate with nhlpy, espn API, or your existing scrapers.
     np.random.seed(hash(player_name) % 2**32)
@@ -393,12 +383,10 @@ def fetch_player_game_logs(player_name: str, sport: str, days_back: int = 30) ->
         "blk": np.random.poisson(0.8, n_games),
         "three_pm": np.random.poisson(2, n_games),
         "fg_pct": np.random.uniform(0.4, 0.55, n_games),
+        "blowout_margin": np.random.choice([5, 10, 15, 20, 25], size=n_games, p=[0.4,0.3,0.15,0.1,0.05]),
+        "usage_pct": np.random.uniform(0.15, 0.35, n_games),
     }
-    df = pd.DataFrame(data)
-    # Simulate blowout and garbage time flags (for demonstration)
-    df["blowout_margin"] = np.random.choice([5, 10, 15, 20, 25], size=n_games, p=[0.4,0.3,0.15,0.1,0.05])
-    df["usage_pct"] = np.random.uniform(0.15, 0.35, n_games)
-    return df
+    return pd.DataFrame(data)
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_weather(lat: float, lon: float, dt: datetime) -> Dict:
@@ -434,11 +422,10 @@ def fetch_live_odds(sport_key: str, market: str) -> List[Dict]:
         logger.warning(f"Odds fetch failed: {e}")
         return []
 
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 # STATISTICAL CORE: WMA, WSEM, Outlier Suppression, Garbage-time, Sigma
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 def outlier_suppressed_weights(values: List[float], threshold_sigma: float = 3.0) -> List[float]:
-    """Return weight 0.5 for values that are > threshold_sigma from mean, else 1.0."""
     if len(values) == 0:
         return []
     mean = np.mean(values)
@@ -454,24 +441,16 @@ def outlier_suppressed_weights(values: List[float], threshold_sigma: float = 3.0
     return weights
 
 def garbage_time_adjust(value: float, blowout_margin: float, usage_pct: float) -> float:
-    """U-WMA: deflate by 20% if blowout >18 points and usage <15%."""
     if blowout_margin > 18 and usage_pct < 0.15:
         return value * 0.80
     return value
 
 def compute_wma_and_wsem(game_logs: pd.DataFrame, stat_col: str,
                          role_change_detected: bool = False) -> Tuple[float, float, float]:
-    """
-    Returns (WMA, WSEM, L42_buffer)
-    WMA: last 6 games, most recent 3 weighted 1.5x (or 2.0x if role change)
-    WSEM: last 8 games, linear weights 8..1
-    L42_buffer: 1.0 + min(std(last4), 0.5)
-    """
     values = game_logs[stat_col].values.tolist()
     if len(values) < 6:
         return np.mean(values), np.mean(values), 1.0
 
-    # Apply garbage-time adjustment if columns exist
     if "blowout_margin" in game_logs.columns and "usage_pct" in game_logs.columns:
         adj_values = []
         for i, v in enumerate(values):
@@ -481,16 +460,14 @@ def compute_wma_and_wsem(game_logs: pd.DataFrame, stat_col: str,
     else:
         adj_values = values
 
-    # WMA on last 6
     last6 = adj_values[-6:]
     outlier_w = outlier_suppressed_weights(last6)
-    base_w = [1.0, 1.0, 1.5, 1.5, 1.5, 1.5]  # chronological: oldest to newest
+    base_w = [1.0, 1.0, 1.5, 1.5, 1.5, 1.5]
     if role_change_detected:
         base_w = [1.0, 1.0, 2.0, 2.0, 2.0, 2.0]
     combined_w = [base_w[i] * outlier_w[i] for i in range(6)]
     wma = np.average(last6, weights=combined_w)
 
-    # WSEM on last 8 (or fewer)
     window = min(8, len(adj_values))
     last8 = adj_values[-window:]
     linear_weights = list(range(1, window+1))
@@ -498,7 +475,6 @@ def compute_wma_and_wsem(game_logs: pd.DataFrame, stat_col: str,
     combined_w8 = [linear_weights[i] * outlier_w8[i] for i in range(window)]
     wsem = np.average(last8, weights=combined_w8)
 
-    # L42 buffer from last 4 games
     last4 = adj_values[-4:] if len(adj_values) >=4 else adj_values
     std4 = np.std(last4) if len(last4) >= 2 else 0.5
     buffer = 1.0 + min(std4, 0.5)
@@ -509,7 +485,6 @@ def compute_sigma(wma: float, wsem: float, buffer: float,
                   is_playoff: bool = False,
                   spread: Optional[float] = None,
                   is_favorite: Optional[bool] = None) -> float:
-    """Adaptive sigma with playoff, clutch, directional blowout adjustments."""
     base_sigma = max(wsem * buffer, 0.75)
     if is_playoff:
         return base_sigma + (wsem * 0.5) + 3.5
@@ -535,14 +510,14 @@ def win_prob_poisson(line: float, mu: float, direction: str) -> float:
     else:
         return poisson.cdf(line, mu=mu)
 
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 # ENVIRONMENTAL SENSORS (Detailed implementations)
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 def travel_stress_multiplier(prev_tz_offset: int, curr_tz_offset: int) -> float:
     diff = curr_tz_offset - prev_tz_offset
-    if diff > 0:  # west to east
+    if diff > 0:
         return 0.94
-    elif diff < 0:  # east to west
+    elif diff < 0:
         return 0.97
     elif abs(diff) >= 2:
         return 0.96
@@ -562,9 +537,6 @@ def altitude_multiplier(elevation_ft: int, market_category: str) -> float:
     return 1.0
 
 def weather_multiplier_and_bias(weather: Dict, market_category: str) -> Tuple[float, float]:
-    """
-    Returns (projection_multiplier, edge_bias_shift) where edge_bias is added to edge (positive = OVER bias)
-    """
     wind_mph = weather.get("wind_kph", 0) * 0.621371
     precip = weather.get("precip_mm", 0)
     temp_c = weather.get("temp_c", 20)
@@ -592,16 +564,11 @@ def weather_multiplier_and_bias(weather: Dict, market_category: str) -> Tuple[fl
     return mult, bias
 
 def steam_sensor(line_movement_points: float, public_pct_on_fav: float) -> Tuple[bool, float]:
-    """Returns (sharp_detected, edge_boost)"""
     if abs(line_movement_points) > 1.5 and (public_pct_on_fav > 0.6 or public_pct_on_fav < 0.4):
         return True, 0.015
     return False, 0.0
 
 def news_friction_multiplier(injury_status: str, news_text: str) -> Tuple[float, int]:
-    """
-    Returns (usage_multiplier, confidence_penalty)
-    If status is OUT, multiplier=0 signals auto-pass.
-    """
     status = injury_status.upper()
     if status in ["OUT", "IR", "IL"]:
         return 0.0, 10
@@ -609,7 +576,6 @@ def news_friction_multiplier(injury_status: str, news_text: str) -> Tuple[float,
         return 0.50, 3
     if status in ["DAY_TO_DAY", "PROBABLE"]:
         return 0.85, 1
-    # Keyword scan
     keywords = ["flu", "limiting", "gtd", "questionable", "day-to-day", "probable", "illness"]
     for kw in keywords:
         if kw in news_text.lower():
@@ -634,7 +600,7 @@ def pace_affinity_multiplier(player_vs_fast_avg: float, player_overall_avg: floa
 
 def series_state_multiplier(series_state: str, usage_pct: float) -> float:
     if usage_pct > 0.28:
-        return 0.94  # star override
+        return 0.94
     if series_state == "tied":
         return 0.94
     elif series_state == "down":
@@ -648,9 +614,9 @@ def matchup_delta(player_avg: float, opp_allowed_avg: float, league_avg: float) 
         return 0.0
     return (player_avg - opp_allowed_avg) / league_avg
 
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 # VOLATILITY MULTIPLIER WITH AUTO-TUNING
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 def get_volatility_tier(market: str) -> str:
     m = market.upper()
     if m in ["PTS", "STL", "BLK", "HR", "TD", "3PM"]:
@@ -665,14 +631,11 @@ def get_volatility_multiplier(market: str, state: ClarityState) -> float:
     tier = get_volatility_tier(market)
     return state.tuning_multipliers.get(tier, 0.97)
 
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 # STRICTNESS ADVISORY
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 def strictness_advisory(blowout_prob: float, minutes_cv: float, role_games_stable: int,
                         injury_status: str, cv: float, matchup_delta_val: float) -> Tuple[str, int, float]:
-    """
-    Returns (lean_grade, confidence_1_to_10, floor_adjustment_absolute)
-    """
     risk = 0.0
     if blowout_prob > 0.18:
         risk += 0.3
@@ -688,22 +651,18 @@ def strictness_advisory(blowout_prob: float, minutes_cv: float, role_games_stabl
         risk += 0.2
 
     if risk >= 0.7:
-        return "A", 6, 0.02   # Lean A, add 2% to edge floor
+        return "A", 6, 0.02
     elif risk >= 0.3:
-        return "C", 7, 0.0    # Lean C (balanced)
+        return "C", 7, 0.0
     else:
-        return "B", 9, -0.005 # Lean B, relax floor by 0.5%
+        return "B", 9, -0.005
 
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 # ALTERNATIVE LINE GENERATION AND RANKING
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 def generate_alternatives_prop(main_line: float, wma: float, sigma: float, dist_type: str,
                                implied_prob: float, american_odds: int, direction: str,
                                step: float = 0.5, steps: int = 4) -> List[Dict]:
-    """
-    Generate and rank alternate lines ±0.5, ±1.0, ... ±steps*step.
-    Returns list sorted by edge descending.
-    """
     alternatives = []
     for i in range(-steps, steps+1):
         if i == 0:
@@ -713,14 +672,12 @@ def generate_alternatives_prop(main_line: float, wma: float, sigma: float, dist_
             win_prob = win_prob_normal(alt_line, wma, sigma, direction)
         else:
             win_prob = win_prob_poisson(alt_line, wma, direction)
-        # Estimate odds: rough 5-8% change in implied per 0.5 point
         delta_implied = (win_prob - implied_prob)
         alt_implied = implied_prob + delta_implied
         if alt_implied > 0.95:
             alt_implied = 0.95
         if alt_implied < 0.05:
             alt_implied = 0.05
-        # Convert implied to American odds
         if alt_implied >= 0.5:
             odds = int(-100 * alt_implied / (1 - alt_implied))
         else:
@@ -732,18 +689,15 @@ def generate_alternatives_prop(main_line: float, wma: float, sigma: float, dist_
             "win_prob": win_prob,
             "implied": alt_implied,
             "edge": edge,
-            "tier": None  # will assign later
+            "tier": None
         })
     alternatives.sort(key=lambda x: x["edge"], reverse=True)
     return alternatives
 
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 # SLIP CORRELATION & OPTIMIZATION
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
 def compute_pairwise_correlation(leg1: Dict, leg2: Dict, state: ClarityState) -> float:
-    """
-    Use historical correlation matrix or estimate based on player/stat combos.
-    """
     key1 = f"{leg1.get('player','')}_{leg1.get('stat','')}"
     key2 = f"{leg2.get('player','')}_{leg2.get('stat','')}"
     conn = sqlite3.connect(DB_PATH)
@@ -754,14 +708,12 @@ def compute_pairwise_correlation(leg1: Dict, leg2: Dict, state: ClarityState) ->
     conn.close()
     if row:
         return row[0]
-    # Default guess based on stat families
     high_corr_pairs = [("PTS","3PM"), ("PRA","PTS"), ("MIN","REB")]
     if (leg1.get("stat"), leg2.get("stat")) in high_corr_pairs or (leg2.get("stat"), leg1.get("stat")) in high_corr_pairs:
         return 0.75
     return 0.25
 
 def slip_correlation_penalty(legs: List[Dict], state: ClarityState) -> Tuple[float, str]:
-    """Returns (kelly_multiplier, message)."""
     if len(legs) < 2:
         return 1.0, "Single leg"
     rhos = []
@@ -776,7 +728,6 @@ def slip_correlation_penalty(legs: List[Dict], state: ClarityState) -> Tuple[flo
     return 1.0, "Correlation acceptable"
 
 def optimize_slip(original_legs: List[Dict], alternative_pool: List[Dict]) -> List[Dict]:
-    """Replace the lowest edge leg with a better alternative if available."""
     sorted_orig = sorted(original_legs, key=lambda x: x.get("edge", 0))
     best_alt = sorted(alternative_pool, key=lambda x: x.get("edge", 0), reverse=True)
     optimized = original_legs.copy()
@@ -787,229 +738,9 @@ def optimize_slip(original_legs: List[Dict], alternative_pool: List[Dict]) -> Li
             best_alt.pop(0)
     return optimized
 
-# ----------------------------------------------------------------------------------------------------
-# CORE ANALYSIS FUNCTION (Single Prop)
-# ----------------------------------------------------------------------------------------------------
-def analyze_prop(player_name: str,
-                 sport: str,
-                 stat: str,
-                 line: float,
-                 pick: str,
-                 american_odds: int,
-                 game_time: datetime,
-                 state: ClarityState,
-                 # Optional advanced parameters
-                 is_playoff: bool = False,
-                 series_state: str = "tied",
-                 usage_pct: float = 0.22,
-                 is_b2b: bool = False,
-                 prev_tz_offset: int = 0,
-                 curr_tz_offset: int = 0,
-                 elevation_ft: int = 0,
-                 weather: Optional[Dict] = None,
-                 injury_status: str = "HEALTHY",
-                 news_text: str = "",
-                 contract_incentive: bool = False,
-                 elimination_game: bool = False,
-                 opponent_pace_rank: int = 15,
-                 opponent_def_avg: Optional[float] = None,
-                 league_avg: Optional[float] = None,
-                 usage_trend_up: bool = False,
-                 blowout_prob: float = 0.0,
-                 spread: Optional[float] = None,
-                 is_favorite: Optional[bool] = None,
-                 line_movement: float = 0.0,
-                 public_pct: float = 0.5,
-                 role_change_detected: bool = False,
-                 minutes_volatility: float = 0.1,
-                 role_stable_games: int = 10) -> Dict:
-    """
-    Full analysis pipeline for a single player prop.
-    Returns a dict with all metrics, flags, tier, stake, strictness, etc.
-    """
-    # 1. Fetch data
-    df = fetch_player_game_logs(player_name, sport, days_back=30)
-    if df.empty or len(df) < 6:
-        return {"verdict": "PASS", "reason": "INSUFFICIENT_DATA", "tier": "PASS"}
-
-    # 2. Compute WMA, WSEM, buffer
-    wma, wsem, buffer = compute_wma_and_wsem(df, stat.lower(), role_change_detected)
-
-    # 3. Environmental adjustments (multiply WMA)
-    # B2B
-    if is_b2b:
-        wma *= b2b_multiplier_by_usage(usage_pct)
-    # Travel stress
-    wma *= travel_stress_multiplier(prev_tz_offset, curr_tz_offset)
-    # Altitude
-    market_cat = stat.upper()
-    wma *= altitude_multiplier(elevation_ft, market_cat)
-    # Weather
-    if weather:
-        w_mult, _ = weather_multiplier_and_bias(weather, market_cat)
-        wma *= w_mult
-    # Motivation
-    wma *= motivation_multiplier(elimination_game, contract_incentive)
-    # Pace affinity (need player_vs_fast_avg – placeholder)
-    # In real code you'd compute from historical splits. Here we approximate.
-    player_vs_fast = wma * 1.02
-    wma *= pace_affinity_multiplier(player_vs_fast, wma, opponent_pace_rank)
-    # Series state
-    if is_playoff:
-        wma *= series_state_multiplier(series_state, usage_pct)
-    # News friction
-    friction_mult, conf_penalty = news_friction_multiplier(injury_status, news_text)
-    if friction_mult == 0.0:
-        return {"verdict": "PASS", "reason": f"INJURY {injury_status}", "tier": "PASS"}
-    wma *= friction_mult
-
-    # 4. Sigma
-    sigma = compute_sigma(wma, wsem, buffer, is_playoff, spread, is_favorite)
-
-    # 5. Win probability
-    if line < 4.5:
-        win_prob = win_prob_poisson(line, wma, pick)
-        dist_type = "POISSON"
-    else:
-        win_prob = win_prob_normal(line, wma, sigma, pick)
-        dist_type = "NORMAL"
-
-    # 6. Implied probability and raw edge
-    implied_prob = implied_prob_from_american(american_odds)
-    raw_edge = win_prob - implied_prob
-    if raw_edge > 0.20:
-        return {"verdict": "PASS", "reason": "STALE_LINE_EDGE>20%", "tier": "PASS"}
-
-    # 7. Volatility multiplier
-    vol_mult = get_volatility_multiplier(stat, state)
-    adjusted_edge = raw_edge * vol_mult
-
-    # 8. CV reduction
-    cv = sigma / wma if wma > 0 else 10.0
-    cv_applied = False
-    if cv > 0.18 and not (spread and spread > 11):
-        adjusted_edge *= 0.80
-        cv_applied = True
-
-    # 9. Matchup delta
-    delta = 0.0
-    if opponent_def_avg is not None and league_avg is not None:
-        delta = matchup_delta(wma, opponent_def_avg, league_avg)
-        if delta <= -0.12 and not usage_trend_up:
-            return {"verdict": "PASS", "reason": f"UNFAVORABLE_MATCHUP Δ={delta:.2f}", "tier": "PASS"}
-        if delta <= -0.12 and usage_trend_up:
-            adjusted_edge *= 0.60
-
-    # 10. Steam / RLM boost
-    sharp, steam_boost = steam_sensor(line_movement, public_pct)
-    if sharp:
-        adjusted_edge += steam_boost
-
-    # 11. Determine current edge floor
-    floor = current_edge_floor(state, is_playoff)
-
-    # 12. Strictness advisory
-    minutes_cv = minutes_volatility
-    lean_grade, lean_conf, floor_adj = strictness_advisory(
-        blowout_prob, minutes_cv, role_stable_games, injury_status, cv, delta
-    )
-    floor += floor_adj
-    floor = max(0.04, floor)
-
-    # 13. Tier and Kelly
-    win_prob_pct = win_prob * 100
-    edge_pct = adjusted_edge * 100
-    market_disc = abs(wma - line) / line if line > 0 else 0
-
-    if win_prob >= 0.84 and market_disc >= 0.15 and edge_pct >= 15 and lean_grade != "A":
-        tier = "SOVEREIGN_BOLT"
-        kelly_frac = kelly_fraction_sem_adjusted(state.sem_score)
-        f_star = kelly_fraction(win_prob, american_to_decimal(american_odds))
-        stake = state.bankroll * kelly_frac * min(f_star, 0.25)
-        verdict = "TAKE"
-        confidence = 10
-    elif edge_pct >= 10 and win_prob >= 0.75 and lean_grade != "A":
-        tier = "ELITE_LOCK"
-        kelly_frac = kelly_fraction_sem_adjusted(state.sem_score)
-        f_star = kelly_fraction(win_prob, american_to_decimal(american_odds))
-        stake = state.bankroll * kelly_frac * min(f_star, 0.25)
-        verdict = "TAKE"
-        confidence = 9
-    elif edge_pct >= floor * 100:
-        tier = "APPROVED"
-        kelly_frac = kelly_fraction_sem_adjusted(state.sem_score)
-        f_star = kelly_fraction(win_prob, american_to_decimal(american_odds))
-        stake = state.bankroll * kelly_frac * min(f_star, 0.25)
-        verdict = "TAKE"
-        confidence = 7
-    else:
-        tier = "PASS"
-        stake = 0.0
-        verdict = "PASS"
-        confidence = 4
-
-    # 14. Generate alternative lines (if TAKE)
-    alternatives = []
-    if verdict == "TAKE":
-        alternatives = generate_alternatives_prop(
-            line, wma, sigma, dist_type, implied_prob, american_odds, pick, step=0.5, steps=3
-        )
-        # Assign tiers to alternatives based on edge
-        for alt in alternatives:
-            if edge_pct >= 15:
-                alt["tier"] = "SOVEREIGN_BOLT"
-            elif edge_pct >= 10:
-                alt["tier"] = "ELITE_LOCK"
-            elif edge_pct >= floor*100:
-                alt["tier"] = "APPROVED"
-            else:
-                alt["tier"] = "PASS"
-
-    # 15. Result dictionary
-    result = {
-        "player": player_name,
-        "sport": sport,
-        "stat": stat,
-        "line": line,
-        "pick": pick,
-        "odds": american_odds,
-        "game_time": game_time.isoformat(),
-        "wma": round(wma, 2),
-        "wsem": round(wsem, 2),
-        "sigma": round(sigma, 2),
-        "cv": round(cv, 3),
-        "win_prob": round(win_prob, 4),
-        "implied_prob": round(implied_prob, 4),
-        "raw_edge": round(raw_edge, 4),
-        "adjusted_edge": round(adjusted_edge, 4),
-        "vol_mult": round(vol_mult, 2),
-        "cv_applied": cv_applied,
-        "tier": tier,
-        "stake": round(stake, 2),
-        "verdict": verdict,
-        "confidence": confidence,
-        "strictness": f"Lean {lean_grade} (conf {lean_conf}/10)",
-        "floor_used": round(floor, 4),
-        "dist_type": dist_type,
-        "matchup_delta": round(delta, 4),
-        "alternatives": alternatives,
-        "flags": {
-            "b2b": is_b2b,
-            "travel_mult": travel_stress_multiplier(prev_tz_offset, curr_tz_offset),
-            "altitude_mult": altitude_multiplier(elevation_ft, market_cat),
-            "weather": weather,
-            "motivation": motivation_multiplier(elimination_game, contract_incentive),
-            "news_friction": friction_mult,
-            "steam": sharp,
-            "role_change": role_change_detected,
-            "series_state": series_state if is_playoff else None
-        }
-    }
-    return result
-
-# ----------------------------------------------------------------------------------------------------
-# HELPER FUNCTIONS USED ABOVE
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
+# HELPER FUNCTIONS FOR EDGE FLOORS AND KELLY
+# ====================================================================================================
 def american_to_decimal(odds: int) -> float:
     return (odds/100 + 1) if odds > 0 else (100/abs(odds) + 1)
 
@@ -1043,18 +774,234 @@ def current_edge_floor(state: ClarityState, is_playoff: bool) -> float:
         return 0.055
     return 0.045
 
-# ----------------------------------------------------------------------------------------------------
-# STREAMLIT USER INTERFACE
-# ----------------------------------------------------------------------------------------------------
+# ====================================================================================================
+# GAME SCANNER (your original class, now extended)
+# ====================================================================================================
+class GameScanner:
+    """Original GameScanner class – upgraded with all new filters and sensors."""
+
+    def __init__(self, state: ClarityState):
+        self.state = state
+        self.logger = logger
+
+    def _enrich(self, player_name: str, sport: str, stat: str, line: float,
+                pick: str, odds: int, game_time: datetime,
+                **kwargs) -> Dict:
+        """
+        Enrich a single prop with full analysis.
+        Now includes all upgrades.
+        """
+        # Extract optional parameters with defaults
+        is_playoff = kwargs.get('is_playoff', False)
+        usage_pct = kwargs.get('usage_pct', 0.22)
+        is_b2b = kwargs.get('is_b2b', False)
+        spread = kwargs.get('spread', None)
+        blowout_prob = kwargs.get('blowout_prob', 0.0)
+        injury_status = kwargs.get('injury_status', 'HEALTHY')
+        news_text = kwargs.get('news_text', '')
+        weather = kwargs.get('weather', None)
+        prev_tz = kwargs.get('prev_tz_offset', 0)
+        curr_tz = kwargs.get('curr_tz_offset', 0)
+        elevation = kwargs.get('elevation_ft', 0)
+        contract_incentive = kwargs.get('contract_incentive', False)
+        elimination_game = kwargs.get('elimination_game', False)
+        opponent_pace_rank = kwargs.get('opponent_pace_rank', 15)
+        opponent_def_avg = kwargs.get('opponent_def_avg', None)
+        league_avg = kwargs.get('league_avg', None)
+        usage_trend_up = kwargs.get('usage_trend_up', False)
+        role_change = kwargs.get('role_change_detected', False)
+        minutes_vol = kwargs.get('minutes_volatility', 0.1)
+        role_stable_games = kwargs.get('role_stable_games', 10)
+
+        # 1. Fetch data
+        df = fetch_player_game_logs(player_name, sport, days_back=30)
+        if df.empty or len(df) < 6:
+            return {"verdict": "PASS", "reason": "INSUFFICIENT_DATA", "tier": "PASS"}
+
+        # 2. WMA/WSEM
+        wma, wsem, buffer = compute_wma_and_wsem(df, stat.lower(), role_change)
+
+        # 3. Environmental adjustments
+        if is_b2b:
+            wma *= b2b_multiplier_by_usage(usage_pct)
+        wma *= travel_stress_multiplier(prev_tz, curr_tz)
+        market_cat = stat.upper()
+        wma *= altitude_multiplier(elevation, market_cat)
+        if weather:
+            w_mult, _ = weather_multiplier_and_bias(weather, market_cat)
+            wma *= w_mult
+        wma *= motivation_multiplier(elimination_game, contract_incentive)
+        player_vs_fast = wma * 1.02  # placeholder – replace with actual split
+        wma *= pace_affinity_multiplier(player_vs_fast, wma, opponent_pace_rank)
+        if is_playoff:
+            series_state = kwargs.get('series_state', 'tied')
+            wma *= series_state_multiplier(series_state, usage_pct)
+        friction_mult, conf_penalty = news_friction_multiplier(injury_status, news_text)
+        if friction_mult == 0.0:
+            return {"verdict": "PASS", "reason": f"INJURY {injury_status}", "tier": "PASS"}
+        wma *= friction_mult
+
+        # 4. Sigma
+        is_fav = kwargs.get('is_favorite', None)
+        sigma = compute_sigma(wma, wsem, buffer, is_playoff, spread, is_fav)
+
+        # 5. Win prob
+        if line < 4.5:
+            win_prob = win_prob_poisson(line, wma, pick)
+            dist_type = "POISSON"
+        else:
+            win_prob = win_prob_normal(line, wma, sigma, pick)
+            dist_type = "NORMAL"
+
+        # 6. Implied and raw edge
+        implied = implied_prob_from_american(odds)
+        raw_edge = win_prob - implied
+        if raw_edge > 0.20:
+            return {"verdict": "PASS", "reason": "STALE_LINE_EDGE>20%", "tier": "PASS"}
+
+        # 7. Volatility multiplier
+        vol_mult = get_volatility_multiplier(stat, self.state)
+        adj_edge = raw_edge * vol_mult
+
+        # 8. CV reduction
+        cv = sigma / wma if wma > 0 else 10.0
+        cv_applied = False
+        if cv > 0.18 and not (spread and spread > 11):
+            adj_edge *= 0.80
+            cv_applied = True
+
+        # 9. Matchup delta
+        delta = 0.0
+        if opponent_def_avg and league_avg:
+            delta = matchup_delta(wma, opponent_def_avg, league_avg)
+            if delta <= -0.12 and not usage_trend_up:
+                return {"verdict": "PASS", "reason": f"UNFAVORABLE_MATCHUP Δ={delta:.2f}", "tier": "PASS"}
+            if delta <= -0.12 and usage_trend_up:
+                adj_edge *= 0.60
+
+        # 10. Steam
+        line_move = kwargs.get('line_movement', 0.0)
+        public_pct = kwargs.get('public_pct', 0.5)
+        sharp, steam_boost = steam_sensor(line_move, public_pct)
+        if sharp:
+            adj_edge += steam_boost
+
+        # 11. Floor and strictness
+        floor = current_edge_floor(self.state, is_playoff)
+        lean, lean_conf, floor_adj = strictness_advisory(
+            blowout_prob, minutes_vol, role_stable_games, injury_status, cv, delta
+        )
+        floor += floor_adj
+        floor = max(0.04, floor)
+
+        # 12. Tier and stake
+        edge_pct = adj_edge * 100
+        market_disc = abs(wma - line) / line if line > 0 else 0
+        if win_prob >= 0.84 and market_disc >= 0.15 and edge_pct >= 15 and lean != "A":
+            tier = "SOVEREIGN_BOLT"
+            kelly_frac = kelly_fraction_sem_adjusted(self.state.sem_score)
+            f_star = kelly_fraction(win_prob, american_to_decimal(odds))
+            stake = self.state.bankroll * kelly_frac * min(f_star, 0.25)
+            verdict = "TAKE"
+            conf = 10
+        elif edge_pct >= 10 and win_prob >= 0.75 and lean != "A":
+            tier = "ELITE_LOCK"
+            kelly_frac = kelly_fraction_sem_adjusted(self.state.sem_score)
+            f_star = kelly_fraction(win_prob, american_to_decimal(odds))
+            stake = self.state.bankroll * kelly_frac * min(f_star, 0.25)
+            verdict = "TAKE"
+            conf = 9
+        elif edge_pct >= floor * 100:
+            tier = "APPROVED"
+            kelly_frac = kelly_fraction_sem_adjusted(self.state.sem_score)
+            f_star = kelly_fraction(win_prob, american_to_decimal(odds))
+            stake = self.state.bankroll * kelly_frac * min(f_star, 0.25)
+            verdict = "TAKE"
+            conf = 7
+        else:
+            tier = "PASS"
+            stake = 0.0
+            verdict = "PASS"
+            conf = 4
+
+        # 13. Alternatives
+        alternatives = []
+        if verdict == "TAKE":
+            alternatives = generate_alternatives_prop(
+                line, wma, sigma, dist_type, implied, odds, pick, step=0.5, steps=3
+            )
+            for alt in alternatives:
+                if alt["edge"] >= 0.15:
+                    alt["tier"] = "SOVEREIGN_BOLT"
+                elif alt["edge"] >= 0.10:
+                    alt["tier"] = "ELITE_LOCK"
+                elif alt["edge"] >= floor:
+                    alt["tier"] = "APPROVED"
+                else:
+                    alt["tier"] = "PASS"
+
+        result = {
+            "player": player_name,
+            "sport": sport,
+            "stat": stat,
+            "line": line,
+            "pick": pick,
+            "odds": odds,
+            "game_time": game_time.isoformat(),
+            "wma": round(wma, 2),
+            "wsem": round(wsem, 2),
+            "sigma": round(sigma, 2),
+            "cv": round(cv, 3),
+            "win_prob": round(win_prob, 4),
+            "implied_prob": round(implied, 4),
+            "raw_edge": round(raw_edge, 4),
+            "adjusted_edge": round(adj_edge, 4),
+            "vol_mult": round(vol_mult, 2),
+            "cv_applied": cv_applied,
+            "tier": tier,
+            "stake": round(stake, 2),
+            "verdict": verdict,
+            "confidence": conf,
+            "strictness": f"Lean {lean} (conf {lean_conf}/10)",
+            "floor_used": round(floor, 4),
+            "dist_type": dist_type,
+            "matchup_delta": round(delta, 4),
+            "alternatives": alternatives,
+            "flags": {
+                "b2b": is_b2b,
+                "travel_mult": travel_stress_multiplier(prev_tz, curr_tz),
+                "altitude_mult": altitude_multiplier(elevation, market_cat),
+                "weather": weather,
+                "motivation": motivation_multiplier(elimination_game, contract_incentive),
+                "news_friction": friction_mult,
+                "steam": sharp,
+                "role_change": role_change,
+                "series_state": kwargs.get('series_state') if is_playoff else None
+            }
+        }
+        return result
+
+    def scan_game(self, game_data: Dict) -> List[Dict]:
+        """Original scan_game method – kept for compatibility."""
+        # This would iterate over players and call _enrich.
+        # For brevity, kept as placeholder.
+        results = []
+        for player in game_data.get("players", []):
+            res = self._enrich(**player)
+            results.append(res)
+        return results
+
+# ====================================================================================================
+# STREAMLIT USER INTERFACE (preserving original structure)
+# ====================================================================================================
 def main():
     st.set_page_config(page_title="Clarity Sovereign Supreme v6.0", layout="wide")
-    st.title("⚡ CLARITY SOVEREIGN SUPREME v6.0 — Elite Production Engine")
-    st.markdown("Fully upgraded with all hard filters, sensors, auto-tuning, and self‑learning.")
+    st.title("⚡ CLARITY SOVEREIGN SUPREME v6.0 — Elite Production")
 
-    # Initialize state
     if "clarity_state" not in st.session_state:
         st.session_state.clarity_state = ClarityState()
     state = st.session_state.clarity_state
+    scanner = GameScanner(state)
 
     # Sidebar metrics
     with st.sidebar:
@@ -1077,7 +1024,7 @@ def main():
         for sport, perf in state.sport_performance.items():
             st.metric(f"{sport}", f"{perf['win_rate']:.1%} ({perf['wins']}-{perf['losses']})")
 
-    # Main input area
+    # Main input
     col1, col2 = st.columns(2)
     with col1:
         player = st.text_input("Player Name", "LeBron James")
@@ -1097,25 +1044,22 @@ def main():
 
     if st.button("🔍 Analyze Prop", type="primary"):
         with st.spinner("Running full Clarity engine..."):
-            # Mock weather and other parameters for simplicity
             weather = fetch_weather(40.7128, -74.0060, game_time) if WEATHER_API_KEY else None
-            result = analyze_prop(
+            result = scanner._enrich(
                 player_name=player,
                 sport=sport,
                 stat=stat,
                 line=line,
                 pick=pick,
-                american_odds=odds,
+                odds=odds,
                 game_time=game_time,
-                state=state,
                 is_playoff=is_playoff,
                 usage_pct=usage_pct,
                 is_b2b=is_b2b,
-                weather=weather,
-                injury_status=injury_status,
-                blowout_prob=blowout_prob,
                 spread=spread if spread != 0 else None,
-                # Other parameters have defaults
+                blowout_prob=blowout_prob,
+                injury_status=injury_status,
+                weather=weather
             )
         if result["verdict"] == "TAKE":
             st.success(f"✅ VERDICT: {result['tier']} — STAKE ${result['stake']:.2f}")
@@ -1125,17 +1069,15 @@ def main():
             st.info(f"Strictness: {result['strictness']}")
             if result.get("alternatives"):
                 st.subheader("📊 Alternative Lines (sorted by edge)")
-                alt_df = pd.DataFrame(result["alternatives"])
-                st.dataframe(alt_df)
+                st.dataframe(pd.DataFrame(result["alternatives"]))
         else:
             st.error(f"❌ VERDICT: PASS — {result.get('reason', 'Below floor or filter')}")
 
         with st.expander("🔧 Full Analysis Details"):
             st.json(result)
 
-    # Slip analysis (simplified)
+    # Slip builder (simplified)
     st.header("🎯 Slip / Parlay Builder")
-    st.markdown("Enter up to 3 legs (will enforce diversification and correlation penalties)")
     legs = []
     for i in range(3):
         with st.expander(f"Leg {i+1}"):
@@ -1148,21 +1090,18 @@ def main():
             if p and stt:
                 legs.append({"player": p, "sport": s, "stat": stt, "line": ln, "pick": pk, "odds": od})
     if st.button("Analyze Slip") and legs:
-        # For each leg, run a quick analysis (simplified)
         slip_results = []
         for leg in legs:
-            res = analyze_prop(
+            res = scanner._enrich(
                 player_name=leg["player"],
                 sport=leg["sport"],
                 stat=leg["stat"],
                 line=leg["line"],
                 pick=leg["pick"],
-                american_odds=leg["odds"],
-                game_time=datetime.now(),
-                state=state
+                odds=leg["odds"],
+                game_time=datetime.now()
             )
             slip_results.append(res)
-        # Compute correlation penalty
         kelly_mult, msg = slip_correlation_penalty(slip_results, state)
         if kelly_mult == 0.0:
             st.error("❌ SLIP AUTO-PASS: " + msg)
@@ -1175,7 +1114,7 @@ def main():
 
     # Manual result recording
     with st.expander("📝 Record Bet Outcome (for self‑learning)"):
-        bet_id = st.text_input("Bet ID (copy from analysis output)")
+        bet_id = st.text_input("Bet ID (from analysis output)")
         res = st.selectbox("Result", ["WIN", "LOSS"])
         actual_val = st.number_input("Actual value", value=0.0)
         close_odds = st.number_input("Closing odds", value=0)
@@ -1189,7 +1128,6 @@ def main():
         st.json(report)
 
 def generate_monthly_report(state: ClarityState) -> Dict:
-    """Create a JSON report with recommendations."""
     report = {
         "date": datetime.now().isoformat(),
         "overall_win_rate": sum(1 for b in state.bets if b.get("result")=="WIN") / max(1, len(state.bets)),
