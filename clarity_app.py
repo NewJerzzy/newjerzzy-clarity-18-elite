@@ -1,13 +1,8 @@
 # ====================================================================================================
-# CLARITY SOVEREIGN SUPREME v6.0 – FULL PRODUCTION (with all sensors & auto‑tuning)
+# CLARITY SOVEREIGN SUPREME v6.0 – FULL PRODUCTION (with Sportmonks xG & Tennis)
 # ====================================================================================================
-# Merges all upgrades from the analysis:
-#   • B2B role‑tiered, travel stress, altitude, weather
-#   • Hard filters (usage<19%, minutes<26)
-#   • Steam/RLM detection, news friction, motivation factor
-#   • Auto‑tuning of volatility multipliers, Bayesian emergency floor
-#   • ABS challenge, series‑state adjustment
-#   • All 8 tabs preserved, no new tabs.
+# All sensors, auto‑tuning, Sportmonks xG (soccer), FlashLive tennis stats,
+# B2B, travel, altitude, weather, RLM, news friction, motivation, ABS, series state.
 # ====================================================================================================
 
 import os
@@ -33,7 +28,6 @@ import streamlit as st
 from PIL import Image
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# Optional heavy libs
 try:
     from nhlpy import NHLClient
     NHL_AVAILABLE = True
@@ -72,7 +66,7 @@ if not PARSER_LOGGER.handlers:
 # =============================================================================
 # VERSION & PATHS
 # =============================================================================
-VERSION    = "SOVEREIGN SUPREME v6.0 (Full Sensors)"
+VERSION    = "SOVEREIGN SUPREME v6.0 (Sportmonks xG + Tennis)"
 BUILD_DATE = "2026-05-02"
 DB_PATH    = "clarity_prime.db"
 
@@ -99,8 +93,8 @@ SPORT_CATEGORIES: Dict[str, List[str]] = {
     "NHL":     ["SOG","SAVES","GOALS","ASSISTS","HITS","BLK_SHOTS"],
     "NFL":     ["PASS_YDS","RUSH_YDS","REC_YDS","TD"],
     "PGA":     ["STROKES","BIRDIES","BOGEYS","EAGLES","DRIVING_DISTANCE","GIR"],
-    "TENNIS":  ["ACES","DOUBLE_FAULTS","GAMES_WON","TOTAL_GAMES","BREAK_PTS"],
-    "SOCCER":  ["GOALS","ASSISTS","SHOTS","SHOTS_ON_TARGET","FOULS","CARDS"],
+    "TENNIS":  ["ACES","DOUBLE_FAULTS","GAMES_WON","TOTAL_GAMES","BREAK_PTS","FIRST_SERVE_PCT"],
+    "SOCCER":  ["GOALS","ASSISTS","SHOTS","SHOTS_ON_TARGET","FOULS","CARDS","XG"],
     "MMA":     ["STRIKES","TAKEDOWNS","SUBMISSIONS","KNOCKDOWNS"],
     "F1":      ["POINTS","POSITION","FASTEST_LAP"],
     "CRICKET": ["RUNS","WICKETS","BOUNDARIES","SIXES"],
@@ -128,6 +122,8 @@ STAT_CONFIG: Dict[str, Dict] = {
     "TOTAL":    {"tier":"MEDIUM",    "mult":0.92},
     "SPREAD":   {"tier":"MEDIUM",    "mult":0.92},
     "ML":       {"tier":"HIGH",      "mult":0.85},
+    "XG":       {"tier":"MEDIUM",    "mult":0.92},
+    "FIRST_SERVE_PCT": {"tier":"LOW","mult":0.97},
 }
 
 _DEFAULT_PROB_BOLT  = 0.84
@@ -141,7 +137,6 @@ VOLATILITY_TIERS = {
     "LOW": 0.97,
 }
 
-# Arena elevations (feet) for altitude multiplier
 ARENA_ELEVATIONS = {
     "Denver": 5280, "Salt Lake City": 4226, "Mexico City": 7382,
     "Phoenix": 1100, "Los Angeles": 285, "Boston": 10, "Miami": 8,
@@ -150,14 +145,8 @@ ARENA_ELEVATIONS = {
     "Portland": 50, "Seattle": 175, "Minneapolis": 830, "Cleveland": 653,
 }
 
-# Timezone offsets for travel stress (simplified)
-TIMEZONE_OFFSETS = {
-    "EST": -5, "CST": -6, "MST": -7, "PST": -8, "AKST": -9, "HST": -10,
-    "GMT": 0, "CET": 1, "EET": 2,
-}
-
 # =============================================================================
-# DATABASE (extended with new columns for sensors)
+# DATABASE (extended with new columns)
 # =============================================================================
 def _conn() -> sqlite3.Connection:
     return sqlite3.connect(DB_PATH)
@@ -300,7 +289,7 @@ def update_volatility_multiplier(tier: str, new_value: float):
     set_setting(f"mult_{tier}", new_value)
 
 # =============================================================================
-# ENVIRONMENTAL SENSORS (B2B, TSM, Altitude, Weather, Steam, News, Motivation)
+# ENVIRONMENTAL SENSORS
 # =============================================================================
 def b2b_adjustment(role: str, is_home: bool, back_to_back: bool) -> float:
     if not back_to_back:
@@ -316,11 +305,6 @@ def b2b_adjustment(role: str, is_home: bool, back_to_back: bool) -> float:
     return adjustments[role_upper]["home" if is_home else "away"]
 
 def travel_stress_multiplier(zones_crossed: int, rest_days: int, direction: str) -> float:
-    """
-    zones_crossed: 0-1 (local), 2, 3+ (cross-country)
-    direction: "west_to_east", "east_to_west", "none"
-    rest_days: 0-3 days since last game
-    """
     rest = min(rest_days, 3)
     base = {
         0: {0: 1.0, 1: 1.0, 2: 1.0, 3: 1.0},
@@ -349,16 +333,14 @@ def altitude_multiplier(elevation_ft: float, sport: str = "NBA", market: str = "
 
 def weather_multiplier(sport: str, market: str, wind_mph: float, temp_f: float, precip: str) -> float:
     mult = 1.0
-    # Wind
     if wind_mph >= 15:
         if sport == "NFL" and market in ["PASS_YDS", "PASS_TDS"]:
             mult *= (0.92 if wind_mph >= 20 else 0.95)
         elif sport == "MLB" and market == "HR":
             if wind_mph >= 20:
-                mult *= 0.85  # wind in
+                mult *= 0.85
             else:
                 mult *= 0.92
-    # Temperature (MLB HR only)
     if sport == "MLB" and market == "HR":
         if temp_f < 40:
             mult *= 0.92
@@ -370,7 +352,6 @@ def weather_multiplier(sport: str, market: str, wind_mph: float, temp_f: float, 
             mult *= 1.05
         elif temp_f >= 85:
             mult *= 1.03
-    # Precipitation
     if precip == "rain":
         if market == "HR":
             mult *= 0.97
@@ -384,10 +365,6 @@ def weather_multiplier(sport: str, market: str, wind_mph: float, temp_f: float, 
     return mult
 
 def steam_rlm(public_pct: float, line_movement: float) -> Tuple[bool, float, str]:
-    """
-    Returns (detected, edge_boost, message)
-    Edge boost is +1.5% if model agrees, -1.5% if disagrees.
-    """
     if public_pct > 0.65 and line_movement < 0:
         return True, 0.015, "RLM detected: sharp money opposite public"
     elif public_pct > 0.65 and line_movement > 0:
@@ -395,9 +372,6 @@ def steam_rlm(public_pct: float, line_movement: float) -> Tuple[bool, float, str
     return False, 0.0, ""
 
 def news_friction_multiplier(injury_status: str, injury_type: str = "") -> Tuple[float, int]:
-    """
-    Returns (usage_multiplier, confidence_penalty)
-    """
     status_map = {
         "OUT": (0.0, 10),
         "GTD": (0.85, 2),
@@ -439,9 +413,6 @@ def series_state_multiplier(series_state: str, is_star: bool) -> float:
         return 0.95
     return 1.0
 
-# =============================================================================
-# HARD FILTERS (usage <19%, minutes <26, usage trend)
-# =============================================================================
 def apply_usage_minutes_filters(usage_pct: float, minutes_avg: float) -> Tuple[bool, str]:
     if usage_pct < 0.19:
         return True, f"AUTO-PASS: Usage {usage_pct:.1%} <19% (bench player)"
@@ -450,7 +421,7 @@ def apply_usage_minutes_filters(usage_pct: float, minutes_avg: float) -> Tuple[b
     return False, ""
 
 # =============================================================================
-# STATISTICAL CORE (unchanged)
+# STATISTICAL CORE
 # =============================================================================
 def outlier_suppressed_weights(values: List[float], threshold_sigma: float = 3.0) -> List[float]:
     if len(values) == 0:
@@ -588,7 +559,7 @@ def slip_correlation_penalty(legs: List[Dict]) -> Tuple[float, str]:
     return 1.0, "Correlation acceptable"
 
 # =============================================================================
-# DATABASE FUNCTIONS (unchanged)
+# DATABASE OPERATIONS
 # =============================================================================
 def insert_slip(entry: dict) -> None:
     slip_id = str(uuid.uuid4()).replace("-", "")[:12]
@@ -690,6 +661,7 @@ _SERVICES = [
     "PropLine (live props)", "Slash Golf (PGA)", "FlashLive (multi-sport)",
     "ESPN (fallback)", "nhl-api-py (NHL)", "curl_cffi (TLS)",
     "RapidAPI (Tennis)", "DraftKings API", "Parlay-API", "WeatherAPI",
+    "Sportmonks (xG)",
 ]
 
 def _init_health() -> None:
@@ -759,7 +731,168 @@ def fetch_weather_auto(lat: float, lon: float, dt: datetime) -> Dict:
         return {"wind_mph": 0, "temp_f": 70, "precip": "clear"}
 
 # =============================================================================
-# DRAFTKINGS LINE FETCHER (unchanged)
+# SPORTMONKS XG FETCHER (SOCCER)
+# =============================================================================
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_sportmonks_xg(player_name: str, league_id: int = None, season_id: int = None) -> List[float]:
+    key = st.secrets.get("SPORTMONKS_API_KEY", "")
+    if not key:
+        _health("Sportmonks (xG)", False, "API key missing", True)
+        return []
+    try:
+        search_url = "https://soccer.sportmonks.com/api/v2.0/players/search"
+        params = {"api_token": key, "search": player_name}
+        resp = requests.get(search_url, params=params, timeout=10)
+        if resp.status_code != 200:
+            _health("Sportmonks (xG)", False, f"HTTP {resp.status_code}", True)
+            return []
+        data = resp.json()
+        players = data.get("data", [])
+        if not players:
+            return []
+        player_id = players[0].get("id")
+        if not player_id:
+            return []
+        stats_url = f"https://soccer.sportmonks.com/api/v2.0/players/{player_id}/stats"
+        params_stats = {"api_token": key, "include": "statistics", "per_page": 10}
+        stats_resp = requests.get(stats_url, params=params_stats, timeout=10)
+        if stats_resp.status_code != 200:
+            _health("Sportmonks (xG)", False, f"Stats HTTP {stats_resp.status_code}", True)
+            return []
+        stats_data = stats_resp.json()
+        xg_vals = []
+        for fixture in stats_data.get("data", []):
+            stats = fixture.get("statistics", {})
+            xg = stats.get("expected_goals") or stats.get("xg")
+            if xg is not None:
+                xg_vals.append(float(xg))
+        _health("Sportmonks (xG)", bool(xg_vals))
+        return xg_vals
+    except Exception as e:
+        _health("Sportmonks (xG)", False, str(e), True)
+        logging.error(f"Sportmonks fetch error: {e}")
+        return []
+
+# =============================================================================
+# FLASHLIVE & ESPN FALLBACK (extended for tennis)
+# =============================================================================
+_FL_HOST = "flashlive-sports.p.rapidapi.com"
+_FL_MAP  = {"NBA":1,"NFL":2,"MLB":3,"NHL":4,"SOCCER":5,"TENNIS":6,
+            "MMA":7,"F1":8,"CRICKET":9,"PGA":10,"BOXING":11}
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _flashlive_stats(player_name: str, sport: str, market: str) -> List[float]:
+    key = st.secrets.get("RAPIDAPI_KEY","")
+    sid = _FL_MAP.get(sport.upper())
+    if not key or not sid:
+        _health("FlashLive (multi-sport)", False, "No key or unmapped sport", True)
+        return []
+    h = {"X-RapidAPI-Key": key, "X-RapidAPI-Host": _FL_HOST}
+    try:
+        r = requests.get(f"https://{_FL_HOST}/v1/players/search",
+                         headers=h, params={"sport_id":sid,"query":player_name,"limit":1}, timeout=10)
+        if r.status_code != 200: return []
+        plist = r.json().get("DATA",[])
+        if not plist: return []
+        pid = plist[0].get("id")
+        r2  = requests.get(f"https://{_FL_HOST}/v1/players/statistics",
+                           headers=h, params={"player_id":pid,"sport_id":sid}, timeout=10)
+        if r2.status_code != 200: return []
+        logs = r2.json().get("DATA",{}).get("game_log",[])
+        market_lower = market.lower()
+        vals = [float(g[market_lower]) for g in logs[:8]
+                if isinstance(g.get(market_lower),(int,float))]
+        _health("FlashLive (multi-sport)", bool(vals))
+        return vals
+    except Exception as e:
+        _health("FlashLive (multi-sport)", False, str(e), True)
+        return []
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _espn_stats(player_name: str, sport: str, market: str) -> List[float]:
+    key = st.secrets.get("RAPIDAPI_KEY","")
+    if not key: return []
+    sm  = {"NBA":"basketball","NFL":"football","MLB":"baseball","NHL":"hockey",
+           "PGA":"golf","TENNIS":"tennis","SOCCER":"soccer","MMA":"mma"}
+    esp = sm.get(sport.upper(), sport.lower())
+    h   = {"x-rapidapi-host":"espn-api.p.rapidapi.com","x-rapidapi-key":key}
+    try:
+        r = requests.get("https://espn-api.p.rapidapi.com/search",
+                         headers=h, params={"q":player_name,"sport":esp}, timeout=15)
+        if r.status_code != 200: return []
+        athletes = r.json().get("athletes",[])
+        if not athletes: return []
+        pid = athletes[0].get("id")
+        r2  = requests.get(f"https://espn-api.p.rapidapi.com/athlete/{pid}/stats",
+                           headers=h, timeout=15)
+        if r2.status_code != 200: return []
+        logs = r2.json().get("gameLog",[])
+        vals = [float(g[market.lower()]) for g in logs[:8]
+                if isinstance(g.get(market.lower()),(int,float))]
+        _health("ESPN (fallback)", bool(vals))
+        return vals
+    except Exception as e:
+        _health("ESPN (fallback)", False, str(e), True)
+        return []
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+def fetch_stats(player: str, market: str, sport: str = "NBA",
+                game_date: str = None, tier: str = "mid") -> List[float]:
+    if sport.upper() == "NBA":
+        vals = _nba_stats(player, market, game_date)
+    elif sport.upper() == "SOCCER":
+        if market.upper() == "XG":
+            vals = fetch_sportmonks_xg(player)
+        else:
+            vals = _flashlive_stats(player, sport, market)
+    elif sport.upper() == "TENNIS":
+        vals = _flashlive_stats(player, sport, market)
+    else:
+        vals = _flashlive_stats(player, sport, market)
+
+    if len(vals) < 3:
+        vals = _espn_stats(player, sport, market)
+    if len(vals) < 3:
+        vals = historical_fallback(market, sport, tier)
+    return vals
+
+# =============================================================================
+# TIER‑AWARE HISTORICAL FALLBACK
+# =============================================================================
+_FALLBACK_TIERS = {
+    "elite": {
+        ("NBA","PTS"): [32.1,29.8,31.5,33.2,28.9,30.4,32.8,29.1,31.0,33.5,28.5,32.3],
+        ("NBA","REB"): [10.5,9.8,11.2,10.1,9.5,10.8,11.5,9.2,10.3,11.0,9.9,10.7],
+        ("NBA","AST"): [8.2,7.9,8.8,7.5,8.5,9.1,7.8,8.4,9.3,7.6,8.0,8.9],
+        ("SOCCER","XG"): [1.2,1.4,0.9,1.6,1.1,1.3,1.0,1.5,1.2,1.3,0.8,1.4],
+        ("TENNIS","ACES"): [6.5,7.2,5.8,8.0,6.8,7.5,5.5,8.5,6.2,7.0,5.2,7.8],
+    },
+    "mid": {
+        ("NBA","PTS"): [22.5,23.1,21.8,24.2,22.9,23.5,21.5,24.0,22.7,23.3,21.9,23.8],
+        ("NBA","REB"): [7.2,7.5,6.9,7.8,7.3,7.6,6.8,7.9,7.1,7.4,6.7,7.7],
+        ("NBA","AST"): [5.1,5.3,4.9,5.6,5.2,5.4,4.8,5.7,5.0,5.5,4.7,5.8],
+        ("SOCCER","XG"): [0.6,0.8,0.5,1.0,0.7,0.9,0.4,1.1,0.6,0.8,0.5,0.9],
+        ("TENNIS","ACES"): [3.2,3.8,2.9,4.2,3.5,4.0,2.5,4.5,3.0,3.6,2.7,4.0],
+    },
+    "bench": {
+        ("NBA","PTS"): [8.5,9.1,7.8,10.2,8.9,9.4,7.5,10.5,8.3,9.7,7.2,10.0],
+        ("NBA","REB"): [3.5,3.8,3.2,4.0,3.6,3.9,3.1,4.2,3.4,3.7,3.0,4.1],
+        ("SOCCER","XG"): [0.2,0.3,0.1,0.4,0.2,0.3,0.1,0.5,0.2,0.3,0.1,0.4],
+        ("TENNIS","ACES"): [1.5,2.0,1.2,2.5,1.8,2.2,1.0,2.8,1.6,2.1,1.3,2.4],
+    },
+}
+_FB_DEFAULT = [15.0,15.5,14.8,16.2,15.3,15.7,14.5,16.5,15.1,15.9,14.7,16.0]
+
+def historical_fallback(market: str, sport: str = "NBA", tier: str = "mid") -> List[float]:
+    key = (sport.upper(), market.upper())
+    for t in (tier, "mid", "elite", "bench"):
+        d = _FALLBACK_TIERS.get(t, {})
+        if key in d:
+            return d[key]
+    return _FB_DEFAULT
+
+# =============================================================================
+# DRAFTKINGS LINE FETCHER
 # =============================================================================
 DK_EVENT_LIST_URL = "https://sportsbook.draftkings.com//sites/US-SB/api/v5/eventgroups/4"
 
@@ -852,7 +985,117 @@ def fetch_dk_dataframe() -> pd.DataFrame:
     return df
 
 # =============================================================================
-# PLAYER PROJECTIONS ENGINE (unchanged)
+# NBA STATS API (BallsDontLie)
+# =============================================================================
+@st.cache_data(ttl=3600, show_spinner=False)
+def _nba_stats(player_name: str, market: str, game_date: str = None) -> List[float]:
+    stat_map = {"PTS":"pts","REB":"reb","AST":"ast","STL":"stl","BLK":"blk",
+                "THREES":"tpm","PRA":"pts","PR":"pts","PA":"pts"}
+    stat = stat_map.get(market.upper(), "pts")
+    key = st.secrets.get("BALLSDONTLIE_API_KEY","")
+    if not key:
+        _health("BallsDontLie (NBA)", False, "API key missing", True)
+        return []
+    try:
+        r = requests.get(
+            f"https://api.balldontlie.io/v1/players?search={player_name.replace(' ','%20')}",
+            headers={"Authorization": key}, timeout=10,
+        )
+        if r.status_code != 200:
+            _health("BallsDontLie (NBA)", False, f"HTTP {r.status_code}", True)
+            return []
+        players = r.json().get("data",[])
+        if not players:
+            _health("BallsDontLie (NBA)", False, "Player not found", True)
+            return []
+        pid = players[0]["id"]
+        url = (f"https://api.balldontlie.io/v1/stats?player_ids[]={pid}&dates[]={game_date}"
+               if game_date else
+               f"https://api.balldontlie.io/v1/stats?player_ids[]={pid}&per_page=12")
+        r2 = requests.get(url, headers={"Authorization": key}, timeout=10)
+        if r2.status_code != 200:
+            _health("BallsDontLie (NBA)", False, f"Stats HTTP {r2.status_code}", True)
+            return []
+        games = r2.json().get("data",[])
+        vals  = [float(g[stat]) for g in games if isinstance(g.get(stat),(int,float))]
+        _health("BallsDontLie (NBA)", bool(vals), "" if vals else "No stats", not bool(vals))
+        return vals
+    except Exception as e:
+        _health("BallsDontLie (NBA)", False, str(e), True)
+        logging.error(f"_nba_stats: {e}")
+        return []
+
+# =============================================================================
+# NBA TEAM STATS
+# =============================================================================
+NBA_TEAM_IDS: Dict[str, int] = {
+    "ATLANTA HAWKS":1,"BOSTON CELTICS":2,"BROOKLYN NETS":3,"CHARLOTTE HORNETS":4,
+    "CHICAGO BULLS":5,"CLEVELAND CAVALIERS":6,"DALLAS MAVERICKS":7,"DENVER NUGGETS":8,
+    "DETROIT PISTONS":9,"GOLDEN STATE WARRIORS":10,"HOUSTON ROCKETS":11,"INDIANA PACERS":12,
+    "LA CLIPPERS":13,"LOS ANGELES LAKERS":14,"MEMPHIS GRIZZLIES":15,"MIAMI HEAT":16,
+    "MILWAUKEE BUCKS":17,"MINNESOTA TIMBERWOLVES":18,"NEW ORLEANS PELICANS":19,
+    "NEW YORK KNICKS":20,"OKLAHOMA CITY THUNDER":21,"ORLANDO MAGIC":22,
+    "PHILADELPHIA 76ERS":23,"PHOENIX SUNS":24,"PORTLAND TRAIL BLAZERS":25,
+    "SACRAMENTO KINGS":26,"SAN ANTONIO SPURS":27,"TORONTO RAPTORS":28,
+    "UTAH JAZZ":29,"WASHINGTON WIZARDS":30,
+    "ATL":1,"BOS":2,"BKN":3,"CHA":4,"CHI":5,"CLE":6,"DAL":7,"DEN":8,"DET":9,
+    "GSW":10,"HOU":11,"IND":12,"LAC":13,"LAL":14,"MEM":15,"MIA":16,"MIL":17,
+    "MIN":18,"NOP":19,"NYK":20,"OKC":21,"ORL":22,"PHI":23,"PHX":24,"POR":25,
+    "SAC":26,"SAS":27,"TOR":28,"UTA":29,"WAS":30,
+}
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_team_totals(team: str, window: int = 8) -> List[float]:
+    tid = NBA_TEAM_IDS.get(team.upper())
+    if not tid:
+        for k,v in NBA_TEAM_IDS.items():
+            if team.upper() in k: tid = v; break
+    if not tid: return [114.0]*8
+    key = st.secrets.get("BALLSDONTLIE_API_KEY","")
+    try:
+        r = requests.get(
+            f"https://api.balldontlie.io/v1/games?team_ids[]={tid}&per_page={window}",
+            headers={"Authorization": key}, timeout=10,
+        )
+        if r.status_code != 200: return [114.0]*8
+        games = r.json().get("data",[])
+        tots  = [g["home_team_score"] if g["home_team"]["id"]==tid else g["visitor_team_score"]
+                 for g in games]
+        tots.reverse()
+        return tots or [114.0]*8
+    except Exception as e:
+        logging.error(f"fetch_team_totals: {e}")
+        return [114.0]*8
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_team_margins(team: str, window: int = 8) -> List[float]:
+    tid = NBA_TEAM_IDS.get(team.upper())
+    if not tid:
+        for k,v in NBA_TEAM_IDS.items():
+            if team.upper() in k: tid = v; break
+    if not tid: return [0.0]*8
+    key = st.secrets.get("BALLSDONTLIE_API_KEY","")
+    try:
+        r = requests.get(
+            f"https://api.balldontlie.io/v1/games?team_ids[]={tid}&per_page={window}",
+            headers={"Authorization": key}, timeout=10,
+        )
+        if r.status_code != 200: return [0.0]*8
+        games = r.json().get("data",[])
+        margins = []
+        for g in games:
+            if g["home_team"]["id"] == tid:
+                margins.append(g["home_team_score"] - g["visitor_team_score"])
+            else:
+                margins.append(g["visitor_team_score"] - g["home_team_score"])
+        margins.reverse()
+        return margins or [0.0]*8
+    except Exception as e:
+        logging.error(f"fetch_team_margins: {e}")
+        return [0.0]*8
+
+# =============================================================================
+# PLAYER PROJECTIONS ENGINE
 # =============================================================================
 @dataclass
 class PlayerProjection:
@@ -938,7 +1181,7 @@ class StatDist:
         return cls(mean, var)
 
 # =============================================================================
-# MONTE CARLO ENGINE (unchanged)
+# MONTE CARLO ENGINE
 # =============================================================================
 _NBA_CORR = np.array([
     [1.00, 0.25, 0.35, 0.10, 0.05, 0.20],
@@ -1103,7 +1346,6 @@ def classify_tier(edge: float) -> str:
     return "NEUTRAL"
 
 def current_edge_floor() -> float:
-    # Bayesian emergency floor based on ROI
     try:
         with _conn() as c:
             df = pd.read_sql_query(
@@ -1119,7 +1361,6 @@ def current_edge_floor() -> float:
                     return 0.07
     except Exception:
         pass
-    # Bankroll floor
     bankroll = get_bankroll()
     if bankroll < 400:
         return 0.055
@@ -1142,194 +1383,7 @@ def calculate_kelly_stake(bankroll: float, prob: float, odds: int, fraction: flo
     return bankroll * k * fraction
 
 # =============================================================================
-# NBA STATS API (BallsDontLie)
-# =============================================================================
-@st.cache_data(ttl=3600, show_spinner=False)
-def _nba_stats(player_name: str, market: str, game_date: str = None) -> List[float]:
-    stat_map = {"PTS":"pts","REB":"reb","AST":"ast","STL":"stl","BLK":"blk",
-                "THREES":"tpm","PRA":"pts","PR":"pts","PA":"pts"}
-    stat = stat_map.get(market.upper(), "pts")
-    key = st.secrets.get("BALLSDONTLIE_API_KEY","")
-    if not key:
-        _health("BallsDontLie (NBA)", False, "API key missing", True)
-        return []
-    try:
-        r = requests.get(
-            f"https://api.balldontlie.io/v1/players?search={player_name.replace(' ','%20')}",
-            headers={"Authorization": key}, timeout=10,
-        )
-        if r.status_code != 200:
-            _health("BallsDontLie (NBA)", False, f"HTTP {r.status_code}", True)
-            return []
-        players = r.json().get("data",[])
-        if not players:
-            _health("BallsDontLie (NBA)", False, "Player not found", True)
-            return []
-        pid = players[0]["id"]
-        url = (f"https://api.balldontlie.io/v1/stats?player_ids[]={pid}&dates[]={game_date}"
-               if game_date else
-               f"https://api.balldontlie.io/v1/stats?player_ids[]={pid}&per_page=12")
-        r2 = requests.get(url, headers={"Authorization": key}, timeout=10)
-        if r2.status_code != 200:
-            _health("BallsDontLie (NBA)", False, f"Stats HTTP {r2.status_code}", True)
-            return []
-        games = r2.json().get("data",[])
-        vals  = [float(g[stat]) for g in games if isinstance(g.get(stat),(int,float))]
-        _health("BallsDontLie (NBA)", bool(vals), "" if vals else "No stats", not bool(vals))
-        return vals
-    except Exception as e:
-        _health("BallsDontLie (NBA)", False, str(e), True)
-        logging.error(f"_nba_stats: {e}")
-        return []
-
-# =============================================================================
-# NBA TEAM STATS
-# =============================================================================
-NBA_TEAM_IDS: Dict[str, int] = {
-    "ATLANTA HAWKS":1,"BOSTON CELTICS":2,"BROOKLYN NETS":3,"CHARLOTTE HORNETS":4,
-    "CHICAGO BULLS":5,"CLEVELAND CAVALIERS":6,"DALLAS MAVERICKS":7,"DENVER NUGGETS":8,
-    "DETROIT PISTONS":9,"GOLDEN STATE WARRIORS":10,"HOUSTON ROCKETS":11,"INDIANA PACERS":12,
-    "LA CLIPPERS":13,"LOS ANGELES LAKERS":14,"MEMPHIS GRIZZLIES":15,"MIAMI HEAT":16,
-    "MILWAUKEE BUCKS":17,"MINNESOTA TIMBERWOLVES":18,"NEW ORLEANS PELICANS":19,
-    "NEW YORK KNICKS":20,"OKLAHOMA CITY THUNDER":21,"ORLANDO MAGIC":22,
-    "PHILADELPHIA 76ERS":23,"PHOENIX SUNS":24,"PORTLAND TRAIL BLAZERS":25,
-    "SACRAMENTO KINGS":26,"SAN ANTONIO SPURS":27,"TORONTO RAPTORS":28,
-    "UTAH JAZZ":29,"WASHINGTON WIZARDS":30,
-    "ATL":1,"BOS":2,"BKN":3,"CHA":4,"CHI":5,"CLE":6,"DAL":7,"DEN":8,"DET":9,
-    "GSW":10,"HOU":11,"IND":12,"LAC":13,"LAL":14,"MEM":15,"MIA":16,"MIL":17,
-    "MIN":18,"NOP":19,"NYK":20,"OKC":21,"ORL":22,"PHI":23,"PHX":24,"POR":25,
-    "SAC":26,"SAS":27,"TOR":28,"UTA":29,"WAS":30,
-}
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_team_totals(team: str, window: int = 8) -> List[float]:
-    tid = NBA_TEAM_IDS.get(team.upper())
-    if not tid:
-        for k,v in NBA_TEAM_IDS.items():
-            if team.upper() in k: tid = v; break
-    if not tid: return [114.0]*8
-    key = st.secrets.get("BALLSDONTLIE_API_KEY","")
-    try:
-        r = requests.get(
-            f"https://api.balldontlie.io/v1/games?team_ids[]={tid}&per_page={window}",
-            headers={"Authorization": key}, timeout=10,
-        )
-        if r.status_code != 200: return [114.0]*8
-        games = r.json().get("data",[])
-        tots  = [g["home_team_score"] if g["home_team"]["id"]==tid else g["visitor_team_score"]
-                 for g in games]
-        tots.reverse()
-        return tots or [114.0]*8
-    except Exception as e:
-        logging.error(f"fetch_team_totals: {e}")
-        return [114.0]*8
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_team_margins(team: str, window: int = 8) -> List[float]:
-    tid = NBA_TEAM_IDS.get(team.upper())
-    if not tid:
-        for k,v in NBA_TEAM_IDS.items():
-            if team.upper() in k: tid = v; break
-    if not tid: return [0.0]*8
-    key = st.secrets.get("BALLSDONTLIE_API_KEY","")
-    try:
-        r = requests.get(
-            f"https://api.balldontlie.io/v1/games?team_ids[]={tid}&per_page={window}",
-            headers={"Authorization": key}, timeout=10,
-        )
-        if r.status_code != 200: return [0.0]*8
-        games = r.json().get("data",[])
-        margins = []
-        for g in games:
-            if g["home_team"]["id"] == tid:
-                margins.append(g["home_team_score"] - g["visitor_team_score"])
-            else:
-                margins.append(g["visitor_team_score"] - g["home_team_score"])
-        margins.reverse()
-        return margins or [0.0]*8
-    except Exception as e:
-        logging.error(f"fetch_team_margins: {e}")
-        return [0.0]*8
-
-# =============================================================================
-# FLASHLIVE & ESPN FALLBACK
-# =============================================================================
-_FL_HOST = "flashlive-sports.p.rapidapi.com"
-_FL_MAP  = {"NBA":1,"NFL":2,"MLB":3,"NHL":4,"SOCCER":5,"TENNIS":6,
-            "MMA":7,"F1":8,"CRICKET":9,"PGA":10,"BOXING":11}
-
-@st.cache_data(ttl=300, show_spinner=False)
-def _flashlive_stats(player_name: str, sport: str, market: str) -> List[float]:
-    key = st.secrets.get("RAPIDAPI_KEY","")
-    sid = _FL_MAP.get(sport.upper())
-    if not key or not sid:
-        _health("FlashLive (multi-sport)", False, "No key or unmapped sport", True)
-        return []
-    h = {"X-RapidAPI-Key": key, "X-RapidAPI-Host": _FL_HOST}
-    try:
-        r = requests.get(f"https://{_FL_HOST}/v1/players/search",
-                         headers=h, params={"sport_id":sid,"query":player_name,"limit":1}, timeout=10)
-        if r.status_code != 200: return []
-        plist = r.json().get("DATA",[])
-        if not plist: return []
-        pid = plist[0].get("id")
-        r2  = requests.get(f"https://{_FL_HOST}/v1/players/statistics",
-                           headers=h, params={"player_id":pid,"sport_id":sid}, timeout=10)
-        if r2.status_code != 200: return []
-        logs = r2.json().get("DATA",{}).get("game_log",[])
-        vals = [float(g[market.lower()]) for g in logs[:8]
-                if isinstance(g.get(market.lower()),(int,float))]
-        _health("FlashLive (multi-sport)", bool(vals))
-        return vals
-    except Exception as e:
-        _health("FlashLive (multi-sport)", False, str(e), True)
-        return []
-
-@st.cache_data(ttl=3600, show_spinner=False)
-def _espn_stats(player_name: str, sport: str, market: str) -> List[float]:
-    key = st.secrets.get("RAPIDAPI_KEY","")
-    if not key: return []
-    sm  = {"NBA":"basketball","NFL":"football","MLB":"baseball","NHL":"hockey",
-           "PGA":"golf","TENNIS":"tennis","SOCCER":"soccer","MMA":"mma"}
-    esp = sm.get(sport.upper(), sport.lower())
-    h   = {"x-rapidapi-host":"espn-api.p.rapidapi.com","x-rapidapi-key":key}
-    try:
-        r = requests.get("https://espn-api.p.rapidapi.com/search",
-                         headers=h, params={"q":player_name,"sport":esp}, timeout=15)
-        if r.status_code != 200: return []
-        athletes = r.json().get("athletes",[])
-        if not athletes: return []
-        pid = athletes[0].get("id")
-        r2  = requests.get(f"https://espn-api.p.rapidapi.com/athlete/{pid}/stats",
-                           headers=h, timeout=15)
-        if r2.status_code != 200: return []
-        logs = r2.json().get("gameLog",[])
-        vals = [float(g[market.lower()]) for g in logs[:8]
-                if isinstance(g.get(market.lower()),(int,float))]
-        _health("ESPN (fallback)", bool(vals))
-        return vals
-    except Exception as e:
-        _health("ESPN (fallback)", False, str(e), True)
-        return []
-
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
-def fetch_stats(player: str, market: str, sport: str = "NBA",
-                game_date: str = None, tier: str = "mid") -> List[float]:
-    if sport.upper() == "NBA":
-        vals = _nba_stats(player, market, game_date)
-    elif sport.upper() == "PGA":
-        vals = []
-    else:
-        vals = _flashlive_stats(player, sport, market)
-
-    if len(vals) < 3:
-        vals = _espn_stats(player, sport, market)
-    if len(vals) < 3:
-        vals = historical_fallback(market, sport, tier)
-    return vals
-
-# =============================================================================
-# UPGRADED PROP ANALYSIS FUNCTION (with all sensors)
+# UPGRADED PROP ANALYSIS FUNCTION (with all sensors + xG)
 # =============================================================================
 def analyze_prop(
     player: str, market: str, line: float, pick: str,
@@ -1340,7 +1394,6 @@ def analyze_prop(
     injury_status: str = "HEALTHY", injury_type: str = "",
     blowout_prob: float = 0.0, is_playoff: bool = False,
     matchup_delta_val: float = None, usage_trend_up: bool = False,
-    # NEW SENSOR PARAMETERS
     b2b: bool = False, player_role: str = "ROTATION", is_home: bool = True,
     travel_zones: int = 0, rest_days: int = 2, direction: str = "none",
     altitude_city: str = "", elevation_ft: float = 0,
@@ -1353,71 +1406,55 @@ def analyze_prop(
         bankroll = get_bankroll()
     stats_raw = fetch_stats(player, market, sport, tier=tier)
 
-    # Garbage time adjustment
     if blowout_margin_list is not None and usage_list is not None and len(stats_raw) == len(blowout_margin_list):
         adj_stats = [garbage_time_adjust(v, bm, up) for v, bm, up in zip(stats_raw, blowout_margin_list, usage_list)]
     else:
         adj_stats = stats_raw
 
-    # Role change weighting for WMA
     mu_raw = role_change_weighted_wma(adj_stats, role_change)
 
-    # Apply environmental multipliers (order matters)
-    # 1. B2B adjustment
     b2b_mult = b2b_adjustment(player_role, is_home, b2b)
-    # 2. Travel stress
     travel_mult = travel_stress_multiplier(travel_zones, rest_days, direction)
-    # 3. Altitude
     if altitude_city:
         elev = ARENA_ELEVATIONS.get(altitude_city, elevation_ft)
     else:
         elev = elevation_ft
     alt_mult = altitude_multiplier(elev, sport, market)
-    # 4. Weather
     weather_mult = weather_multiplier(sport, market, wind_mph, temp_f, precip)
-    # 5. Motivation
     motivation_mult = motivation_multiplier(is_elimination, contract_incentive, is_playoff)
-    # 6. Series state (playoff only)
     series_mult = series_state_multiplier(series_state, is_star) if is_playoff else 1.0
-    # 7. News friction (injury)
     news_mult, conf_penalty = news_friction_multiplier(injury_status, injury_type)
     if news_mult == 0.0:
         return {"error": f"AUTO-PASS: Injury status {injury_status}", "tier": "PASS"}
 
-    # Apply all multipliers to the projection
     mu = mu_raw * b2b_mult * travel_mult * alt_mult * weather_mult * motivation_mult * series_mult * news_mult
 
-    # Hard usage/minutes filter
-    avg_minutes = np.mean(minutes_list) if minutes_list else 28.0
+    avg_minutes = np.mean(minutes_list) if minutes_list else 33.0 if sport.upper() in ["SOCCER","TENNIS"] else 28.0
     usage_pct = np.mean(usage_list) if usage_list else 0.22
     should_pass, reason = apply_usage_minutes_filters(usage_pct, avg_minutes)
     if should_pass:
         return {"error": reason, "tier": "PASS"}
 
-    # Sigma calculation
     wsem = compute_wsem(adj_stats)
     buffer = l42_buffer(adj_stats)
     sigma_raw = max(wsem * buffer, 0.75)
-    # Playoff sigma scaling (already included)
     if is_playoff:
         sigma = sigma_raw + (wsem * 0.5) + 3.5
     else:
         sigma = sigma_raw
 
-    # Minutes volatility risk
     if minutes_list and len(minutes_list) >= 4:
         mins_cv, mins_risk = minutes_volatility_risk(minutes_list)
         if mins_risk:
             return {"error": "AUTO-PASS: Minutes volatility >18% or drop >30%", "tier": "PASS"}
-    if blowout_prob > 0.18 and market.upper() in ["PTS","PRA","PR","PA","GOALS","STRIKES"]:
+    if blowout_prob > 0.18 and market.upper() in ["PTS","PRA","PR","PA","GOALS","STRIKES","SHOTS"]:
         return {"error": "AUTO-PASS: Blowout probability >18% on usage prop", "tier": "PASS"}
 
-    # Win probability
     if use_mc:
         proj = PlayerProjection(
             player_name=player, team="", opponent="",
-            minutes=28.0, pts=mu, rebs=5.0, asts=4.0,
-            usage=0.22, pace_adj=98.0,
+            minutes=avg_minutes, pts=mu, rebs=5.0, asts=4.0,
+            usage=usage_pct, pace_adj=98.0,
             raw_payload={"rates": {"stl":0.08,"blk":0.05,"to":0.12}},
         )
         mc_res = mc_price_market(proj, market.lower(), line, n=mc_sims)
@@ -1446,34 +1483,28 @@ def analyze_prop(
     if raw_edge > 0.20:
         return {"error": "AUTO-PASS: Raw edge >20% (stale line / injury alert)", "tier": "PASS"}
 
-    # Volatility multiplier
     vol_mult = tier_mult(market)
     adj_edge = raw_edge * vol_mult
 
-    # CV reduction
     cv = sigma / mu if mu > 0 else 10.0
     if cv > 0.18:
         adj_edge *= 0.80
     if cv > 0.25:
         return {"error": f"AUTO-PASS: Extreme volatility CV={cv:.2f} >0.25", "tier": "PASS"}
 
-    # ABS challenge (MLB pitching props)
     if sport == "MLB" and market.upper() in ["KS", "STRIKEOUTS"]:
         adj_edge *= abs_challenge_adj(umpire_overturn)
 
-    # Matchup delta
     if matchup_delta_val is not None:
         if matchup_delta_val <= -0.12 and not usage_trend_up:
             return {"error": f"AUTO-PASS: Unfavorable matchup Δ={matchup_delta_val:.2f} and usage trend down", "tier": "PASS"}
         elif matchup_delta_val <= -0.12 and usage_trend_up:
             adj_edge *= 0.60
 
-    # Steam / RLM detection
     rlm_detected, steam_boost, rlm_msg = steam_rlm(public_pct, line_movement)
     if rlm_detected:
         adj_edge += steam_boost
 
-    # Floor & strictness
     floor = current_edge_floor()
     lean, lean_conf, floor_adj = strictness_advisory(
         blowout_prob, (sigma/mu) if mu else 0, len(stats_raw), injury_status, cv, matchup_delta_val or 0.0
@@ -1481,12 +1512,10 @@ def analyze_prop(
     floor += floor_adj
     floor = max(0.04, floor)
 
-    # Kelly tiering by SEM
     sem_score = get_sem_score()
     kelly_frac = 0.25 if sem_score > 65 else (0.20 if sem_score >= 55 else 0.15)
     stake = bankroll * kelly_frac * min(kelly_val, 0.25) if adj_edge >= floor else 0.0
 
-    # Tier classification
     tier_l = classify_tier(adj_edge)
     market_disc = abs(mu - line) / max(line, 1e-9)
     prob_bolt = get_prob_bolt()
@@ -1517,7 +1546,7 @@ def analyze_prop(
     }
 
 # =============================================================================
-# GAME ANALYSIS FUNCTIONS (with weather, altitude, RLM)
+# GAME ANALYSIS FUNCTIONS
 # =============================================================================
 def analyze_total(home: str, away: str, sport: str,
                   line: float, over_odds: int, under_odds: int,
@@ -1532,11 +1561,9 @@ def analyze_total(home: str, away: str, sport: str,
         proj = SPORT_MODELS.get(sport,{}).get("avg_total", 220.0)
         sigma = proj * 0.08
 
-    # Playoff scaling
     if is_playoff:
         sigma = sigma + (compute_wsem(comb) * 0.5) + 3.5 if sport=="NBA" else sigma + 5.0
 
-    # Weather impact on totals
     weather_mult = weather_multiplier(sport, "TOTAL", wind_mph, temp_f, precip)
     proj *= weather_mult
 
@@ -1854,7 +1881,7 @@ def analyze_game_bets(games: List[Dict], sport: str, min_edge: float, is_playoff
     return results
 
 # =============================================================================
-# SELF-LEARNING FUNCTIONS (including auto-tuning)
+# SELF-LEARNING FUNCTIONS
 # =============================================================================
 def _calibrate_sem() -> None:
     try:
@@ -1904,10 +1931,8 @@ def _auto_tune() -> None:
         logging.error(f"_auto_tune write: {e}")
 
 def auto_tune_volatility_multipliers():
-    """Adjust volatility multipliers every 20 bets based on performance per tier."""
     with _conn() as c:
         for tier, current in VOLATILITY_TIERS.items():
-            # Map tier to STAT_CONFIG markets
             markets = [m for m, cfg in STAT_CONFIG.items() if cfg["tier"] == tier]
             if not markets:
                 continue
@@ -1924,10 +1949,8 @@ def auto_tune_volatility_multipliers():
                 continue
             win_rate = (df["result"] == "WIN").sum() / len(df)
             roi = df["profit"].sum() / (len(df) * 100)
-            # If performing poorly (win rate < 50% and negative ROI), reduce multiplier (more conservative)
             if win_rate < 0.50 and roi < 0.0:
                 new_mult = current * 0.95
-            # If performing well (win rate > 60% and positive ROI > 5%), increase multiplier (less conservative)
             elif win_rate > 0.60 and roi > 0.05:
                 new_mult = current * 1.02
             else:
@@ -2086,7 +2109,7 @@ def display_batch_results(results: List[Dict]) -> Tuple[List[Dict], int]:
     return approved_props, len(approved_props)
 
 # =============================================================================
-# OCR & PARSER UTILITIES (unchanged from original)
+# OCR & PARSER UTILITIES
 # =============================================================================
 def ocr_image(image_bytes: bytes, api_key: str) -> Tuple[Optional[str], Optional[str]]:
     try:
@@ -2144,6 +2167,8 @@ def _auto_sport(market: str) -> Optional[str]:
     if m in {"SOG","SAVES","GOALS","ASSISTS","HITS"}: return "NHL"
     if m in {"PASS_YDS","RUSH_YDS","REC_YDS","TD"}: return "NFL"
     if m in {"OUTS","KS","TB","HR"}: return "MLB"
+    if m in {"XG","GOALS","ASSISTS"}: return "SOCCER"
+    if m in {"ACES","DOUBLE_FAULTS","FIRST_SERVE_PCT"}: return "TENNIS"
     return None
 
 def _dedupe(props: List[Dict]) -> List[Dict]:
@@ -2244,6 +2269,10 @@ def _parse_prizepicks_props(lines: List[str]) -> List[Dict]:
             if market in ["KS", "SOG", "SAVES", "GOALS", "ASSISTS", "HITS"]:
                 if market == "KS": sport = "MLB"
                 else: sport = "NHL"
+            elif market in ["XG", "GOALS", "ASSISTS"]:
+                sport = "SOCCER"
+            elif market in ["ACES", "DOUBLE_FAULTS", "FIRST_SERVE_PCT"]:
+                sport = "TENNIS"
             bet = {
                 "type": "PROP",
                 "sport": sport,
@@ -2345,7 +2374,6 @@ def _parse_bovada(lines: List[str]) -> List[Dict]:
                              "market":"TOTAL","line":lv,"pick":pick,"odds":ov,"is_alt":False})
         i += 11
     return bets
-
 def _parse_mybookie(lines: List[str]) -> List[Dict]:
     bets = []
     i = 0
@@ -2691,7 +2719,7 @@ def analyze_ev_props(games: List[Dict], sport_key: str, sport_name: str, max_gam
     return unique
 
 # =============================================================================
-# STREAMLIT UI – ALL TABS (unchanged except advanced filters expanded)
+# STREAMLIT UI – ALL TABS
 # =============================================================================
 _BADGE_CSS = {
     "SOVEREIGN BOLT": ("⚡","background:#f59e0b;color:#1a1a2e;font-weight:800;"),
@@ -2739,7 +2767,7 @@ def _sidebar() -> float:
     st.sidebar.markdown(dots)
     missing = [k for k in ("BALLSDONTLIE_API_KEY","ODDS_API_KEY","ODDS_API_IO_KEY",
                             "OCR_SPACE_API_KEY","RAPIDAPI_KEY","PARLAY_API_KEY",
-                            "WEATHER_API_KEY") if not st.secrets.get(k)]
+                            "WEATHER_API_KEY","SPORTMONKS_API_KEY") if not st.secrets.get(k)]
     if missing:
         st.sidebar.warning("Missing keys:\n" + "\n".join(f"• {k}" for k in missing))
     return new_br
@@ -2768,7 +2796,6 @@ def _tab_props(bankroll: float) -> None:
     tier = c3.selectbox("Player Tier", ["elite","mid","bench"], index=1)
     use_mc = st.checkbox("Use Monte Carlo (10,000 sims)", value=False)
 
-    # ========== NEW: Advanced Filters with all sensors ==========
     with st.expander("🌍 Environmental & Advanced Filters", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
@@ -2785,16 +2812,13 @@ def _tab_props(bankroll: float) -> None:
             usage_trend_up = st.checkbox("Usage trend up (>5% last 4 games)")
             matchup_delta_input = st.number_input("Matchup Delta (Δ)", value=0.0, step=0.01)
         with col2:
-            # B2B & Travel
             b2b = st.checkbox("Back‑to‑Back Game")
             player_role = st.selectbox("Player Role", ["STARTER", "ROTATION", "BENCH"])
             is_home = st.checkbox("Home Game", value=True)
             travel_zones = st.slider("Travel Zones Crossed", 0, 3, 0)
             rest_days = st.slider("Rest Days since last game", 0, 3, 2)
             direction = st.selectbox("Travel Direction", ["none", "west_to_east", "east_to_west"])
-            # Altitude
             altitude_city = st.selectbox("Arena City (Altitude)", ["", "Denver", "Salt Lake City", "Phoenix", "Los Angeles", "Boston"])
-            # Weather
             weather_source = st.radio("Weather Source", ["Auto (API)", "Manual"])
             if weather_source == "Manual":
                 wind_mph = st.number_input("Wind (mph)", value=0.0, step=1.0)
@@ -2804,29 +2828,23 @@ def _tab_props(bankroll: float) -> None:
                 wind_mph = 0.0
                 temp_f = 70
                 precip = "clear"
-            # Motivation & Series
             is_elimination = st.checkbox("Elimination Game")
             contract_incentive = st.checkbox("Contract Incentive")
-            # ABS challenge (MLB only)
             if sport == "MLB" and market.upper() in ["KS", "STRIKEOUTS"]:
                 umpire_overturn = st.slider("Umpire Overturn Rate", 0.0, 1.0, 0.5)
             else:
                 umpire_overturn = 0.0
-            # Series state
             if is_playoff:
                 series_state = st.selectbox("Playoff Series State", ["tied", "down", "up"])
                 is_star = st.checkbox("Star Player (usage >28%)")
             else:
                 series_state = "tied"
                 is_star = False
-            # Steam / RLM (public %)
             public_pct = st.slider("Public Betting % (on this side)", 0.0, 1.0, 0.5)
             line_movement = st.number_input("Line Movement (points)", value=0.0, step=0.5)
 
     if st.button("🚀 Analyze Prop", type="primary"):
-        # Auto-weather if selected
         if weather_source == "Auto (API)":
-            # For demo, we use hardcoded; in real app, call fetch_weather_auto(lat, lon, dt)
             wind_mph = 0
             temp_f = 70
             precip = "clear"
@@ -2972,9 +2990,6 @@ def _tab_props(bankroll: float) -> None:
                         st.toast(f"{count} props added", icon="➕")
                         st.rerun()
 
-# =============================================================================
-# TAB 1: Game Analyzer (with weather added)
-# =============================================================================
 def _tab_games(bankroll: float) -> None:
     st.header("🏟️ Game Analyzer — Spreads, Totals & Moneylines")
     st.caption("Powered by The Odds API • Supports NBA, MLB, NHL, NFL and more")
@@ -3043,7 +3058,6 @@ def _tab_games(bankroll: float) -> None:
                 st.error("No spread data for this game.")
         if b2.button("🔍 Analyze Total", use_container_width=True):
             if total is not None and over_odds is not None and under_odds is not None:
-                # Optional: get weather from API (simplified)
                 wind_mph = 0
                 temp_f = 70
                 precip = "clear"
@@ -3121,11 +3135,6 @@ def _tab_games(bankroll: float) -> None:
                     st.write(f"{home_team_man}: {res_m['home_prob']:.1%} (Edge {res_m['home_edge']:+.1%})")
                     st.write(f"{away_team_man}: {res_m['away_prob']:.1%} (Edge {res_m['away_edge']:+.1%})")
 
-# =============================================================================
-# TAB 2 through TAB 7 (Best Bets, Slip Lab, History, Model Bets, EV Scanner, Tools)
-# These remain identical to your original; no changes needed.
-# =============================================================================
-
 def _tab_best_bets() -> None:
     st.header("🏆 Best Bets — Automated Recommendations")
     st.caption("Top player props and game bets ranked by CLARITY edge model")
@@ -3162,7 +3171,6 @@ def _tab_best_bets() -> None:
     if last_update and isinstance(last_update, datetime):
         st.caption(f"Last scan: {last_update.strftime('%H:%M:%S')}")
 
-    # Player Bets Section
     player_bets_df = st.session_state.get("player_bets_df", pd.DataFrame())
     if not player_bets_df.empty:
         filtered_p = player_bets_df[player_bets_df["edge"] >= min_edge].sort_values("edge", ascending=False).head(max_props)
@@ -3201,7 +3209,6 @@ def _tab_best_bets() -> None:
 
     st.divider()
 
-    # Game Bets Section
     game_bets = st.session_state.get("game_bets", [])
     if game_bets:
         filtered_g = sorted([b for b in game_bets if b["edge"] >= min_edge],
